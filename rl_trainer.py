@@ -288,11 +288,7 @@ def train_process_rl(data, save_path, device, seed, rl_agent_params):
     # sys.stdout = hooked
     # sys.stderr = HookedStdout(f"{save_path}/logerr.txt", sys.stderr)
 
-    if device != "cpu":
-        torch.cuda.set_device(device)
-        torch.set_default_tensor_type(torch.cuda.FloatTensor)
-    else:
-        torch.set_default_tensor_type(torch.FloatTensor)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     dde.config.set_default_float("float32")
     # dde.config.set_random_seed(seed)
