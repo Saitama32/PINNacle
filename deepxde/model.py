@@ -14,6 +14,7 @@ from . import metrics as metrics_module
 from . import optimizers
 from . import utils
 from .backend import backend_name, tf, torch, jax, paddle
+from torch.nn.utils import parameters_to_vector, vector_to_parameters
 from .callbacks import CallbackList
 from .utils import list_to_str
 
@@ -243,6 +244,17 @@ class Model:
     def _compile_pytorch(self, lr, loss_fn, decay, loss_weights):
         """pytorch"""
 
+        l1_factor, l2_factor = 0, 0
+        if self.net.regularizer is not None:
+            if self.net.regularizer[0] == "l1":
+                l1_factor = self.net.regularizer[1]
+            elif self.net.regularizer[0] == "l2":
+                l2_factor = self.net.regularizer[1]
+            else:
+                raise NotImplementedError(
+                    f"{self.net.regularizer[0]} regularizer hasn't been implemented for backend pytorch."
+                )
+
         def outputs(training, inputs):
             self.net.train(mode=training)
             with torch.no_grad():
@@ -287,6 +299,23 @@ class Model:
         # Another way is using per-parameter options
         # https://pytorch.org/docs/stable/optim.html#per-parameter-options,
         # but not all optimizers (such as L-BFGS) support this.
+        optimizer_params = self.net.parameters()
+        if self.external_trainable_variables:
+            # L-BFGS and PSO don't support per-parameter options.
+            if self.opt_name in ["L-BFGS", "L-BFGS-B", "PSO"]:
+                optimizer_params = (
+                    list(optimizer_params) + self.external_trainable_variables
+                )
+                if l2_factor > 0:
+                    print(
+                        "Warning: L2 regularization will also be applied to external_trainable_variables. "
+                        "Ensure this is intended behavior."
+                    )
+            else:
+                optimizer_params = [
+                    {"params": optimizer_params},
+                    {"params": self.external_trainable_variables, "weight_decay": 0},
+                ]
         trainable_variables = (list(self.net.parameters()) + self.external_trainable_variables)
         if self.net.regularizer is None:
             self.opt, self.lr_scheduler = optimizers.get(trainable_variables, self.opt_name, learning_rate=lr, decay=decay)
@@ -321,12 +350,47 @@ class Model:
                     self.lr_scheduler.step(loss)
                 else:
                     self.lr_scheduler.step()
+        def train_step_nncg(inputs, targets, auxiliary_vars):
+            def closure():
+                losses = outputs_losses_train(inputs, targets, auxiliary_vars)[1]
+                total_loss = torch.sum(losses)
+                self.opt.zero_grad()
+                return total_loss
+
+            self.opt.step(closure)
+            if self.lr_scheduler is not None:
+                self.lr_scheduler.step()
+        
+        def train_step_pso(inputs, targets):
+            params = list(self.opt.param_groups[0]["params"])
+
+            def closure():
+                loss_list = []
+                grad_list = []
+                for i in range(self.opt.pop_size):
+                    vector_to_parameters(self.opt.swarm[i], params)
+                    losses = outputs_losses_train(inputs, targets)[1]
+                    total_loss = torch.sum(losses)
+                    grads = torch.autograd.grad(total_loss, params)
+                    grad_vec = parameters_to_vector(grads)
+                    loss_list.append(total_loss)
+                    grad_list.append(grad_vec)
+                return torch.stack(loss_list), torch.stack(grad_list)
+
+            self.opt.step(closure)
+            if self.lr_scheduler is not None:
+                self.lr_scheduler.step()
 
         # Callables
         self.outputs = outputs
         self.outputs_losses_train = outputs_losses_train
         self.outputs_losses_test = outputs_losses_test
-        self.train_step = train_step
+        if self.opt_name == "NNCG":
+            self.train_step = train_step_nncg
+        elif self.opt_name == "PSO":
+            self.train_step = train_step_pso
+        else:
+            self.train_step = train_step
 
     def _compile_jax(self, lr, loss_fn, decay, loss_weights):
         """jax"""
@@ -506,7 +570,10 @@ class Model:
             self.train_step(inputs, targets, auxiliary_vars)
         elif backend_name == "pytorch":
             # TODO: auxiliary_vars
-            self.train_step(inputs, targets)
+            if self.opt_name in ["NNCG", "PSO"]:
+                self.train_step(inputs, targets)
+            else:
+                self.train_step(inputs, targets)
         elif backend_name == "jax":
             # TODO: auxiliary_vars
             self.params, self.opt_state = self.train_step(self.params, self.opt_state, inputs, targets)
@@ -562,7 +629,7 @@ class Model:
         # NOTE: edited
         self.model_save_path = model_save_path
         self.display_every = display_every
-        print(f"PDE Class Name: {type(self.pde).__name__}")
+        # print(f"PDE Class Name: {type(self.pde).__name__}")
 
         if backend_name == "tensorflow.compat.v1":
             if self.train_state.step == 0:
@@ -593,7 +660,14 @@ class Model:
             elif backend_name == "tensorflow":
                 self._train_tensorflow_tfp()
             elif backend_name == "pytorch":
-                self._train_pytorch_lbfgs()
+                if self.opt_name == "L-BFGS":
+                    self._train_pytorch_lbfgs()
+                elif self.opt_name in ["NNCG", "PSO"]:
+                    if iterations is None:
+                        raise ValueError(
+                            f"iterations is required for {self.opt_name} optimizer."
+                        )
+                    self._train_sgd(iterations, display_every)
             elif backend_name == "paddle":
                 self._train_paddle_lbfgs()
         else:

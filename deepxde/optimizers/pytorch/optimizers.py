@@ -2,14 +2,14 @@ __all__ = ["get", "is_external_optimizer"]
 
 import torch
 
-from ..config import LBFGS_options
+# from .nncg import NNCG
+from .pso import PSO
+from ..config import LBFGS_options, NNCG_options, PSO_options
 
 
 # NOTE: edited
 def is_external_optimizer(optimizer):
-    if isinstance(optimizer, torch.optim.Optimizer):
-        return isinstance(optimizer, torch.optim.LBFGS)
-    return optimizer in ["L-BFGS", "L-BFGS-B"]
+    return optimizer in ["L-BFGS", "L-BFGS-B", "NNCG", "PSO"]
 
 
 def get(params, optimizer, learning_rate=None, decay=None, weight_decay=0):
@@ -24,13 +24,48 @@ def get(params, optimizer, learning_rate=None, decay=None, weight_decay=0):
             print("Warning: learning rate is ignored for {}".format(optimizer))
         optim = torch.optim.LBFGS(
             params,
-            lr=1,
+            lr= LBFGS_options["lr"] if LBFGS_options["lr"]  is not None else 1,
             max_iter=LBFGS_options["iter_per_step"],
             max_eval=LBFGS_options["fun_per_step"],
             tolerance_grad=LBFGS_options["gtol"],
             tolerance_change=LBFGS_options["ftol"],
             history_size=LBFGS_options["maxcor"],
-            line_search_fn=None,
+            line_search_fn=("strong_wolfe" if LBFGS_options["maxls"] > 0 else None),
+        )
+    elif optimizer == "NNCG":
+        if weight_decay > 0:
+            raise ValueError("NNCG optimizer doesn't support weight_decay > 0")
+        if learning_rate is not None or decay is not None:
+            print("Warning: learning rate is ignored for {}".format(optimizer))
+        optim = NNCG(
+            params,
+            lr=NNCG_options["lr"],
+            rank=NNCG_options["rank"],
+            mu=NNCG_options["mu"],
+            update_freq=NNCG_options["updatefreq"],
+            chunk_size=NNCG_options["chunksz"],
+            cg_tol=NNCG_options["cgtol"],
+            cg_max_iters=NNCG_options["cgmaxiter"],
+            line_search_fn=NNCG_options["lsfun"],
+            verbose=NNCG_options["verbose"],
+        )
+    elif optimizer == "PSO":
+        if weight_decay > 0:
+            raise ValueError("PSO optimizer doesn't support weight_decay > 0")
+        if learning_rate is not None or decay is not None:
+            print("Warning: learning rate is ignored for {}".format(optimizer))
+        optim = PSO(
+            params,
+            pop_size=PSO_options["pop_size"],
+            b=PSO_options["b"],
+            c1=PSO_options["c1"],
+            c2=PSO_options["c2"],
+            lr=PSO_options["lr"],
+            betas=PSO_options["betas"],
+            c_decrease=PSO_options["c_decrease"],
+            variance=PSO_options["variance"],
+            epsilon=PSO_options["epsilon"],
+            n_iter=PSO_options["n_iter"],
         )
     else:
         if learning_rate is None:

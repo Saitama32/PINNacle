@@ -8,6 +8,7 @@ import itertools
 import copy
 from dataclasses import dataclass
 from typing import Any, Dict, Optional, Tuple, List
+import datetime
 
 dill.settings["recurse"] = True
 import torch
@@ -15,6 +16,8 @@ import deepxde as dde
 from RL.rl_environment import EnvRLOptimizer
 from RL.rl_algorithms import DQNAgent
 from src.utils.callbacks import ModelSaverCallback  
+from deepxde.optimizers.config import set_LBFGS_options, set_PSO_options, LBFGS_options, PSO_options
+from typing import Any, Dict
 
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -39,30 +42,34 @@ def get_state_shape(loss_surface_params):
     return tuple(torch.meshgrid(x_coords, y_coords)[0].shape)
 
 
-def _build_torch_optimizer(opt_name: str, params, opt_params: Dict[str, Any]):
-    """
-    opt_name: строка из action_dict['type'] (у тебя она берётся из optimizer_dict в агенте)
-    opt_params: action_dict['params'] (конкретные значения гиперов)
-    """
-    import torch
+def _build_torch_optimizer(opt_name: str, params, action: Dict[str, Any]):
 
-    name = opt_name.lower()
-    if name in ["adam", "torchadam"]:
+    name = (opt_name or "").lower()
+    opt_params = action.get("params", {})
+    if name == "adam":
         lr = float(opt_params.get("lr", 1e-3))
-        betas = opt_params.get("betas", (0.9, 0.999))
-        return torch.optim.Adam(params, lr=lr, betas=betas)
-    if name in ["rmsprop"]:
-        lr = float(opt_params.get("lr", 1e-3))
-        alpha = float(opt_params.get("alpha", 0.99))
-        return torch.optim.RMSprop(params, lr=lr, alpha=alpha)
-    if name in ["sgd"]:
-        lr = float(opt_params.get("lr", 1e-3))
-        momentum = float(opt_params.get("momentum", 0.0))
-        return torch.optim.SGD(params, lr=lr, momentum=momentum)
+        return torch.optim.Adam(
+            params, lr=lr,
+        )
 
-    # если у тебя есть кастомные оптимизаторы (MultiAdam, LRA и т.п.) —
-    # добавь сюда маппинг.
-    raise ValueError(f"Unknown optimizer type for DeepXDE RL trainer: {opt_name}")
+    if name in ["lbfgs", "l-bfgs", "l_bfgs", "LBFGS"]:
+        # torch LBFGS (для pytorch backend DeepXDE норм)
+        opt = torch.optim.LBFGS(
+            params,
+            lr=action["params"]["lr"],
+            line_search_fn="strong_wolfe"
+        )
+
+        return opt 
+
+    if name in ["pso", "PSO", "Pso"]:
+        # Передаём гиперпараметры через глобальные PSO_options
+        set_PSO_options(
+            lr=float(opt_params.get("lr", 1e-3)),
+        )
+        return "PSO"  # deepxde/optimizers/pytorch/pso.PSO
+
+    raise ValueError(f"Unknown optimizer type: {opt_name}. Expected Adam / LBFGS / PSO.")
 
 
 def run_deepxde_rl_training(
@@ -120,6 +127,14 @@ def run_deepxde_rl_training(
     def zero_state():
         z = torch.zeros(state_shape, device=device)
         return {"loss_total": z.clone(), "loss_oper": z.clone(), "loss_bnd": z.clone()}
+    
+    # rl_agent.replay_buffer = collect_all_comet_transitions(rl_agent.replay_buffer, max_exps_last=200, tolerance = rl_agent_params["tolerance"],prev_tol= rl_agent_params["prev_tol"], use_log_state=rl_agent_params["log_key"])
+    # if backup_params is not None:
+    #     optim_state, params_state = load_rl_agent_from_comet(backup_params["experiment_key"], map_location=device_type())
+    #     rl_agent.model_optim.load_state_dict(optim_state)
+    #     rl_agent.model_params.load_state_dict(params_state)
+
+    idx_traj = 0
 
     for traj in range(train_args["n_trajectories"]):
         # реинициализация сети на новую траекторию
@@ -134,7 +149,12 @@ def run_deepxde_rl_training(
         optimizers_history = []
         rl_penalty = 0
         total_reward = 0.0
-        
+
+        print('\n############################################################################' +
+        f'\nStarting trajectory {idx_traj + 1}/{rl_agent_params["n_trajectories"]} ' +
+        'with a new initial point.')
+
+
         for t in itertools.count():
 
             # --- agent action ---
@@ -156,14 +176,20 @@ def run_deepxde_rl_training(
             print(f"\naction = {action}")
 
             # --- compile optimizer for this chunk ---
-            torch_opt = _build_torch_optimizer(action["type"], model.net.parameters(), action["params"])
+            chunk_iters = int(action["epochs"])
+            torch_opt = _build_torch_optimizer(action["type"], model.net.parameters(), action)
+
 
             model.compile(torch_opt, loss_weights=loss_weights)
             model.optimizer = torch_opt
-
-            chunk_iters = int(action["epochs"])
             saver = ModelSaverCallback(total_iterations=chunk_iters, n_save_models=train_args['n_save_models'])
             callbacks = list(base_callbacks) + [saver]
+
+            print('\n===========================================================================\n' +
+                    f'\nRL agent training: step {t + 1}.'
+                    f'\nTime: {datetime.datetime.now()}.'
+                    f'\nUsing optimizer: {action["type"]} for {action["epochs"]} epochs.'
+                    f'\nTotal Reward = {total_reward}.\n')
 
             model.train(
                 iterations=chunk_iters,
@@ -177,6 +203,8 @@ def run_deepxde_rl_training(
             tester_callback = callbacks[0]
             rmse = tester_callback.rmse
             b_rmse = tester_callback.brmse
+
+            print(f"Operator RMSE: {rmse}, Boundary RMSE: {b_rmse}")
 
             env.solver_models = solver_models
             env.reward_params = {
@@ -252,7 +280,7 @@ def run_deepxde_rl_training(
             idx_traj += 1
 
 
-def train_process_rl(data, save_path, device, seed):
+def train_process_rl(data, save_path, device, seed, rl_agent_params):
     """
     drop-in replacement for train_process(...)
     """
@@ -279,7 +307,7 @@ def train_process_rl(data, save_path, device, seed):
         model.train(**train_args, model_save_path=save_path)
         return
 
-    get_model, train_args, optimizers, AE_model_params, AE_train_params,  loss_surface_params, rl_agent_params = payload
+    get_model, train_args, optimizers, AE_model_params, AE_train_params,  loss_surface_params = payload
     model, loss_weights = get_model()
     # rl_payload структура:
     # {
