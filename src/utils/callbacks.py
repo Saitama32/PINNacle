@@ -4,11 +4,13 @@ import torch
 import numpy as np
 import scipy
 import itertools
-
+import copy
 from deepxde.geometry import Hypercube, Interval
 from deepxde.callbacks import Callback
 from deepxde.utils.internal import list_to_str
 from src.utils import plot
+import scipy.interpolate
+import deepxde as dde
 
 logger = logging.getLogger(__name__)
 
@@ -123,6 +125,15 @@ class TesterCallback(Callback):
         self.crmses = []  # CSV_Loss
         self.frmses = []  # Mean Square Error in Fourier Space
 
+        self.ic_mses = []
+        self.bc_mses = []
+        self.bc_rmses = []
+        self.bc_l2res = []
+
+        self.mses_interp = []      # MSE на train_x, exact = nearest(ref_data)
+        self.bc_mse_interp = []    # MSE на train_x_bc, exact = nearest(ref_data)
+
+
         self.epochs_since_last_resample = 0
         self.valid_epoch = 0
         self.disable = False
@@ -151,9 +162,52 @@ class TesterCallback(Callback):
             self.disable = True
             logger.info("No reference solution or data provided, skipping TesterCallback")
             return
+        
+        print(len(self.test_x))
+                # nearest exact(x) based on reference grid (like griddata(..., method="nearest"))
+        # works for output_dim >= 1 too: values can be (N, out_dim)
+        self._exact_near = scipy.interpolate.NearestNDInterpolator(self.test_x, self.test_y)
 
         self.solution_l1 = np.abs(self.test_y).mean()
         self.solution_l2 = np.sqrt((self.test_y**2).mean())
+
+        # Для граничных условий
+        eps = 1e-12
+        X = self.test_x
+        bbox = np.asarray(pde.bbox)  # len = 2*input_dim
+
+        geom = self.model.data.geom
+        print(geom)
+        has_time = isinstance(geom, dde.geometry.GeometryXTime) or isinstance(geom, dde.geometry.TimeDomain)
+        print(has_time)
+        print(pde.input_dim)
+
+        # # предполагаем time_dim = последний, если задача time-dependent
+        # has_time = (pde.input_dim >= 2)  # достаточно безопасно для твоих time-задач
+        # time_dim = pde.input_dim - 1
+
+        # IC: t == t_min (только если есть time)
+        if has_time:
+            time_dim = pde.input_dim - 1
+            t_min = bbox[2 * time_dim]
+            self.ic_mask = np.isclose(X[:, time_dim], t_min, atol=eps)
+            
+            t_vals = X[:, time_dim]
+            print("t range:", float(t_vals.min()), float(t_vals.max()), "unique-ish:", len(np.unique(t_vals[:min(10000,len(t_vals))])))
+
+        else:
+            self.ic_mask = np.zeros(len(X), dtype=bool)
+
+        # BC: любая пространственная координата на min/max (исключая time dim), и не IC
+        bc_mask = np.zeros(len(X), dtype=bool)
+        spatial_dims = range(pde.input_dim - 1) if has_time else range(pde.input_dim)
+
+        for d in spatial_dims:
+            lo = bbox[2 * d]
+            hi = bbox[2 * d + 1]
+            bc_mask |= np.isclose(X[:, d], lo, atol=eps) | np.isclose(X[:, d], hi, atol=eps)
+
+        self.bc_mask = bc_mask & (~self.ic_mask)  # “только BC, без IC”
 
         if self.fRMSE:
             self.frmse_init()
@@ -179,6 +233,63 @@ class TesterCallback(Callback):
         else:
             frmse = (np.nan, np.nan, np.nan)
 
+        # IC MSE (на ref grid)
+        if np.any(self.ic_mask):
+            y_ic = self.model.predict(self.test_x[self.ic_mask])
+            ic_mse = ((y_ic - self.test_y[self.ic_mask]) ** 2).mean()
+        else:
+            ic_mse = np.nan
+
+        # BC MSE (на ref grid)
+        if np.any(self.bc_mask):
+            y_bc = self.model.predict(self.test_x[self.bc_mask])
+            bc_mse = ((y_bc - self.test_y[self.bc_mask]) ** 2).mean()
+            bc_rmse = np.sqrt(bc_mse)
+            bc_l2re = bc_rmse / (self.solution_l2 + 1e-12)
+        else:
+            bc_mse = np.nan
+            bc_rmse = np.nan
+            bc_l2re = np.nan
+
+
+        # --- Interpolation-based metrics (nearest exact on arbitrary grids) ---
+        # 1) interp MSE on training points (prefer train_x; fallback to train_x_all)
+        train_x = getattr(self.model.data, "train_x", None)
+        if train_x is None:
+            train_x = getattr(self.model.data, "train_x_all", None)
+
+        if train_x is not None and len(train_x) > 0:
+            y_train = self.model.predict(train_x)
+            y_train_true = self._exact_near(train_x)
+            mse_interp = ((y_train - y_train_true) ** 2).mean()
+        else:
+            mse_interp = np.nan
+
+        # 2) interp BC MSE on DeepXDE BC collocation points (train_x_bc)
+        bnd_x = getattr(self.model.data, "train_x_bc", None)
+        if bnd_x is None:
+            # если вдруг не посчитано — попробуем получить через data.bc_points()
+            bc_points_fn = getattr(self.model.data, "bc_points", None)
+            if callable(bc_points_fn):
+                bnd_x = bc_points_fn()
+
+        if bnd_x is not None and len(bnd_x) > 0:
+            y_bnd = self.model.predict(bnd_x)
+            y_bnd_true = self._exact_near(bnd_x)
+            bc_mse_interp = ((y_bnd - y_bnd_true) ** 2).mean()
+        else:
+            bc_mse_interp = np.nan
+
+
+        self.mses_interp.append(mse_interp)
+        self.bc_mse_interp.append(bc_mse_interp)
+
+        self.bc_mses.append(bc_mse)
+        self.bc_rmses.append(bc_rmse)
+        self.bc_l2res.append(bc_l2re)
+
+        self.ic_mses.append(ic_mse)
+
         self.indexes.append(self.valid_epoch)
         self.mses.append(mse)
         self.maes.append(mae)
@@ -188,13 +299,14 @@ class TesterCallback(Callback):
         self.crmses.append(crmse)
         self.frmses.append(frmse)
 
+
         if self.verbose:
             if np.isnan(frmse[0]):
-                print('Validation: epoch {} MSE {:.5f} MAE {:.5f} MXE {:.5f} L1RE {:.5f} L2RE {:.5f} CRMSE {:.5f}'.\
-                       format(self.valid_epoch, mse, mae, mxe, l1re, l2re, crmse))
+                print('Validation: epoch {} MSE {:.5f} MAE {:.5f} MXE {:.5f} BMSE {:.5f} ICMSE {:.5f} L1RE {:.5f} L2RE {:.5f} CRMSE {:.5f}'.\
+                       format(self.valid_epoch, mse, mae, mxe, bc_mse, ic_mse, l1re, l2re, crmse))
             else:
-                print('Validation: epoch {} MSE {:.5f} MAE {:.5f} MXE {:.5f} L1RE {:.5f} L2RE {:.5f} CRMSE {:.5f} FRMSE ({:.5f}, {:.5f}, {:.5f})'.\
-                       format(self.valid_epoch, mse, mae, mxe, l1re, l2re, crmse, frmse[0], frmse[1], frmse[2]))
+                print('Validation: epoch {} MSE {:.5f} MAE {:.5f} MXE {:.5f} BMSE {:.5f} ICMSE {:.5f} L1RE {:.5f} L2RE {:.5f} CRMSE {:.5f} FRMSE ({:.5f}, {:.5f}, {:.5f})'.\
+                       format(self.valid_epoch, mse, mae, mxe, bc_mse, ic_mse, l1re, l2re, crmse, frmse[0], frmse[1], frmse[2]))
 
     def on_train_end(self):
         if self.disable:
@@ -204,14 +316,36 @@ class TesterCallback(Callback):
         self.frmses = np.array(self.frmses)
         np.savetxt(
             self.save_path + 'errors.txt',
-            np.array([self.indexes, self.maes, self.mses, self.mxes, self.l1res, self.l2res, self.crmses,\
-                      self.frmses[:, 0], self.frmses[:, 1], self.frmses[:, 2]]).T,
-            header="epochs, maes, mses, mxes, l1res, l2res, crmses, frmses(low, mid, high)"
+            np.array([self.indexes, self.maes, self.mses, self.mxes, self.bc_mses, self.l1res, self.l2res, self.crmses,\
+                      self.frmses[:, 0], self.frmses[:, 1], self.frmses[:, 2], self.mses_interp, self.bc_mse_interp]).T,
+            header="epochs, maes, mses, mxes, bnd_mse, l1res, l2res, crmses, frmses(low, mid, high), mses_interp, bc_mse_interp"
         )
 
         plot.plot_lines([self.indexes, self.maes], xlabel="epochs", labels=['maes'], path=self.save_path + "maes.png", title="mean average error")
         plot.plot_lines([self.indexes, self.mses], xlabel="epochs", labels=['mses'], path=self.save_path + "mses.png", title="mean square error")
         plot.plot_lines([self.indexes, self.mxes], xlabel="epochs", labels=['mxes'], path=self.save_path + "mxes.png", title="maximum error")
+        plot.plot_lines([self.indexes, self.ic_mses], xlabel="epochs", labels=['ic_mses'],
+                path=self.save_path + "ic_mses.png", title="IC mean square error (ref grid)")
+
+        plot.plot_lines([self.indexes, self.bc_mses], xlabel="epochs", labels=['bc_mses'],
+                        path=self.save_path + "bc_mses.png", title="BC mean square error (ref grid)")
+        
+        plot.plot_lines([self.indexes, self.bc_rmses], xlabel="epochs", labels=['bc_mses'],
+                        path=self.save_path + "bc_rmses.png", title="BC root mean square error (ref grid)")
+        
+        plot.plot_lines([self.indexes, self.bc_l2res], xlabel="epochs", labels=['bc_mses'],
+                        path=self.save_path + "bc_l2res.png", title="BC l2re error (ref grid)")
+        
+        plot.plot_lines([self.indexes, self.mses_interp],
+                xlabel="epochs", labels=['mses_interp'],
+                path=self.save_path + "mses_interp.png",
+                title="MSE on train grid (nearest exact)")
+
+        plot.plot_lines([self.indexes, self.bc_mse_interp],
+                        xlabel="epochs", labels=['bc_mse_interp'],
+                        path=self.save_path + "bc_mse_interp.png",
+                        title="BC MSE on train_x_bc (nearest exact)")
+        
         plot.plot_lines([self.indexes, self.l1res, self.l2res],
                         xlabel="epochs",
                         labels=['l1re', 'l2re'],
@@ -223,6 +357,9 @@ class TesterCallback(Callback):
                         labels=['low freq', 'mid freq', 'high freq'], 
                         path=self.save_path + "frmses.png", 
                         title="mean square error in fourier space")
+        
+        self.rmse = np.sqrt(self.mses[-1])
+        self.brmse = self.bc_rmses[-1]
 
         self.indexes = []
         self.maes = []   
@@ -232,6 +369,14 @@ class TesterCallback(Callback):
         self.l2res = []  
         self.crmses = [] 
         self.frmses = [] 
+
+        self.ic_mses = []
+        self.bc_mses = []
+        self.bc_rmses = []
+        self.bc_l2res = []
+
+        self.mses_interp = []   
+        self.bc_mse_interp = []   
 
         self.epochs_since_last_resample = 0
         self.valid_epoch = 0
@@ -292,3 +437,39 @@ class TesterCallback(Callback):
             err_high /= err_high_cnt
 
         return err_low, err_mid, err_high
+    
+
+class ModelSaverCallback(Callback):
+    def __init__(self, total_iterations, n_save_models=10):
+        super(ModelSaverCallback, self).__init__()
+        self.total_iterations = total_iterations
+        self.n_save_models = n_save_models
+        # Вычисляем интервал сохранения (чтобы сохранить ровно n_save_models моделей)
+        self.save_every = max(1, total_iterations // n_save_models)
+        self.saved_models = []  # здесь будут храниться копии моделей
+        self.next_save_iter = self.save_every  # первое сохранение после save_every итераций
+
+    def on_epoch_end(self):
+        # Проверяем, что модель скомпилирована и есть доступ к номеру итерации
+        # if not hasattr(self, 'model') or self.model.train_state is None:
+        #     return
+        current_iter = self.model.train_state.step
+
+        # Если достигли очередного рубежа сохранения
+        if current_iter >= self.next_save_iter and len(self.saved_models) < self.n_save_models:
+            # Делаем глубокую копию модели (только сеть, так как весь объект model может быть сложным)
+            model_copy = copy.deepcopy(self.model.net)
+            self.saved_models.append(model_copy)
+            print(f"Model saved at iteration {current_iter} ({len(self.saved_models)}/{self.n_save_models})")
+            # Устанавливаем следующий рубеж
+            self.next_save_iter += self.save_every
+
+    def on_train_end(self):
+        # Если сохранили меньше, чем планировали (например, обучение рано остановилось), можно добавить последнюю модель
+        if len(self.saved_models) < self.n_save_models and hasattr(self, 'model'):
+            model_copy = copy.deepcopy(self.model.net)
+            self.saved_models.append(model_copy)
+            print(f"Final model added at end of training ({len(self.saved_models)}/{self.n_save_models})")
+
+        self.model.train_state.epoch = 0 
+        self.model.train_state.step = 0

@@ -64,7 +64,7 @@ class BasePDE():
         slice = (data.shape[1] - self.input_dim + 1) // self.output_dim
         assert slice * self.output_dim == data.shape[1] - self.input_dim + 1, "Data shape is not multiple of pde.output_dim"
         
-        with open(datapath, "r") as f:
+        with open(datapath, "r", encoding='utf-8') as f:
             def extract_time(string):
                 index = string.find("t=")
                 if index == -1:
@@ -89,7 +89,8 @@ class BasePDE():
         self.ref_data = np.stack(list_x).T
 
     def load_ref_data(self, datapath, transform_fn=None, t_transpose=False):
-        self.ref_data = np.loadtxt(datapath, comments="%").astype(np.float32)
+        print(datapath)
+        self.ref_data = np.loadtxt(datapath, comments="%",  encoding='utf-8').astype(np.float32)
         if t_transpose:  # originally used only in BaseTimePDE, but needed from some TimePDE using BasePDE as baseclass.
             self.trans_time_data_to_dataset(datapath)
         if transform_fn is not None:
