@@ -1,5 +1,5 @@
 # run_grayscott_rl.py
-import os
+import os, sys
 os.environ["DDEBACKEND"] = "pytorch"
 
 from comet_ml import start
@@ -11,6 +11,9 @@ experiment = start(
   workspace="saitama32"
 )
 
+os.environ['KMP_DUPLICATE_LIB_OK'] = 'TRUE'
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+sys.path.append(project_root)
 import time
 import argparse
 import dill
