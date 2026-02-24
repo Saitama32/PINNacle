@@ -25,6 +25,9 @@ from src.utils.args import parse_hidden_layers
 from src.utils.callbacks import TesterCallback, PlotCallback, LossCallback
 from rl_trainer import train_process_rl
 
+dde.config.set_default_float("float32")
+torch.set_default_dtype(torch.float32)
+
 experiment.log_parameters({
     "param": "v_1",
     "reward_function": "v_2",

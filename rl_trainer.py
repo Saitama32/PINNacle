@@ -19,6 +19,10 @@ from src.utils.callbacks import ModelSaverCallback
 from deepxde.optimizers.config import set_LBFGS_options, set_PSO_options, LBFGS_options, PSO_options
 from typing import Any, Dict
 
+# Enforce single-precision defaults before any model/layer creation.
+dde.config.set_default_float("float32")
+torch.set_default_dtype(torch.float32)
+
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
