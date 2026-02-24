@@ -163,7 +163,6 @@ class TesterCallback(Callback):
             logger.info("No reference solution or data provided, skipping TesterCallback")
             return
         
-        print(len(self.test_x))
                 # nearest exact(x) based on reference grid (like griddata(..., method="nearest"))
         # works for output_dim >= 1 too: values can be (N, out_dim)
         self._exact_near = scipy.interpolate.NearestNDInterpolator(self.test_x, self.test_y)
@@ -177,10 +176,7 @@ class TesterCallback(Callback):
         bbox = np.asarray(pde.bbox)  # len = 2*input_dim
 
         geom = self.model.data.geom
-        print(geom)
         has_time = isinstance(geom, dde.geometry.GeometryXTime) or isinstance(geom, dde.geometry.TimeDomain)
-        print(has_time)
-        print(pde.input_dim)
 
         # # предполагаем time_dim = последний, если задача time-dependent
         # has_time = (pde.input_dim >= 2)  # достаточно безопасно для твоих time-задач
@@ -193,7 +189,7 @@ class TesterCallback(Callback):
             self.ic_mask = np.isclose(X[:, time_dim], t_min, atol=eps)
             
             t_vals = X[:, time_dim]
-            print("t range:", float(t_vals.min()), float(t_vals.max()), "unique-ish:", len(np.unique(t_vals[:min(10000,len(t_vals))])))
+            # print("t range:", float(t_vals.min()), float(t_vals.max()), "unique-ish:", len(np.unique(t_vals[:min(10000,len(t_vals))])))
 
         else:
             self.ic_mask = np.zeros(len(X), dtype=bool)
