@@ -1,6 +1,18 @@
 # run_heat2d_varyingcoef_rl.py
-import os
+import os, sys
 os.environ["DDEBACKEND"] = "pytorch"
+from comet_ml import start
+from comet_ml.integration.pytorch import log_model
+
+experiment = start(
+  api_key="aP71fQTYPNqfsYWvudPPmoBl5",
+  project_name="rlpinn_grayscott_tolerance",
+  workspace="saitama32"
+)
+
+os.environ['KMP_DUPLICATE_LIB_OK'] = 'TRUE'
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+sys.path.append(project_root)
 import time
 import argparse
 import dill
@@ -13,6 +25,11 @@ from src.utils.args import parse_hidden_layers
 from src.utils.callbacks import TesterCallback, PlotCallback, LossCallback
 from rl_trainer import train_process_rl
 
+experiment.log_parameters({
+    "param": "v_1",
+    "reward_function": "v_2",
+    "description": "farm_transitions_grayscott_basic_RL_optimizer"
+})
 
 def build_get_model_heat2d_varyingcoef(hidden_layers: str):
     def get_model():
@@ -116,7 +133,7 @@ def main():
 
     AE_train_params = {
         "first_RL_epoch_AE_params": {
-            "epochs": 1000,
+            "epochs": 10000,
             "patience_scheduler": 4000,
             "cosine_scheduler_patience": 1200,
         },
@@ -175,11 +192,20 @@ def main():
         "agent_min_buffer": 32,
         "agent_update_iters": 2,
         "lr": 1e-3,
-        "exp": None,
+        "exp": experiment,
     }
 
+        # backup_params = {
+    #     "experiment_key" : "b0dae86c42924e4484b8bd194e2d58d9",
+    # }
+    backup_params = None
+
+    experiment.log_parameters(rl_agent_params)
+    # experiment.log_parameters(backup_params)
+    # --- вызов train_process_rl ---
+
     data = dill.dumps((get_model, train_args, optimizers, AE_model_params, AE_train_params, loss_surface_params))
-    train_process_rl(data=data, save_path=save_path, device=args.device, seed=args.seed, rl_agent_params=rl_agent_params)
+    train_process_rl(data=data, save_path=save_path, device=0, seed=args.seed, rl_agent_params=rl_agent_params)
 
 
 if __name__ == "__main__":
