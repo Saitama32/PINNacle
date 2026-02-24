@@ -251,6 +251,17 @@ def run_deepxde_rl_training(
                 # Сохраняем entry локально
                 file_path = os.path.join(output_dir, f'transitions_{rl_agent.steps_done}.pt')
 
+                entry = {
+                            'state': state,
+                            'next_state': next_state,
+                            'action': action_raw,
+                            'reward': float(info["reward_scalar"]),
+                            'done': done, 
+                            'reward_model_raw': float(reward_shaped.item()),
+                            'reward_model': float(reward_shaped.item()),
+                            'opt_model_i': info["opt_model_i"]
+                        }
+                torch.save(entry, file_path)
 
                 # Логируем тот же файл в comet
                 rl_agent_params['exp'].log_asset(
