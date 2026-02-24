@@ -1,4 +1,5 @@
 import sys
+from datetime import datetime
 
 import numpy as np
 
@@ -12,25 +13,29 @@ class TrainingDisplay:
         self.len_train = None
         self.len_test = None
         self.len_metric = None
+        # YYYY-MM-DD HH:MM:SS -> 19 characters
+        self.len_time = 22
         self.is_header_print = False
 
-    def print_one(self, s1, s2, s3, s4):
+    def print_one(self, s1, s2, s3, s4, s5):
         print(
-            "{:{l1}s}{:{l2}s}{:{l3}s}{:{l4}s}".format(
+            "{:{l1}s}{:{l2}s}{:{l3}s}{:{l4}s}{:{l5}s}".format(
                 s1,
                 s2,
                 s3,
                 s4,
-                l1=10,
-                l2=self.len_train,
-                l3=self.len_test,
-                l4=self.len_metric,
+                s5,
+                l1=self.len_time,
+                l2=10,
+                l3=self.len_train,
+                l4=self.len_test,
+                l5=self.len_metric,
             )
         )
         sys.stdout.flush()
 
     def header(self):
-        self.print_one("Step", "Train loss", "Test loss", "Test metric")
+        self.print_one("Time", "Step", "Train loss", "Test loss", "Test metric")
         self.is_header_print = True
 
     def __call__(self, train_state):
@@ -40,6 +45,7 @@ class TrainingDisplay:
             self.len_metric = len(train_state.metrics_test) * 10 + 4
             self.header()
         self.print_one(
+            datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             str(train_state.step),
             list_to_str(train_state.loss_train),
             list_to_str(train_state.loss_test),

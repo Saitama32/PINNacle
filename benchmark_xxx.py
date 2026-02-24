@@ -24,7 +24,7 @@ from src.utils.rar import rar_wrapper
 # It is recommended not to modify this example file.
 # Please copy it as benchmark_xxx.py and make changes according to your own ideas.
 pde_list = \
-    [KuramotoSivashinskyEquation]
+    [Heat2D_VaryingCoef]
 # pde_list = \
 #     [Burgers1D, Burgers2D] + \
 #     [Poisson2D_Classic, PoissonBoltzmann2D, Poisson3D_ComplexGeometry, Poisson2D_ManyArea] + \
