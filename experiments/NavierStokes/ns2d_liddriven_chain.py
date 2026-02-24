@@ -1,4 +1,4 @@
-# run_heat2d_varyingcoef_rl.py
+# run_ns2d_liddriven_rl.py
 import os
 os.environ["DDEBACKEND"] = "pytorch"
 import time
@@ -8,15 +8,15 @@ import numpy as np
 import torch
 import deepxde as dde
 
-from src.pde.heat import Heat2D_VaryingCoef
+from src.pde.ns import NS2D_LidDriven
 from src.utils.args import parse_hidden_layers
 from src.utils.callbacks import TesterCallback, PlotCallback, LossCallback
 from rl_trainer import train_process_rl
 
 
-def build_get_model_heat2d_varyingcoef(hidden_layers: str):
+def build_get_model_ns2d_liddriven(hidden_layers: str, datapath: str, a: float, nu: float):
     def get_model():
-        pde = Heat2D_VaryingCoef()
+        pde = NS2D_LidDriven(datapath=datapath, a=a, nu=nu)
 
         layers = [pde.input_dim] + parse_hidden_layers(argparse.Namespace(hidden_layers=hidden_layers)) + [pde.output_dim]
         net = dde.nn.FNN(layers, "tanh", "Glorot normal")
@@ -40,9 +40,13 @@ def build_get_model_heat2d_varyingcoef(hidden_layers: str):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--name", type=str, default="heat2d_varyingcoef_rl")
+    parser.add_argument("--name", type=str, default="ns2d_liddriven_rl")
     parser.add_argument("--device", type=str, default="0")
     parser.add_argument("--seed", type=int, default=1234)
+
+    parser.add_argument("--datapath", type=str, default="ref/lid_driven_a4.dat")
+    parser.add_argument("--a", type=float, default=4.0)
+    parser.add_argument("--nu", type=float, default=1e-2)
 
     parser.add_argument("--hidden-layers", type=str, default="100*5")
     parser.add_argument("--lr", type=float, default=1e-3)
@@ -60,8 +64,8 @@ def main():
     save_path = os.path.join(args.out, f"{date_str}-{args.name}")
     os.makedirs(save_path, exist_ok=True)
 
-    get_model = build_get_model_heat2d_varyingcoef(args.hidden_layers)
-    get_model_rec = build_get_model_heat2d_varyingcoef(args.hidden_layers)
+    get_model = build_get_model_ns2d_liddriven(args.hidden_layers, args.datapath, args.a, args.nu)
+    get_model_rec = build_get_model_ns2d_liddriven(args.hidden_layers, args.datapath, args.a, args.nu)
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -80,18 +84,18 @@ def main():
     }
 
     optimizers = {
-        'Adam':{
-            'lr':[1e-2, 1e-3, 1e-4],
-            'epochs':[100, 1000, 2500]
+        # "Adam": {
+        #     "lr": [1e-2, 1e-3, 1e-4],
+        #     "epochs": [100, 1000, 2500],
+        # },
+        "LBFGS": {
+            "lr": [1, 5e-1, 1e-1],
+            "epochs": [100, 500, 1000],
         },
-        'LBFGS':{
-            'lr':[1, 5e-1, 1e-1],
-            'epochs':[100, 500, 1000]
-        },
-        'PSO':{
-            'lr':[0.0, 1e-3, 1e-4],
-            'epochs':[100, 200, 300]
-        },
+        # "PSO": {
+        #     "lr": [0.0, 1e-3, 1e-4],
+        #     "epochs": [100, 200, 300],
+        # },
     }
 
     AE_model_params = {

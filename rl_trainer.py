@@ -22,6 +22,10 @@ from typing import Any, Dict
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
+output_dir = os.path.join('.', 'transitions')
+
+os.makedirs(output_dir, exist_ok=True)
+
 # --- утилита: реинициализация torch модулей (для "новой траектории") ---
 def reinit_torch_weights(module):
     import torch
@@ -57,7 +61,8 @@ def _build_torch_optimizer(opt_name: str, params, action: Dict[str, Any]):
         opt = torch.optim.LBFGS(
             params,
             lr=action["params"]["lr"],
-            line_search_fn="strong_wolfe"
+            line_search_fn="strong_wolfe",
+            max_iter = 10
         )
 
         return opt 
@@ -244,7 +249,7 @@ def run_deepxde_rl_training(
 
             try:
                 # Сохраняем entry локально
-                file_path = os.path.join('.', f'transitions_{rl_agent.steps_done}.pt')
+                file_path = os.path.join(output_dir, f'transitions_{rl_agent.steps_done}.pt')
 
 
                 # Логируем тот же файл в comet
