@@ -195,7 +195,7 @@ def main():
         "reward_operator_coeff": 1,
         "reward_boundary_coeff": 1,
         "agent_min_buffer": 32,
-        "agent_update_iters": 2,
+        "agent_update_iters": 5,
         "lr": 1e-3,
         "exp": experiment,
     }

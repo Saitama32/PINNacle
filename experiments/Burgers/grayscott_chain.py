@@ -199,7 +199,7 @@ def main():
     rl_agent_params = {
         "n_save_models": 10,
         "n_trajectories": 1000,
-        "tolerance": 0.040956,
+        "tolerance": 0.0687427339144051,
         "stuck_threshold": 10,
         "min_loss_change": 1e-7,
         "min_grad_norm": 1e-5,
@@ -211,6 +211,7 @@ def main():
         "reward_operator_coeff": 1,
         "reward_boundary_coeff": 1,
         "agent_min_buffer": 32,
+        "agent_update_iters": 5,
         "lr": 1e-3,
         "exp": experiment,
     }
