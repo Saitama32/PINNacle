@@ -2,8 +2,8 @@ from comet_ml import API
 import torch
 import io, os
 from datetime import datetime
-from tedeous.rl_algorithms import PrioritizedReplayBuffer
-from tedeous.RL_utils.load_transitions_into_buffer_pickle import load_transitions_to_replay_buffer
+from RL.rl_algorithms import PrioritizedReplayBuffer
+from RL.rl_utils.load_buffer.load_transitions_into_buffer_pickle import load_transitions_to_replay_buffer
 
 
 # === Настройки ===
