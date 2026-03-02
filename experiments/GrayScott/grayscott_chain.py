@@ -200,6 +200,7 @@ def main():
         "n_save_models": 10,
         "n_trajectories": 1000,
         "tolerance": 0.0687427339144051,
+        "prev_tol": 0,
         "stuck_threshold": 10,
         "min_loss_change": 1e-7,
         "min_grad_norm": 1e-5,
@@ -214,6 +215,7 @@ def main():
         "agent_update_iters": 5,
         "lr": 1e-3,
         "exp": experiment,
+        "log_key": True,
     }
 
     # backup_params = {

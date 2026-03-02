@@ -18,6 +18,7 @@ from RL.rl_algorithms import DQNAgent
 from src.utils.callbacks import ModelSaverCallback  
 from deepxde.optimizers.config import set_LBFGS_options, set_PSO_options, LBFGS_options, PSO_options
 from typing import Any, Dict
+from RL.rl_utils.load_buffer.load_exps_from_comet import collect_all_comet_transitions
 
 # Enforce single-precision defaults before any model/layer creation.
 dde.config.set_default_float("float32")
@@ -137,7 +138,7 @@ def run_deepxde_rl_training(
         z = torch.zeros(state_shape, device=device)
         return {"loss_total": z.clone(), "loss_oper": z.clone(), "loss_bnd": z.clone()}
     
-    # rl_agent.replay_buffer = collect_all_comet_transitions(rl_agent.replay_buffer, max_exps_last=200, tolerance = rl_agent_params["tolerance"],prev_tol= rl_agent_params["prev_tol"], use_log_state=rl_agent_params["log_key"])
+    rl_agent.replay_buffer = collect_all_comet_transitions(rl_agent.replay_buffer, max_exps_last=200, tolerance = rl_agent_params["tolerance"],prev_tol= rl_agent_params["prev_tol"], use_log_state=rl_agent_params["log_key"])
     # if backup_params is not None:
     #     optim_state, params_state = load_rl_agent_from_comet(backup_params["experiment_key"], map_location=device_type())
     #     rl_agent.model_optim.load_state_dict(optim_state)

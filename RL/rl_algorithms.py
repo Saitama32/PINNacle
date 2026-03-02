@@ -24,7 +24,7 @@ import tempfile
 GAMMA = 0.95
 EPS_START = 0.5
 EPS_END = 0.05
-EPS_DECAY = 100
+EPS_DECAY = 50
 TAU = 0.01
 
 
