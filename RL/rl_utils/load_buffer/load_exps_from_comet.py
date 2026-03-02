@@ -8,7 +8,7 @@ from RL.rl_utils.load_buffer.load_transitions_into_buffer_pickle import load_tra
 
 # === Настройки ===
 WORKSPACE = "saitama32"
-PROJECT_NAME = "rlpinn-poisson-2d-ms-farm-trans"
+PROJECT_NAME = "rlpinn-grayscott-farm-transitions"
 # MAX_EXPERIMENTS = 15  # можно изменить при необходимости
 
 api = API(api_key="aP71fQTYPNqfsYWvudPPmoBl5")  # или просто API()
