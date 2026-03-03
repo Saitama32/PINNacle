@@ -150,7 +150,7 @@ def main():
         "learning_rate": 5e-4,
         "resume": True,
         "finetune_AE_model": False,
-        "log_key": True,
+        "log_key": False,
     }
 
     loss_surface_params = {
@@ -196,6 +196,7 @@ def main():
         "agent_update_iters": 5,
         "lr": 1e-3,
         "exp": experiment,
+        "log_key": False,
     }
 
         # backup_params = {
