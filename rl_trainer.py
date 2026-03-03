@@ -90,9 +90,7 @@ def run_deepxde_rl_training(
     AE_model_params=None,
     AE_train_params=None,
     loss_surface_params=None,
-    save_path: str = ".",
-
-):
+    save_path: str = ".",):
     """
     model: deepxde.Model (уже созданный get_model())
     train_args: то, что раньше шло в model.train(**train_args)
