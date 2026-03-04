@@ -30,7 +30,7 @@ TAU = 0.01
 
 class DQNAgent:
     def __init__(self, n_observation=None, n_action=None, optimizer_dict=None, lr=1e-3, gamma=0.95, epsilon=1.0,
-                 epsilon_decay=0.995, epsilon_min=0.01, memory_size=50000, batch_size=128, n_transitions_reinit = 2000, per_alpha =  0.6, per_beta0 = 0.4, device='cpu', exp=None,
+                 epsilon_decay=0.995, epsilon_min=0.01, memory_size=100000, batch_size=128, n_transitions_reinit = 2000, per_alpha =  0.6, per_beta0 = 0.4, device='cpu', exp=None,
                  warmup_updates: int = 50, recalc_batch_size: int = 32,):
         self.n_observation = n_observation
         self.n_action = n_action
