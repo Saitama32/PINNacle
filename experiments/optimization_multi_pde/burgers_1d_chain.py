@@ -6,7 +6,7 @@ from comet_ml.integration.pytorch import log_model
 
 experiment = start(
   api_key="aP71fQTYPNqfsYWvudPPmoBl5",
-  project_name="rlpinn-grayscott-optimization",
+  project_name="rlpinn-multi-pde-burgers-optimization",
   workspace="saitama32"
 )
 
@@ -29,7 +29,7 @@ from rl_trainer import train_process_rl
 experiment.log_parameters({
     "param": "v_1",
     "reward_function": "v_2",
-    "description": "farm_transitions_grayscott_basic_RL_optimizer"
+    "description": "optimization_burgers_basic_RL_optimizer"
 })
 
 

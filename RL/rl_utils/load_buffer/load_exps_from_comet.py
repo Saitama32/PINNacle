@@ -164,7 +164,7 @@ def collect_all_comet_transitions(replay_buffer=None, max_exps_last=10, duration
     print(f"\n🚀 Всего собрано {len(all_entries)} переходов из {len(experiments_sorted_duration)} экспериментов.")
     if not all_entries:
         print("⚠️ Не найдено переходов для загрузки — возвращаем пустой буфер.")
-        return PrioritizedReplayBuffer(capacity=1)
+        return replay_buffer
 
     # === Заполняем буфер ===
     replay_buffer = load_transitions_to_replay_buffer(replay_buffer, all_entries, prev_tol=prev_tol, current_tol=tolerance)
