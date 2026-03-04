@@ -6,7 +6,7 @@ from comet_ml.integration.pytorch import log_model
 
 experiment = start(
   api_key="aP71fQTYPNqfsYWvudPPmoBl5",
-  project_name="rlpinn-multi-pde-burgers-optimization",
+  project_name="rlpinn-multi-pde-kuramoto-sivashinsky-optimization",
   workspace="saitama32"
 )
 
@@ -21,7 +21,7 @@ import torch
 import deepxde as dde
 
 
-from src.pde.burgers import Burgers1D
+from src.pde.chaotic import KuramotoSivashinskyEquation
 from src.utils.args import parse_hidden_layers, parse_loss_weight
 from src.utils.callbacks import TesterCallback, PlotCallback, LossCallback, ModelSaverCallback
 from rl_trainer import train_process_rl
@@ -29,7 +29,7 @@ from rl_trainer import train_process_rl
 experiment.log_parameters({
     "param": "v_1",
     "reward_function": "v_2",
-    "description": "optimization_burgers_basic_RL_optimizer"
+    "description": "optimization_kuramoto_sivashinsky_basic_RL_optimizer"
 })
 
 def str2bool(v):
@@ -44,13 +44,13 @@ def str2bool(v):
 
 
 
-def build_get_model_burgers1d(hidden_layers: str):
+def build_get_model_kuramoto_sivashinsky(hidden_layers: str):
     """
     Возвращает функцию get_model() как в benchmark_xxx.py, но только для Burgers1D. :contentReference[oaicite:1]{index=1}
     """
 
     def get_model():
-        pde = Burgers1D()
+        pde = KuramotoSivashinskyEquation()
 
         layers = [pde.input_dim] + parse_hidden_layers(argparse.Namespace(hidden_layers=hidden_layers)) + [pde.output_dim]
         net = dde.nn.FNN(layers, "tanh", "Glorot normal")
@@ -84,7 +84,7 @@ def build_get_model_burgers1d(hidden_layers: str):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--name", type=str, default="burgers1d_rl")
+    parser.add_argument("--name", type=str, default="kuramoto_sivashinsky_rl")
     parser.add_argument("--device", type=str, default="0")  # "cpu" or cuda index
     parser.add_argument("--seed", type=int, default=1234)
 
@@ -113,8 +113,8 @@ def main():
     os.makedirs(save_path, exist_ok=True)
 
     # --- get_model / train_args как в benchmark_xxx.py :contentReference[oaicite:5]{index=5} ---
-    get_model = build_get_model_burgers1d(args.hidden_layers)
-    get_model_rec = build_get_model_burgers1d(args.hidden_layers)
+    get_model = build_get_model_kuramoto_sivashinsky(args.hidden_layers)
+    get_model_rec = build_get_model_kuramoto_sivashinsky(args.hidden_layers)
 
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
@@ -260,3 +260,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
