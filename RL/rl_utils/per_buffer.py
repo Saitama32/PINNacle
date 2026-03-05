@@ -1,6 +1,7 @@
 import torch
 import random
 from collections import namedtuple
+import math
 
 Transition = namedtuple('Transition',
                         ('state', 'next_state', 'action', 'reward', 'done', 'model_reward', 'opt_model_i'))
@@ -20,6 +21,9 @@ class PrioritizedReplayBuffer:
         # Набор индексов переходов, которые являются успешными терминалами (done == 1)
         self.success_indexes = set()
 
+    def _warn_renorm(self, where: str, reason: str):
+        print(f"WARNING[PER:{where}] fallback renorm triggered: {reason}")
+
     def __len__(self):
         return len(self.memory)
 
@@ -31,9 +35,16 @@ class PrioritizedReplayBuffer:
 
         # --- базовый приоритет ---
         if priority is None:
-            p = max(self.prior) * coeff if self.prior else 1.0
+            if self.prior:
+                finite_prior = [x for x in self.prior if math.isfinite(x) and x > 0]
+                base_p = max(finite_prior) if finite_prior else 1.0
+                p = base_p * coeff
+            else:
+                p = 1.0
         else:
             p = float(priority)
+        if (not math.isfinite(p)) or p <= 0:
+            p = self.eps
 
         # --- индекс, в который пишем ---
         if len(self.memory) < self.capacity:
@@ -62,7 +73,12 @@ class PrioritizedReplayBuffer:
 
     def sample(self, batch_size, beta=0.4, device='cpu'):
         pr = torch.tensor(self.prior, dtype=torch.float, device=device)
+        pr = torch.nan_to_num(pr, nan=self.eps, posinf=1.0, neginf=self.eps).clamp_min(self.eps)
         probs = (pr + self.eps) ** self.alpha
+        probs = torch.nan_to_num(probs, nan=0.0, posinf=0.0, neginf=0.0)
+        if probs.sum() <= 0:
+            self._warn_renorm("sample", "probs.sum() <= 0 after sanitize")
+            probs = torch.ones_like(probs)
         probs = probs / probs.sum()
 
         idxs = torch.multinomial(
@@ -92,7 +108,10 @@ class PrioritizedReplayBuffer:
 
     def update_priorities(self, idxs, new_p):
         for i, p in zip(idxs.tolist(), new_p.tolist()):
-            self.prior[int(i)] = float(max(p, self.eps))
+            p = float(p)
+            if (not math.isfinite(p)) or p <= 0:
+                p = self.eps
+            self.prior[int(i)] = p
     
     # per_buffer.py  --- ДОБАВИТЬ внутрь класса PrioritizedReplayBuffer
     def _build_sequence_from_start(self, start_idx: int, L: int):
@@ -187,10 +206,15 @@ class PrioritizedReplayBuffer:
         else:
             # --- PER СЭМПЛИНГ ПО СТАРТОВЫМ ЭЛЕМЕНТАМ ---
             pr = torch.tensor(self.prior, dtype=torch.float, device=device)
+            pr = torch.nan_to_num(pr, nan=self.eps, posinf=1.0, neginf=self.eps).clamp_min(self.eps)
             probs = (pr + self.eps) ** self.alpha
+            probs = torch.nan_to_num(probs, nan=0.0, posinf=0.0, neginf=0.0)
 
             if no_valid_starts:
                 # нет нетерминальных стартов -> классический PER по всем
+                if probs.sum() <= 0:
+                    self._warn_renorm("sample_sequences/main", "no_valid_starts and probs.sum() <= 0")
+                    probs = torch.ones_like(probs)
                 probs = probs / probs.sum()
             else:
                 # обнуляем вероятность для НЕвалидных стартов
@@ -199,15 +223,25 @@ class PrioritizedReplayBuffer:
                 probs = probs * mask
                 # если вдруг все веса обнулились (на всякий случай) — fallback к исходным
                 if probs.sum() <= 0:
+                    self._warn_renorm("sample_sequences/masked", "masked probs sum to zero; fallback to unmasked")
                     probs = (pr + self.eps) ** self.alpha
+                    probs = torch.nan_to_num(probs, nan=0.0, posinf=0.0, neginf=0.0)
+                    if probs.sum() <= 0:
+                        self._warn_renorm("sample_sequences/masked", "unmasked probs sum to zero; fallback to uniform")
+                        probs = torch.ones_like(probs)
                 probs = probs / probs.sum()
 
-            replacement = N < batch_size
+            support = int((probs > 0).sum().item())
+            replacement = support < batch_size
             idxs = torch.multinomial(probs, batch_size, replacement=replacement)
 
             assert beta is not None, "beta must be provided for PER sampling"
             # IS-веса считаем по ИСХОДНЫМ probs (как в классическом PER)
             base_probs = (pr + self.eps) ** self.alpha
+            base_probs = torch.nan_to_num(base_probs, nan=0.0, posinf=0.0, neginf=0.0)
+            if base_probs.sum() <= 0:
+                self._warn_renorm("sample_sequences/isw", "base_probs sum to zero; fallback to uniform")
+                base_probs = torch.ones_like(base_probs)
             base_probs = base_probs / base_probs.sum()
             weights = (N * base_probs[idxs]).pow(-beta)
             is_w = (weights / weights.max()).float()
