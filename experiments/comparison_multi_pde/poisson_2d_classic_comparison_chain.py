@@ -6,7 +6,7 @@ from comet_ml.integration.pytorch import log_model
 
 experiment = start(
   api_key="aP71fQTYPNqfsYWvudPPmoBl5",
-  project_name="rlpinn-multi-pde-burgers-comparison",
+  project_name="rlpinn-multi-pde-poisson-2d-classic-comparison",
   workspace="saitama32"
 )
 
@@ -21,7 +21,7 @@ import torch
 import deepxde as dde
 
 
-from src.pde.burgers import Burgers1D
+from src.pde.poisson import Poisson2D_Classic
 from src.utils.args import parse_hidden_layers, parse_loss_weight
 from src.utils.callbacks import TesterCallback, PlotCallback, LossCallback, ModelSaverCallback
 from rl_trainer import train_process_rl
@@ -29,7 +29,7 @@ from rl_trainer import train_process_rl
 experiment.log_parameters({
     "param": "v_1",
     "reward_function": "v_2",
-    "description": "comparison_burgers_loaded_dqn_final_eval"
+    "description": "comparison_poisson_2d_classic_loaded_dqn_final_eval"
 })
 
 def str2bool(v):
@@ -44,13 +44,13 @@ def str2bool(v):
 
 
 
-def build_get_model_burgers1d(hidden_layers: str):
+def build_get_model_poisson2d_classic(hidden_layers: str):
     """
     Возвращает функцию get_model() как в benchmark_xxx.py, но только для Burgers1D. :contentReference[oaicite:1]{index=1}
     """
 
     def get_model():
-        pde = Burgers1D()
+        pde = Poisson2D_Classic()
 
         layers = [pde.input_dim] + parse_hidden_layers(argparse.Namespace(hidden_layers=hidden_layers)) + [pde.output_dim]
         net = dde.nn.FNN(layers, "tanh", "Glorot normal")
@@ -84,7 +84,7 @@ def build_get_model_burgers1d(hidden_layers: str):
 
 def main(seed_override=None):
     parser = argparse.ArgumentParser()
-    parser.add_argument("--name", type=str, default="burgers1d_rl")
+    parser.add_argument("--name", type=str, default="poisson2d_classic_rl")
     parser.add_argument("--device", type=str, default="0")  # "cpu" or cuda index
     parser.add_argument("--seed", type=int, default=1234)
 
@@ -116,8 +116,8 @@ def main(seed_override=None):
     os.makedirs(save_path, exist_ok=True)
 
     # --- get_model / train_args как в benchmark_xxx.py :contentReference[oaicite:5]{index=5} ---
-    get_model = build_get_model_burgers1d(args.hidden_layers)
-    get_model_rec = build_get_model_burgers1d(args.hidden_layers)
+    get_model = build_get_model_poisson2d_classic(args.hidden_layers)
+    get_model_rec = build_get_model_poisson2d_classic(args.hidden_layers)
 
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
@@ -251,7 +251,6 @@ def main(seed_override=None):
         "total_epochs": 7000,
         "experiment_key": args.exp_key,
         "multi_pde_comparison": True,
-        "agent_optimizing_status": "all_epoch"
     }
 
     experiment.log_parameters(rl_agent_params)
@@ -259,7 +258,6 @@ def main(seed_override=None):
     # --- вызов train_process_rl ---
 
     # --- вызов train_process_rl ---
-
 
     data = dill.dumps((get_model, train_args, optimizers, AE_model_params, AE_train_params, loss_surface_params, comparison_params))
     train_process_rl(
@@ -272,10 +270,10 @@ def main(seed_override=None):
     )
 
 if __name__ == "__main__":
-
     # список сидов для экспериментов
     seeds = [123, 234, 345, 456, 567, 678, 789, 890, 901, 1012]   # можно расширить список
 
     for seed in seeds:
         print(f"\n🔹 Запуск эксперимента с seed = {seed}")
         main(seed_override=seed)
+
