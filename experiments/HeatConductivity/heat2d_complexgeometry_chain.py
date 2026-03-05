@@ -2,6 +2,18 @@ import os
 os.environ["DDEBACKEND"] = "pytorch"
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 import sys
+from comet_ml import start
+from comet_ml.integration.pytorch import log_model
+
+experiment = start(
+  api_key="aP71fQTYPNqfsYWvudPPmoBl5",
+  project_name="rlpinn_heat_2d_vc_tolerance",
+  workspace="saitama32"
+)
+
+
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+sys.path.append(project_root)
 import time
 import argparse
 import dill
@@ -9,21 +21,11 @@ import numpy as np
 import torch
 import deepxde as dde
 
-from comet_ml import start
 from src.pde.heat import Heat2D_ComplexGeometry
 from src.utils.args import parse_hidden_layers
 from src.utils.callbacks import TesterCallback, PlotCallback, LossCallback
 from rl_trainer import train_process_rl
 
-
-experiment = start(
-    api_key="aP71fQTYPNqfsYWvudPPmoBl5",
-    project_name="rlpinn_heat2d_complexgeometry_tolerance",
-    workspace="saitama32",
-)
-
-project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-sys.path.append(project_root)
 
 experiment.log_parameters({
     "param": "v_1",
