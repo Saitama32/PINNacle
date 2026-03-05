@@ -6,6 +6,7 @@ import dill
 import random
 import itertools
 import copy
+import numpy as np
 from dataclasses import dataclass
 from typing import Any, Dict, Optional, Tuple, List
 import datetime
@@ -17,8 +18,8 @@ from RL.rl_environment import EnvRLOptimizer
 from RL.rl_algorithms import DQNAgent
 from src.utils.callbacks import ModelSaverCallback  
 from deepxde.optimizers.config import set_LBFGS_options, set_PSO_options, LBFGS_options, PSO_options
-from typing import Any, Dict
 from RL.rl_utils.load_buffer.load_exps_from_comet import collect_all_comet_transitions
+from RL.rl_utils.load_buffer.load_model_from_comet import load_rl_agent_from_comet
 
 # Enforce single-precision defaults before any model/layer creation.
 dde.config.set_default_float("float32")
@@ -39,6 +40,18 @@ def reinit_torch_weights(module):
         torch.nn.init.xavier_uniform_(module.weight)
         if module.bias is not None:
             torch.nn.init.zeros_(module.bias)
+
+
+def set_global_seed(seed: Optional[int]) -> None:
+    if seed is None:
+        return
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
+    dde.config.set_random_seed(seed)
 
 def get_state_shape(loss_surface_params):
     min_x, max_x, xnum = loss_surface_params["x_range"]
@@ -92,6 +105,7 @@ def run_deepxde_rl_training(
     AE_train_params=None,
     loss_surface_params=None,
     save_path: str = ".",
+    comparison_params: Optional[Dict[str, Any]] = None,
 
 ):
     """
@@ -105,6 +119,11 @@ def run_deepxde_rl_training(
     base_callbacks = train_args.get("callbacks", [])
     equation_params = train_args.get("equation_params", [])
     display_every = int(train_args.get("display_every", 100))
+    tester_callback = None
+    for cb in base_callbacks:
+        if cb.__class__.__name__ == "TesterCallback":
+            tester_callback = cb
+            break
 
     # создаём env/agent (как раньше внутри model.py, только теперь снаружи)
     env = EnvRLOptimizer(optimizers=optimizers_dict,
@@ -139,21 +158,29 @@ def run_deepxde_rl_training(
         return {"loss_total": z.clone(), "loss_oper": z.clone(), "loss_bnd": z.clone()}
     
 
-    proj_dict = {'rlpinn' : 100,
-            'rlpinn-poisson-2d-ms-farm-trans': 100,
-            'rlpinn-poisson-2d-cg-farm-transitions':100,
-            'rlpinn-ks-farm-transitions':100,
-            'rlpinn-poisson-2d-classic-farm-transitions':100,
-            'rlpinn-burgers-tolerance':100}
+    # proj_dict = {'rlpinn' : 100,
+    #         'rlpinn-poisson-2d-ms-farm-trans': 100,
+    #         'rlpinn-poisson-2d-cg-farm-transitions':100,
+    #         'rlpinn-ks-farm-transitions':100,
+    #         'rlpinn-poisson-2d-classic-farm-transitions':100,
+    #         'rlpinn-burgers-tolerance':100}
 
-    for proj_name, n_exps in proj_dict.items():
-        rl_agent.replay_buffer = collect_all_comet_transitions(rl_agent.replay_buffer, n_exps, proj_name=proj_name, tolerance = rl_agent_params["tolerance"],prev_tol= rl_agent_params["prev_tol"], use_log_state=rl_agent_params["log_key"])
+    # for proj_name, n_exps in proj_dict.items():
+    #     rl_agent.replay_buffer = collect_all_comet_transitions(rl_agent.replay_buffer, n_exps, proj_name=proj_name, tolerance = rl_agent_params["tolerance"],prev_tol= rl_agent_params["prev_tol"], use_log_state=rl_agent_params["log_key"])
     
     # rl_agent.replay_buffer = collect_all_comet_transitions(rl_agent.replay_buffer, max_exps_last=200, tolerance = rl_agent_params["tolerance"],prev_tol= rl_agent_params["prev_tol"], use_log_state=rl_agent_params["log_key"])
-    # if backup_params is not None:
-    #     optim_state, params_state = load_rl_agent_from_comet(backup_params["experiment_key"], map_location=device_type())
-    #     rl_agent.model_optim.load_state_dict(optim_state)
-    #     rl_agent.model_params.load_state_dict(params_state)
+    comparison_mode = bool(comparison_params and comparison_params.get("multi_pde_comparison", False))
+    final_eval_mode = comparison_mode
+    comparison_total_epochs = None
+    if final_eval_mode and tester_callback is not None and hasattr(tester_callback, "reset_on_train_end"):
+        tester_callback.reset_on_train_end = False
+    if comparison_params is not None:
+        if comparison_params.get("total_epochs") is not None:
+            comparison_total_epochs = int(comparison_params["total_epochs"])
+        optim_state, params_state = load_rl_agent_from_comet(comparison_params["experiment_key"], map_location=device)
+        rl_agent.model_optim.load_state_dict(optim_state)
+        rl_agent.model_params.load_state_dict(params_state)
+        rl_agent.reinit_target()
 
     idx_traj = 0
 
@@ -176,10 +203,18 @@ def run_deepxde_rl_training(
         'with a new initial point.')
 
 
+        optimizer_epoch = 0
+        done = 0
+
         for t in itertools.count():
+            if getattr(model, "stop_training", False):
+                break
+            if comparison_total_epochs is not None and comparison_total_epochs - optimizer_epoch <= 0:
+                print(f"Comparison epoch budget reached: {optimizer_epoch}/{comparison_total_epochs}")
+                break
 
             # --- agent action ---
-            action, action_raw, is_model = rl_agent.select_action(state)
+            action, action_raw, is_model = rl_agent.select_action(state, force_greedy=final_eval_mode)
             action_raw[2]['epochs'] = action_raw[1]
             action_raw = (action_raw[0], action_raw[2])
 
@@ -198,6 +233,10 @@ def run_deepxde_rl_training(
 
             # --- compile optimizer for this chunk ---
             chunk_iters = int(action["epochs"])
+            if comparison_total_epochs is not None:
+                chunk_iters = min(chunk_iters, comparison_total_epochs - optimizer_epoch)
+                if chunk_iters <= 0:
+                    break
             torch_opt = _build_torch_optimizer(action["type"], model.net.parameters(), action)
 
 
@@ -209,7 +248,7 @@ def run_deepxde_rl_training(
             print('\n===========================================================================\n' +
                     f'\nRL agent training: step {t + 1}.'
                     f'\nTime: {datetime.datetime.now()}.'
-                    f'\nUsing optimizer: {action["type"]} for {action["epochs"]} epochs.'
+                    f'\nUsing optimizer: {action["type"]} for {chunk_iters} epochs.'
                     f'\nTotal Reward = {total_reward}.\n')
 
             model.train(
@@ -219,11 +258,18 @@ def run_deepxde_rl_training(
                 model_save_path=save_path,
                 save_model=False,
             )
+            optimizer_epoch += chunk_iters
 
             solver_models = saver.saved_models
-            tester_callback = callbacks[0]
-            rmse = tester_callback.rmse
-            b_rmse = tester_callback.brmse
+            chunk_tester_callback = None
+            for cb in callbacks:
+                if cb.__class__.__name__ == "TesterCallback":
+                    chunk_tester_callback = cb
+                    break
+            if chunk_tester_callback is None:
+                raise RuntimeError("TesterCallback is required in callbacks for RL metrics/reward calculation.")
+            rmse = chunk_tester_callback.rmse
+            b_rmse = chunk_tester_callback.brmse
 
             print(f"Operator RMSE: {rmse}, Boundary RMSE: {b_rmse}")
 
@@ -253,11 +299,12 @@ def run_deepxde_rl_training(
             prev_reward = info["reward_scalar"]
 
             # reward уже финальный (reward_model_i)
-            rl_agent.push_memory((state, next_state, action_raw, float(reward_shaped.item()),
-                                done, float(reward_shaped.item()), info["opt_model_i"]))
+            if not final_eval_mode:
+                rl_agent.push_memory((state, next_state, action_raw, float(reward_shaped.item()),
+                                    done, float(reward_shaped.item()), info["opt_model_i"]))
 
             # update agent
-            if len(rl_agent.replay_buffer) >= rl_agent_params["agent_min_buffer"]:
+            if (not final_eval_mode) and len(rl_agent.replay_buffer) >= rl_agent_params["agent_min_buffer"]:
                 rl_agent.optim_(iters=rl_agent_params["agent_update_iters"])
 
             state = next_state
@@ -311,8 +358,17 @@ def run_deepxde_rl_training(
         if done == 1:
             idx_traj += 1
 
+        if final_eval_mode and tester_callback is not None and hasattr(tester_callback, "get_best_metrics"):
+            best_metrics = tester_callback.get_best_metrics()
+            if best_metrics:
+                print(f"Best metrics collected over comparison run: {best_metrics}")
+                exp = rl_agent_params.get("exp")
+                if exp is not None:
+                    metric_step = comparison_params.get("seed", idx_traj) if comparison_params else idx_traj
+                    exp.log_metrics(best_metrics, step=metric_step)
 
-def train_process_rl(data, save_path, device, seed, rl_agent_params):
+
+def train_process_rl(data, save_path, device, seed, rl_agent_params, comparison_params: Optional[Dict[str, Any]] = None):
     """
     drop-in replacement for train_process(...)
     """
@@ -323,19 +379,31 @@ def train_process_rl(data, save_path, device, seed, rl_agent_params):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     dde.config.set_default_float("float32")
-    # dde.config.set_random_seed(seed)
+    effective_seed = seed
 
     payload = dill.loads(data)
 
     # совместимость: если раньше data был (get_model, train_args)
     # теперь можно передать (get_model, train_args, rl_payload)
     if len(payload) == 2:
+        set_global_seed(effective_seed)
         get_model, train_args = payload
         model = get_model()
         model.train(**train_args, model_save_path=save_path)
         return
 
-    get_model, train_args, optimizers, AE_model_params, AE_train_params,  loss_surface_params = payload
+    payload_comparison_params = None
+    if len(payload) >= 7:
+        get_model, train_args, optimizers, AE_model_params, AE_train_params, loss_surface_params, payload_comparison_params = payload
+    else:
+        get_model, train_args, optimizers, AE_model_params, AE_train_params, loss_surface_params = payload
+
+    if comparison_params is None and payload_comparison_params is not None:
+        comparison_params = payload_comparison_params
+    if comparison_params is not None and comparison_params.get("seed") is not None:
+        effective_seed = int(comparison_params["seed"])
+    set_global_seed(effective_seed)
+
     model, loss_weights = get_model()
     # rl_payload структура:
     # {
@@ -357,4 +425,5 @@ def train_process_rl(data, save_path, device, seed, rl_agent_params):
         AE_train_params=AE_train_params,
         loss_surface_params=loss_surface_params,
         save_path=save_path,
+        comparison_params=comparison_params,
     )

@@ -105,7 +105,13 @@ class LossCallback(Callback):
 
 class TesterCallback(Callback):
 
-    def __init__(self, log_every=100, verbose=True, fRMSE_param={'enable':True, 'iLow':5, 'iHigh':13, 'calc_every':2000}):
+    def __init__(
+        self,
+        log_every=100,
+        verbose=True,
+        fRMSE_param={'enable':True, 'iLow':5, 'iHigh':13, 'calc_every':2000},
+        reset_on_train_end=True,
+    ):
         super(TesterCallback, self).__init__()
 
         self.log_every = log_every
@@ -137,9 +143,17 @@ class TesterCallback(Callback):
         self.epochs_since_last_resample = 0
         self.valid_epoch = 0
         self.disable = False
+        self.reset_on_train_end = reset_on_train_end
+        self.rmse = np.nan
+        self.brmse = np.nan
+        self.best_metrics = {}
+        self.best_metric_epochs = {}
+        self._initialized = False
 
     def on_train_begin(self):
         self.save_path = self.model.model_save_path + "/"
+        if self._initialized:
+            return
         pde = self.model.pde
 
         # Load / Generate Test Data
@@ -207,6 +221,7 @@ class TesterCallback(Callback):
 
         if self.fRMSE:
             self.frmse_init()
+        self._initialized = True
 
     def on_epoch_end(self):
         self.epochs_since_last_resample += 1
@@ -356,26 +371,85 @@ class TesterCallback(Callback):
         
         self.rmse = np.sqrt(self.mses[-1])
         self.brmse = self.bc_rmses[-1]
+        self._update_best_metrics()
 
-        self.indexes = []
-        self.maes = []   
-        self.mses = []   
-        self.mxes = []   
-        self.l1res = []  
-        self.l2res = []  
-        self.crmses = [] 
-        self.frmses = [] 
+        if self.reset_on_train_end:
+            self.indexes = []
+            self.maes = []   
+            self.mses = []   
+            self.mxes = []   
+            self.l1res = []  
+            self.l2res = []  
+            self.crmses = [] 
+            self.frmses = [] 
 
-        self.ic_mses = []
-        self.bc_mses = []
-        self.bc_rmses = []
-        self.bc_l2res = []
+            self.ic_mses = []
+            self.bc_mses = []
+            self.bc_rmses = []
+            self.bc_l2res = []
 
-        self.mses_interp = []   
-        self.bc_mse_interp = []   
+            self.mses_interp = []   
+            self.bc_mse_interp = []   
 
-        self.epochs_since_last_resample = 0
-        self.valid_epoch = 0
+            self.epochs_since_last_resample = 0
+            self.valid_epoch = 0
+            self._initialized = False
+
+    def _min_with_epoch(self, values):
+        arr = np.asarray(values, dtype=float)
+        if arr.size == 0:
+            return np.nan, None
+        mask = ~np.isnan(arr)
+        if not np.any(mask):
+            return np.nan, None
+        valid_idx = np.where(mask)[0]
+        best_local = valid_idx[np.argmin(arr[mask])]
+        return float(arr[best_local]), int(self.indexes[best_local])
+
+    def _update_best_metrics(self):
+        if len(self.indexes) == 0:
+            return
+
+        metric_to_series = {
+            "mae_best": self.maes,
+            "mse_best": self.mses,
+            "mxe_best": self.mxes,
+            "l1re_best": self.l1res,
+            "l2re_best": self.l2res,
+            "crmse_best": self.crmses,
+            "ic_mse_best": self.ic_mses,
+            "bc_mse_best": self.bc_mses,
+            "bc_rmse_best": self.bc_rmses,
+            "bc_l2re_best": self.bc_l2res,
+            "mse_interp_best": self.mses_interp,
+            "bc_mse_interp_best": self.bc_mse_interp,
+        }
+
+        for metric_name, series in metric_to_series.items():
+            best_val, best_epoch = self._min_with_epoch(series)
+            if best_epoch is None:
+                continue
+            prev = self.best_metrics.get(metric_name, np.inf)
+            if np.isnan(prev) or best_val < prev:
+                self.best_metrics[metric_name] = best_val
+                self.best_metric_epochs[f"{metric_name}_epoch"] = best_epoch
+
+        fr_arr = np.asarray(self.frmses, dtype=float)
+        if fr_arr.ndim == 2 and fr_arr.shape[1] == 3 and len(self.indexes) == fr_arr.shape[0]:
+            for col_idx, name in enumerate(["frmse_low_best", "frmse_mid_best", "frmse_high_best"]):
+                best_val, best_epoch = self._min_with_epoch(fr_arr[:, col_idx])
+                if best_epoch is None:
+                    continue
+                prev = self.best_metrics.get(name, np.inf)
+                if np.isnan(prev) or best_val < prev:
+                    self.best_metrics[name] = best_val
+                    self.best_metric_epochs[f"{name}_epoch"] = best_epoch
+
+    def get_best_metrics(self):
+        out = {}
+        out.update(self.best_metrics)
+        out.update(self.best_metric_epochs)
+        return out
     
     def frmse_init(self):
         pde = self.model.pde

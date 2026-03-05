@@ -651,7 +651,7 @@ class DQNAgent:
         return optim_class, epochs_class, param_class
     
     # Action function stub
-    def select_action(self, state):
+    def select_action(self, state, force_greedy: bool = False):
 
         # собрать 4-канальное состояние
         if "delta" not in state:
@@ -670,11 +670,11 @@ class DQNAgent:
         state_tensor = state_tensor.unsqueeze(0)
 
         # eps-greedy
-        sample = random.random()
-        eps_threshold = EPS_END + (EPS_START - EPS_END) * math.exp(-1. * self.steps_done / EPS_DECAY)
+        sample = 1.0 if force_greedy else random.random()
+        eps_threshold = 0.0 if force_greedy else EPS_END + (EPS_START - EPS_END) * math.exp(-1. * self.steps_done / EPS_DECAY)
         self.steps_done += 1
 
-        if self.steps_done < self.slot_bootstrap_steps:
+        if (not force_greedy) and self.steps_done < self.slot_bootstrap_steps:
             eps_threshold = self.slot_bootstrap_eps
 
         # --- GREEDY ---
