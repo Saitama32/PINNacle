@@ -1,4 +1,6 @@
 import os
+os.environ["DDEBACKEND"] = "pytorch"
+os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 import sys
 import time
 import argparse
@@ -6,9 +8,6 @@ import dill
 import numpy as np
 import torch
 import deepxde as dde
-
-os.environ["DDEBACKEND"] = "pytorch"
-os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 
 from comet_ml import start
 from src.pde.heat import Heat2D_ComplexGeometry

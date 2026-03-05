@@ -1,6 +1,8 @@
 # run_heat2d_varyingcoef_rl.py
-import os, sys
+import os
 os.environ["DDEBACKEND"] = "pytorch"
+os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
+import sys
 from comet_ml import start
 from comet_ml.integration.pytorch import log_model
 
@@ -10,7 +12,6 @@ experiment = start(
   workspace="saitama32"
 )
 
-os.environ['KMP_DUPLICATE_LIB_OK'] = 'TRUE'
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
 sys.path.append(project_root)
 import time
