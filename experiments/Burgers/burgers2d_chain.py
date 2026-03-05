@@ -71,11 +71,11 @@ def main():
     parser.add_argument("--out", type=str, default="runs_single")
 
     parser.add_argument("--datapath", type=str, default="ref/burgers2d_0.dat", help="Reference data path")
-parser.add_argument("--icpath-u", type=str, default="ref/burgers2d_init_u_0.dat", help="Initial condition U path")
-parser.add_argument("--icpath-v", type=str, default="ref/burgers2d_init_v_0.dat", help="Initial condition V path")
-parser.add_argument("--nu", type=float, default=0.001, help="Viscosity")
-parser.add_argument("--L", type=float, default=4.0, help="Domain size")
-parser.add_argument("--T", type=float, default=1.0, help="Final time")
+    parser.add_argument("--icpath-u", type=str, default="ref/burgers2d_init_u_0.dat", help="Initial condition U path")
+    parser.add_argument("--icpath-v", type=str, default="ref/burgers2d_init_v_0.dat", help="Initial condition V path")
+    parser.add_argument("--nu", type=float, default=0.001, help="Viscosity")
+    parser.add_argument("--L", type=float, default=4.0, help="Domain size")
+    parser.add_argument("--T", type=float, default=1.0, help="Final time")
 
     args = parser.parse_args()
 
@@ -85,10 +85,10 @@ parser.add_argument("--T", type=float, default=1.0, help="Final time")
 
     pde_kwargs = dict(
         datapath=args.datapath,
-    icpath=(args.icpath_u, args.icpath_v),
-    nu=args.nu,
-    L=args.L,
-    T=args.T
+        icpath=(args.icpath_u, args.icpath_v),
+        nu=args.nu,
+        L=args.L,
+        T=args.T
     )
 
     get_model = build_get_model_burgers2d(args.hidden_layers, **pde_kwargs)

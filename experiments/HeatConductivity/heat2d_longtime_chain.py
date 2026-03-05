@@ -71,9 +71,9 @@ def main():
     parser.add_argument("--out", type=str, default="runs_single")
 
     parser.add_argument("--datapath", type=str, default="ref/heat_longtime.dat", help="Reference data path")
-parser.add_argument("--k", type=float, default=1.0, help="Nonlinearity factor")
-parser.add_argument("--m1", type=int, default=4, help="Source frequency m1")
-parser.add_argument("--m2", type=int, default=2, help="Source frequency m2")
+    parser.add_argument("--k", type=float, default=1.0, help="Nonlinearity factor")
+    parser.add_argument("--m1", type=int, default=4, help="Source frequency m1")
+    parser.add_argument("--m2", type=int, default=2, help="Source frequency m2")
 
     args = parser.parse_args()
 
@@ -83,9 +83,9 @@ parser.add_argument("--m2", type=int, default=2, help="Source frequency m2")
 
     pde_kwargs = dict(
         datapath=args.datapath,
-    k=args.k,
-    m1=args.m1,
-    m2=args.m2
+        k=args.k,
+        m1=args.m1,
+        m2=args.m2
     )
 
     get_model = build_get_model_heat2d_longtime(args.hidden_layers, **pde_kwargs)

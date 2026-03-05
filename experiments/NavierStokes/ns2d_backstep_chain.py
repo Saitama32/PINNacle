@@ -71,7 +71,7 @@ def main():
     parser.add_argument("--out", type=str, default="runs_single")
 
     parser.add_argument("--datapath", type=str, default="ref/ns_0_obstacle.dat", help="Reference data path")
-parser.add_argument("--nu", type=float, default=1e-2, help="Kinematic viscosity")
+    parser.add_argument("--nu", type=float, default=1e-2, help="Kinematic viscosity")
 
     args = parser.parse_args()
 
@@ -81,7 +81,7 @@ parser.add_argument("--nu", type=float, default=1e-2, help="Kinematic viscosity"
 
     pde_kwargs = dict(
         datapath=args.datapath,
-    nu=args.nu
+        nu=args.nu
     )
 
     get_model = build_get_model_ns2d_backstep(args.hidden_layers, **pde_kwargs)

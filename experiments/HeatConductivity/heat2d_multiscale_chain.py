@@ -71,9 +71,9 @@ def main():
     parser.add_argument("--out", type=str, default="runs_single")
 
     parser.add_argument("--pde-coef-x", type=float, default=1 / (500 * np.pi) ** 2, help="PDE coefficient for x diffusion")
-parser.add_argument("--pde-coef-y", type=float, default=1 / (np.pi ** 2), help="PDE coefficient for y diffusion")
-parser.add_argument("--init-coef-x", type=float, default=20 * np.pi, help="Initial condition frequency in x")
-parser.add_argument("--init-coef-y", type=float, default=np.pi, help="Initial condition frequency in y")
+    parser.add_argument("--pde-coef-y", type=float, default=1 / (np.pi ** 2), help="PDE coefficient for y diffusion")
+    parser.add_argument("--init-coef-x", type=float, default=20 * np.pi, help="Initial condition frequency in x")
+    parser.add_argument("--init-coef-y", type=float, default=np.pi, help="Initial condition frequency in y")
 
     args = parser.parse_args()
 
@@ -83,7 +83,7 @@ parser.add_argument("--init-coef-y", type=float, default=np.pi, help="Initial co
 
     pde_kwargs = dict(
         pde_coef=(args.pde_coef_x, args.pde_coef_y),
-    init_coef=(args.init_coef_x, args.init_coef_y)
+        init_coef=(args.init_coef_x, args.init_coef_y)
     )
 
     get_model = build_get_model_heat2d_multiscale(args.hidden_layers, **pde_kwargs)

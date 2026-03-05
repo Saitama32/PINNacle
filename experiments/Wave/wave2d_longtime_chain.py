@@ -71,12 +71,12 @@ def main():
     parser.add_argument("--out", type=str, default="runs_single")
 
     parser.add_argument("--a", type=float, default=float(np.sqrt(2.0)), help="Wave speed anisotropy factor")
-parser.add_argument("--m1", type=int, default=1, help="Frequency m1")
-parser.add_argument("--m2", type=int, default=3, help="Frequency m2")
-parser.add_argument("--n1", type=int, default=1, help="Frequency n1")
-parser.add_argument("--n2", type=int, default=2, help="Frequency n2")
-parser.add_argument("--p1", type=int, default=1, help="Frequency p1")
-parser.add_argument("--p2", type=int, default=1, help="Frequency p2")
+    parser.add_argument("--m1", type=int, default=1, help="Frequency m1")
+    parser.add_argument("--m2", type=int, default=3, help="Frequency m2")
+    parser.add_argument("--n1", type=int, default=1, help="Frequency n1")
+    parser.add_argument("--n2", type=int, default=2, help="Frequency n2")
+    parser.add_argument("--p1", type=int, default=1, help="Frequency p1")
+    parser.add_argument("--p2", type=int, default=1, help="Frequency p2")
 
     args = parser.parse_args()
 
@@ -86,12 +86,12 @@ parser.add_argument("--p2", type=int, default=1, help="Frequency p2")
 
     pde_kwargs = dict(
         a=args.a,
-    m1=args.m1,
-    m2=args.m2,
-    n1=args.n1,
-    n2=args.n2,
-    p1=args.p1,
-    p2=args.p2
+        m1=args.m1,
+        m2=args.m2,
+        n1=args.n1,
+        n2=args.n2,
+        p1=args.p1,
+        p2=args.p2
     )
 
     get_model = build_get_model_wave2d_longtime(args.hidden_layers, **pde_kwargs)

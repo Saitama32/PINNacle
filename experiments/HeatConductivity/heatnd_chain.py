@@ -71,7 +71,7 @@ def main():
     parser.add_argument("--out", type=str, default="runs_single")
 
     parser.add_argument("--dim", type=int, default=5, help="Problem dimensionality")
-parser.add_argument("--time-horizon", type=float, default=1.0, help="Final time T")
+    parser.add_argument("--time-horizon", type=float, default=1.0, help="Final time T")
 
     args = parser.parse_args()
 
@@ -81,7 +81,7 @@ parser.add_argument("--time-horizon", type=float, default=1.0, help="Final time 
 
     pde_kwargs = dict(
         dim=args.dim,
-    T=args.time_horizon
+        T=args.time_horizon
     )
 
     get_model = build_get_model_heatnd(args.hidden_layers, **pde_kwargs)

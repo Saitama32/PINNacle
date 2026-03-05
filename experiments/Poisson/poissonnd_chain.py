@@ -71,7 +71,7 @@ def main():
     parser.add_argument("--out", type=str, default="runs_single")
 
     parser.add_argument("--dim", type=int, default=5, help="Problem dimensionality")
-parser.add_argument("--length", type=float, default=1.0, help="Hypercube side length")
+    parser.add_argument("--length", type=float, default=1.0, help="Hypercube side length")
 
     args = parser.parse_args()
 
@@ -81,7 +81,7 @@ parser.add_argument("--length", type=float, default=1.0, help="Hypercube side le
 
     pde_kwargs = dict(
         dim=args.dim,
-    len=args.length
+        len=args.length
     )
 
     get_model = build_get_model_poissonnd(args.hidden_layers, **pde_kwargs)
