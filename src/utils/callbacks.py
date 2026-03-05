@@ -323,47 +323,47 @@ class TesterCallback(Callback):
         if self.disable:
             return
 
-        self.indexes = np.array(self.indexes)
-        self.frmses = np.array(self.frmses)
+        indexes_arr = np.asarray(self.indexes)
+        frmses_arr = np.asarray(self.frmses)
         np.savetxt(
             self.save_path + 'errors.txt',
-            np.array([self.indexes, self.maes, self.mses, self.mxes, self.bc_mses, self.l1res, self.l2res, self.crmses,\
-                      self.frmses[:, 0], self.frmses[:, 1], self.frmses[:, 2], self.mses_interp, self.bc_mse_interp]).T,
+            np.array([indexes_arr, self.maes, self.mses, self.mxes, self.bc_mses, self.l1res, self.l2res, self.crmses,\
+                      frmses_arr[:, 0], frmses_arr[:, 1], frmses_arr[:, 2], self.mses_interp, self.bc_mse_interp]).T,
             header="epochs, maes, mses, mxes, bnd_mse, l1res, l2res, crmses, frmses(low, mid, high), mses_interp, bc_mse_interp"
         )
 
-        plot.plot_lines([self.indexes, self.maes], xlabel="epochs", labels=['maes'], path=self.save_path + "maes.png", title="mean average error")
-        plot.plot_lines([self.indexes, self.mses], xlabel="epochs", labels=['mses'], path=self.save_path + "mses.png", title="mean square error")
-        plot.plot_lines([self.indexes, self.mxes], xlabel="epochs", labels=['mxes'], path=self.save_path + "mxes.png", title="maximum error")
-        plot.plot_lines([self.indexes, self.ic_mses], xlabel="epochs", labels=['ic_mses'],
+        plot.plot_lines([indexes_arr, self.maes], xlabel="epochs", labels=['maes'], path=self.save_path + "maes.png", title="mean average error")
+        plot.plot_lines([indexes_arr, self.mses], xlabel="epochs", labels=['mses'], path=self.save_path + "mses.png", title="mean square error")
+        plot.plot_lines([indexes_arr, self.mxes], xlabel="epochs", labels=['mxes'], path=self.save_path + "mxes.png", title="maximum error")
+        plot.plot_lines([indexes_arr, self.ic_mses], xlabel="epochs", labels=['ic_mses'],
                 path=self.save_path + "ic_mses.png", title="IC mean square error (ref grid)")
 
-        plot.plot_lines([self.indexes, self.bc_mses], xlabel="epochs", labels=['bc_mses'],
+        plot.plot_lines([indexes_arr, self.bc_mses], xlabel="epochs", labels=['bc_mses'],
                         path=self.save_path + "bc_mses.png", title="BC mean square error (ref grid)")
         
-        plot.plot_lines([self.indexes, self.bc_rmses], xlabel="epochs", labels=['bc_mses'],
+        plot.plot_lines([indexes_arr, self.bc_rmses], xlabel="epochs", labels=['bc_mses'],
                         path=self.save_path + "bc_rmses.png", title="BC root mean square error (ref grid)")
         
-        plot.plot_lines([self.indexes, self.bc_l2res], xlabel="epochs", labels=['bc_mses'],
+        plot.plot_lines([indexes_arr, self.bc_l2res], xlabel="epochs", labels=['bc_mses'],
                         path=self.save_path + "bc_l2res.png", title="BC l2re error (ref grid)")
         
-        plot.plot_lines([self.indexes, self.mses_interp],
+        plot.plot_lines([indexes_arr, self.mses_interp],
                 xlabel="epochs", labels=['mses_interp'],
                 path=self.save_path + "mses_interp.png",
                 title="MSE on train grid (nearest exact)")
 
-        plot.plot_lines([self.indexes, self.bc_mse_interp],
+        plot.plot_lines([indexes_arr, self.bc_mse_interp],
                         xlabel="epochs", labels=['bc_mse_interp'],
                         path=self.save_path + "bc_mse_interp.png",
                         title="BC MSE on train_x_bc (nearest exact)")
         
-        plot.plot_lines([self.indexes, self.l1res, self.l2res],
+        plot.plot_lines([indexes_arr, self.l1res, self.l2res],
                         xlabel="epochs",
                         labels=['l1re', 'l2re'],
                         path=self.save_path + "relerr.png",
                         title="relative error")
-        X = ~np.isnan(self.frmses).any(axis=1)
-        plot.plot_lines([self.indexes[X], self.frmses[X, 0], self.frmses[X, 1], self.frmses[X, 2]], 
+        X = ~np.isnan(frmses_arr).any(axis=1)
+        plot.plot_lines([indexes_arr[X], frmses_arr[X, 0], frmses_arr[X, 1], frmses_arr[X, 2]], 
                         xlabel="epochs", 
                         labels=['low freq', 'mid freq', 'high freq'], 
                         path=self.save_path + "frmses.png", 
