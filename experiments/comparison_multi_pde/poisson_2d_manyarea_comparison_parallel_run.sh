@@ -1,7 +1,7 @@
 #!/bin/bash
-# Automatic launch of burgers_1d_comparison_chain.py with GPU distribution
+# Automatic launch of poisson_2d_manyarea_comparison_chain.py with GPU distribution
 
-SCRIPT="experiments/comparison_multi_pde/burgers_1d_comparison_chain.py"
+SCRIPT="experiments/comparison_multi_pde/poisson_2d_manyarea_comparison_chain.py"
 
 LOG_KEY="true"
 EXP_KEY_1="be01a40b73fc461c8b68d81fab4fb7e6"

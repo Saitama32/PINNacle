@@ -6,7 +6,7 @@ from comet_ml.integration.pytorch import log_model
 
 experiment = start(
   api_key="aP71fQTYPNqfsYWvudPPmoBl5",
-  project_name="rlpinn-multi-pde-poisson-boltzmann-2d-optimization",
+  project_name="rlpinn-multi-pde-poisson-boltzmann-2d-comparison",
   workspace="saitama32"
 )
 
@@ -29,7 +29,7 @@ from rl_trainer import train_process_rl
 experiment.log_parameters({
     "param": "v_1",
     "reward_function": "v_2",
-    "description": "optimization_poisson_boltzmann_2d_basic_RL_optimizer"
+    "description": "comparison_poisson_boltzmann_2d_loaded_dqn_final_eval"
 })
 
 def str2bool(v):
@@ -82,7 +82,7 @@ def build_get_model_poisson_boltzmann2d(hidden_layers: str):
     return get_model
 
 
-def main():
+def main(seed_override=None):
     parser = argparse.ArgumentParser()
     parser.add_argument("--name", type=str, default="poisson_boltzmann2d_rl")
     parser.add_argument("--device", type=str, default="0")  # "cpu" or cuda index
@@ -101,11 +101,14 @@ def main():
     parser.add_argument("--state-w", type=int, default=26)
     parser.add_argument("--n-save-models", type=int, default=10)
     parser.add_argument("--log_key", type=str2bool, nargs="?", const=True, default=False)
+    parser.add_argument("--exp_key", type=str, default="7f7a91cef55d4aeba0e509024977456b")
 
     # куда писать
     parser.add_argument("--out", type=str, default="runs_single")
 
     args = parser.parse_args()
+    if seed_override is not None:
+        args.seed = int(seed_override)
 
     # --- папка эксперимента ---
     date_str = time.strftime("%m.%d-%H.%M.%S", time.localtime())
@@ -243,21 +246,34 @@ def main():
         "exp": experiment,
         "log_key": args.log_key
     }
-    print(args.log_key)
-    # backup_params = {
-    #     "experiment_key" : "b0dae86c42924e4484b8bd194e2d58d9",
-    # }
-    backup_params = None
+    comparison_params = {
+        "seed": args.seed,
+        "total_epochs": 7000,
+        "experiment_key": args.exp_key,
+        "multi_pde_comparison": True,
+    }
 
     experiment.log_parameters(rl_agent_params)
-    # experiment.log_parameters(backup_params)
+    experiment.log_parameters(comparison_params)
     # --- вызов train_process_rl ---
 
     # --- вызов train_process_rl ---
 
-    data = dill.dumps((get_model, train_args, optimizers, AE_model_params, AE_train_params, loss_surface_params))
-    train_process_rl(data=data, save_path=save_path, device=0, seed=args.seed, rl_agent_params=rl_agent_params)
+    data = dill.dumps((get_model, train_args, optimizers, AE_model_params, AE_train_params, loss_surface_params, comparison_params))
+    train_process_rl(
+        data=data,
+        save_path=save_path,
+        device=0,
+        seed=args.seed,
+        rl_agent_params=rl_agent_params,
+        comparison_params=comparison_params,
+    )
 
 if __name__ == "__main__":
-    main()
+    # список сидов для экспериментов
+    seeds = [123, 234, 345, 456, 567, 678, 789, 890, 901, 1012]   # можно расширить список
+
+    for seed in seeds:
+        print(f"\n🔹 Запуск эксперимента с seed = {seed}")
+        main(seed_override=seed)
 
