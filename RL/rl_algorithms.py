@@ -430,7 +430,9 @@ class DQNAgent:
 
             # --- апдейт приоритетов PER ---
             with torch.no_grad():
-                new_priors = td_opt_abs + torch.tensor(td_param_items, device=self.device)
+                td_param_abs = torch.as_tensor(td_param_items, dtype=torch.float, device=self.device)
+                td_param_abs = td_param_abs * tr_keep + self.tr_eps
+                new_priors = td_opt_abs + td_param_abs
             self.replay_buffer.update_priorities(idxs, new_priors.cpu())
 
             if self.warmup_active:

@@ -35,7 +35,8 @@ def recalc_all_priorities_batched(agent, batch_size: int = 32):
         state  = torch.stack([agent._stack_state(tr.state)      for tr in transitions]).to(dev)   # (b,2,26,26)
         nstate = torch.stack([agent._stack_state(tr.next_state) for tr in transitions]).to(dev)
         reward = torch.tensor([float(tr.reward) for tr in transitions], dtype=torch.float, device=dev)
-        done   = torch.tensor([float(tr.done)   for tr in transitions], dtype=torch.float, device=dev)
+        # Terminal flag: both done==1 and done==-1 must stop bootstrap.
+        done   = torch.tensor([1.0 if int(tr.done) != 0 else 0.0 for tr in transitions], dtype=torch.float, device=dev)
         a_optim = torch.tensor([int(tr.action[0]) for tr in transitions], dtype=torch.long, device=dev)
         opt_names = [agent.i2opt[int(i.item())] for i in a_optim]
         return state, nstate, reward, done, a_optim, opt_names
@@ -76,8 +77,9 @@ def recalc_all_priorities_batched(agent, batch_size: int = 32):
 
         new_p_chunk = (td_opt + td_param + buf.eps).detach().cpu().tolist()
         new_priors.extend(new_p_chunk)
+        idxs_chunk = torch.arange(start, end, dtype=torch.long)
+        buf.update_priorities(idxs_chunk, torch.tensor(new_p_chunk, dtype=torch.float))
 
-    buf.prior = new_priors
     print(f"✅ Recalculated priorities for {N} transitions. "
           f"mean={float(torch.tensor(new_priors).mean()):.4f}, "
           f"min={min(new_priors):.4f}, max={max(new_priors):.4f}")
