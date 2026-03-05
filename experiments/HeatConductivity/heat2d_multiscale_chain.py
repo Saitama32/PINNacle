@@ -2,19 +2,7 @@ import os
 os.environ["DDEBACKEND"] = "pytorch"
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 import sys
-import time
-import argparse
-import dill
-import numpy as np
-import torch
-import deepxde as dde
-
 from comet_ml import start
-from src.pde.heat import Heat2D_Multiscale
-from src.utils.args import parse_hidden_layers
-from src.utils.callbacks import TesterCallback, PlotCallback, LossCallback
-from rl_trainer import train_process_rl
-
 
 experiment = start(
     api_key="aP71fQTYPNqfsYWvudPPmoBl5",
@@ -24,6 +12,23 @@ experiment = start(
 
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 sys.path.append(project_root)
+import time
+import argparse
+import dill
+import numpy as np
+import torch
+import deepxde as dde
+
+from src.pde.heat import Heat2D_Multiscale
+from src.utils.args import parse_hidden_layers
+from src.utils.callbacks import TesterCallback, PlotCallback, LossCallback
+from rl_trainer import train_process_rl
+
+
+dde.config.set_default_float("float32")
+torch.set_default_dtype(torch.float32)
+
+
 
 experiment.log_parameters({
     "param": "v_1",
