@@ -152,7 +152,7 @@ class TesterCallback(Callback):
             else:
                 sample_func = self.model.data.geom.uniform_points
             
-            self.test_x = sample_func(sample_points, boundary=True)
+            self.test_x = sample_func(sample_points, boundary=False)
             self.test_y = pde.ref_sol(self.test_x)
         elif pde.ref_data is not None:
             nan_mask = np.isnan(pde.ref_data).any(axis=1)
