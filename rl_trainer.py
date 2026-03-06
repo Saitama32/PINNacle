@@ -365,14 +365,14 @@ def run_deepxde_rl_training(
         if done == 1:
             idx_traj += 1
 
-        if final_eval_mode and tester_callback is not None and hasattr(tester_callback, "get_best_metrics"):
-            best_metrics = tester_callback.get_best_metrics()
-            if best_metrics:
-                print(f"Best metrics collected over comparison run: {best_metrics}")
-                exp = rl_agent_params.get("exp")
-                if exp is not None:
-                    metric_step = comparison_params.get("seed", idx_traj) if comparison_params else idx_traj
-                    exp.log_metrics(best_metrics, step=metric_step)
+    if final_eval_mode and tester_callback is not None and hasattr(tester_callback, "get_best_metrics"):
+        best_metrics = tester_callback.get_best_metrics()
+        if best_metrics:
+            print(f"Best metrics collected over comparison run: {best_metrics}")
+            exp = rl_agent_params.get("exp")
+            if exp is not None:
+                metric_step = comparison_params.get("seed", idx_traj) if comparison_params else idx_traj
+                exp.log_metrics(best_metrics, step=metric_step)
 
 
 def train_process_rl(data, save_path, device, seed, rl_agent_params, comparison_params: Optional[Dict[str, Any]] = None):
