@@ -4,8 +4,8 @@
 SCRIPT="experiments/comparison_multi_pde/wave_1d_comparison_chain.py"
 
 LOG_KEY="true"
-EXP_KEY_1="6c88f01c57bb460bb708097905692d84"
-EXP_KEY_2="3d248155bd6e4c5e9e291add11194feb"
+EXP_KEY_1="45645fa00b924508ac43c22a3b505b62"
+EXP_KEY_2="7fc6926108a54c64b0a6c02e867509bb"
 
 # Detect available GPUs
 NUM_GPUS=$(nvidia-smi --query-gpu=name --format=csv,noheader | wc -l)
