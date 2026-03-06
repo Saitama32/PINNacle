@@ -1,4 +1,4 @@
-import os
+﻿import os
 import sys
 import time
 import json
@@ -183,8 +183,12 @@ def run_deepxde_rl_training(
         rl_agent.reinit_target()
 
     idx_traj = 0
+    optimizer_epoch = 0
+    comparison_budget_exhausted = False
 
     for traj in range(train_args["n_trajectories"]):
+        if comparison_budget_exhausted:
+            break
         # реинициализация сети на новую траекторию
         if hasattr(model.net, "apply"):
             model.net.apply(reinit_torch_weights)
@@ -201,9 +205,6 @@ def run_deepxde_rl_training(
         print('\n############################################################################' +
         f'\nStarting trajectory {idx_traj + 1}/{rl_agent_params["n_trajectories"]} ' +
         'with a new initial point.')
-
-
-        optimizer_epoch = 0
         done = 0
 
         for t in itertools.count():
@@ -211,6 +212,7 @@ def run_deepxde_rl_training(
                 break
             if comparison_total_epochs is not None and comparison_total_epochs - optimizer_epoch <= 0:
                 print(f"Comparison epoch budget reached: {optimizer_epoch}/{comparison_total_epochs}")
+                comparison_budget_exhausted = True
                 break
 
             # --- agent action ---
@@ -236,6 +238,7 @@ def run_deepxde_rl_training(
             if comparison_total_epochs is not None:
                 chunk_iters = min(chunk_iters, comparison_total_epochs - optimizer_epoch)
                 if chunk_iters <= 0:
+                    comparison_budget_exhausted = True
                     break
             torch_opt = _build_torch_optimizer(action["type"], model.net.parameters(), action)
 
@@ -354,6 +357,10 @@ def run_deepxde_rl_training(
             elif done == -1:
                 rl_penalty = 0
                 break
+
+        if comparison_budget_exhausted:
+            print("Stopping comparison run: global epoch budget exhausted.")
+            break
 
         if done == 1:
             idx_traj += 1
