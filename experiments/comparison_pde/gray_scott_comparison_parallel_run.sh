@@ -1,7 +1,7 @@
 #!/bin/bash
 # Automatic launch of gray_scott_comparison_chain.py with GPU distribution
 
-SCRIPT="experiments/comparison_multi_pde/gray_scott_comparison_chain.py"
+SCRIPT="experiments/comparison_pde/gray_scott_comparison_chain.py"
 
 LOG_KEY="true"
 # Replace these with experiment keys of the trained Gray-Scott RL agent you want to compare.
