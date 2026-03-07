@@ -6,7 +6,7 @@ from comet_ml.integration.pytorch import log_model
 
 experiment = start(
   api_key="aP71fQTYPNqfsYWvudPPmoBl5",
-  project_name="rlpinn-multi-pde-burgers-comparison",
+  project_name="rlpinn-burgers-comparison",
   workspace="saitama32"
 )
 
