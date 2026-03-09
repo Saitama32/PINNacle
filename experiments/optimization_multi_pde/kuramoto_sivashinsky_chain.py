@@ -228,6 +228,7 @@ def main():
         "n_trajectories": 1000,
         "tolerance": 1.67, 
         "prev_tol": 0,
+        "use_tol": False,
         "stuck_threshold": 10,  # Число эпох без значительного изменения прогресса
         "min_loss_change": 1e-7,
         "min_grad_norm": 1e-5,

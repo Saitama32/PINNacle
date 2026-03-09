@@ -55,7 +55,7 @@ def is_crashed(exp):
 
 
 # === Основная функция ===
-def collect_all_comet_transitions(replay_buffer=None, max_exps_last=10, duration_grater_hours = 1, save_dir=None, tolerance = 0.0, prev_tol=0.0, use_log_state=False, proj_name=None, mark_states=None) -> PrioritizedReplayBuffer:
+def collect_all_comet_transitions(replay_buffer=None, max_exps_last=10, duration_grater_hours = 1, save_dir=None, tolerance = 0.0, prev_tol=0.0, use_tol=True,  use_log_state=False, proj_name=None, mark_states=None) -> PrioritizedReplayBuffer:
     """Собирает все переходы из не-crashed экспериментов проекта и возвращает заполненный PrioritizedReplayBuffer."""
     print("🔍 Получаем эксперименты из Comet...")
     if proj_name is not None:
@@ -71,17 +71,21 @@ def collect_all_comet_transitions(replay_buffer=None, max_exps_last=10, duration
     # experiments_sorted = [api.get_experiment(workspace=WORKSPACE, project_name=PROJECT_NAME, experiment='751c7ca595dd4dafb22a0cfe61c26b6f')]
 
     experiments_sorted_duration = experiments_sorted_duration[:max_exps_last]
-    if prev_tol>0.0:
+    if prev_tol > 0.0 and use_tol:
 
         experiments_sorted_tol = [
             exp for exp in experiments_sorted_duration 
             if float(get_param_value(exp, "tolerance", 0.0)) >= prev_tol
         ]
-    else:
+    elif prev_tol == 0 and use_tol:
         experiments_sorted_tol = [
             exp for exp in experiments_sorted_duration 
             if float(get_param_value(exp, "tolerance", 0.0)) >= tolerance
         ]
+    else:
+        experiments_sorted_tol = experiments_sorted_duration 
+
+
 
     print(f"✅ Найдено {len(experiments_sorted_tol)} активных экспериментов для загрузки буферов.\n")
 
