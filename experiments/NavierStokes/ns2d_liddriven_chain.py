@@ -29,7 +29,7 @@ from rl_trainer import train_process_rl
 experiment.log_parameters({
     "param": "v_1",
     "reward_function": "v_2",
-    "description": "farm_transitions_grayscott_basic_RL_optimizer"
+    "description": "tolerance_ns2d_liddriven_basic_RL_optimizer"
 })
 
 def build_get_model_ns2d_liddriven(hidden_layers: str, datapath: str, a: float, nu: float):
