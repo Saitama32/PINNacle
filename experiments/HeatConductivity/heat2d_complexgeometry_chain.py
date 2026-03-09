@@ -1,17 +1,18 @@
-# run_heat2d_varyingcoef_rl.py
-import os, sys
+import os
 os.environ["DDEBACKEND"] = "pytorch"
+os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
+import sys
 from comet_ml import start
 from comet_ml.integration.pytorch import log_model
 
 experiment = start(
   api_key="aP71fQTYPNqfsYWvudPPmoBl5",
-  project_name="rlpinn_heat_2d_vc_optimization",
+  project_name="rlpinn_heat_2d_cg_optimization",
   workspace="saitama32"
 )
 
-os.environ['KMP_DUPLICATE_LIB_OK'] = 'TRUE'
-project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 sys.path.append(project_root)
 import time
 import argparse
@@ -20,23 +21,22 @@ import numpy as np
 import torch
 import deepxde as dde
 
-from src.pde.heat import Heat2D_VaryingCoef
+from src.pde.heat import Heat2D_ComplexGeometry
 from src.utils.args import parse_hidden_layers
 from src.utils.callbacks import TesterCallback, PlotCallback, LossCallback
 from rl_trainer import train_process_rl
 
-dde.config.set_default_float("float32")
-torch.set_default_dtype(torch.float32)
 
 experiment.log_parameters({
     "param": "v_1",
     "reward_function": "v_2",
-    "description": "farm_transitions_grayscott_basic_RL_optimizer"
+    "description": "farm_transitions_heat2d_complexgeometry_rl_optimizer",
 })
 
-def build_get_model_heat2d_varyingcoef(hidden_layers: str):
+
+def build_get_model_heat2d_complexgeometry(hidden_layers: str, **pde_kwargs):
     def get_model():
-        pde = Heat2D_VaryingCoef()
+        pde = Heat2D_ComplexGeometry(**pde_kwargs)
 
         layers = [pde.input_dim] + parse_hidden_layers(argparse.Namespace(hidden_layers=hidden_layers)) + [pde.output_dim]
         net = dde.nn.FNN(layers, "tanh", "Glorot normal")
@@ -60,19 +60,18 @@ def build_get_model_heat2d_varyingcoef(hidden_layers: str):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--name", type=str, default="heat2d_varyingcoef_rl")
+    parser.add_argument("--name", type=str, default="heat2d_complexgeometry_rl")
     parser.add_argument("--device", type=str, default="0")
     parser.add_argument("--seed", type=int, default=1234)
-
     parser.add_argument("--hidden-layers", type=str, default="100*5")
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--log-every", type=int, default=100)
     parser.add_argument("--plot-every", type=int, default=2000)
-
     parser.add_argument("--n-trajectories", type=int, default=1000)
     parser.add_argument("--n-save-models", type=int, default=10)
-
     parser.add_argument("--out", type=str, default="runs_single")
+
+    parser.add_argument("--datapath", type=str, default="ref/heat_complex.dat", help="Reference data path")
 
     args = parser.parse_args()
 
@@ -80,8 +79,12 @@ def main():
     save_path = os.path.join(args.out, f"{date_str}-{args.name}")
     os.makedirs(save_path, exist_ok=True)
 
-    get_model = build_get_model_heat2d_varyingcoef(args.hidden_layers)
-    get_model_rec = build_get_model_heat2d_varyingcoef(args.hidden_layers)
+    pde_kwargs = dict(
+        datapath=args.datapath
+    )
+
+    get_model = build_get_model_heat2d_complexgeometry(args.hidden_layers, **pde_kwargs)
+    get_model_rec = build_get_model_heat2d_complexgeometry(args.hidden_layers, **pde_kwargs)
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -100,18 +103,9 @@ def main():
     }
 
     optimizers = {
-        'Adam':{
-            'lr':[1e-2, 1e-3, 1e-4],
-            'epochs':[100, 1000, 2500]
-        },
-        'LBFGS':{
-            'lr':[1, 5e-1, 1e-1],
-            'epochs':[100, 500, 1000]
-        },
-        'PSO':{
-            'lr':[0.0, 1e-3, 1e-4],
-            'epochs':[100, 200, 300]
-        },
+        "Adam": {"lr": [1e-2, 1e-3, 1e-4], "epochs": [100, 1000, 2500]},
+        "LBFGS": {"lr": [1, 5e-1, 1e-1], "epochs": [100, 500, 1000]},
+        "PSO": {"lr": [0.0, 1e-3, 1e-4], "epochs": [100, 200, 300]},
     }
 
     AE_model_params = {
@@ -181,7 +175,7 @@ def main():
     rl_agent_params = {
         "n_save_models": args.n_save_models,
         "n_trajectories": args.n_trajectories,
-        "tolerance": 0.0585015359142309,
+        "tolerance": 0.0455133201723103,
         "use_tol": True,
         "prev_tol": 0.0,
         "stuck_threshold": 10,
@@ -199,20 +193,13 @@ def main():
         "lr": 1e-3,
         "exp": experiment,
         "log_key": True,
-        "proj_name": "rlpinn-heat-2d-vc-farm-transitions"
+        "proj_name": "rlpinn-heat-2d-cg-farm-trans"
     }
 
-        # backup_params = {
-    #     "experiment_key" : "b0dae86c42924e4484b8bd194e2d58d9",
-    # }
-    backup_params = None
-
     experiment.log_parameters(rl_agent_params)
-    # experiment.log_parameters(backup_params)
-    # --- вызов train_process_rl ---
 
     data = dill.dumps((get_model, train_args, optimizers, AE_model_params, AE_train_params, loss_surface_params))
-    train_process_rl(data=data, save_path=save_path, device=0, seed=args.seed, rl_agent_params=rl_agent_params)
+    train_process_rl(data=data, save_path=save_path, device=args.device, seed=args.seed, rl_agent_params=rl_agent_params)
 
 
 if __name__ == "__main__":
