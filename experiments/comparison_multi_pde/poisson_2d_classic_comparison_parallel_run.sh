@@ -4,8 +4,8 @@
 SCRIPT="experiments/comparison_multi_pde/poisson_2d_classic_comparison_chain.py"
 
 LOG_KEY="false"
-EXP_KEY_1="0d1b194e9cd54087986ce2a4a1dba1f1"
-EXP_KEY_2="0d1b194e9cd54087986ce2a4a1dba1f1"
+EXP_KEY_1="81f46702639449c3aa3e741c6ffdc29d"
+EXP_KEY_2="11480c89a15f4d19ab5c565cf2036e04"
 
 # Detect available GPUs
 NUM_GPUS=$(nvidia-smi --query-gpu=name --format=csv,noheader | wc -l)
