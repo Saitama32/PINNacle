@@ -3,7 +3,7 @@
 
 SCRIPT="experiments/comparison_multi_pde/poisson_2d_classic_comparison_chain.py"
 
-LOG_KEY="false"
+LOG_KEY="true"
 EXP_KEY_1="81f46702639449c3aa3e741c6ffdc29d"
 EXP_KEY_2="11480c89a15f4d19ab5c565cf2036e04"
 

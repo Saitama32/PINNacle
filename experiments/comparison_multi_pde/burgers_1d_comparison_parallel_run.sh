@@ -3,7 +3,7 @@
 
 SCRIPT="experiments/comparison_multi_pde/burgers_1d_comparison_chain.py"
 
-LOG_KEY="false"
+LOG_KEY="true"
 EXP_KEY_1="be1d358aa22c4aad9a145385c81ab5ac"
 EXP_KEY_2="d1d048b958ee48b99eca7f5c88951305"
 

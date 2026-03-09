@@ -3,7 +3,7 @@
 
 SCRIPT="experiments/comparison_multi_pde/wave_1d_comparison_chain.py"
 
-LOG_KEY="False"
+LOG_KEY="true"
 EXP_KEY_1="bf9a419c744349cea25f003f0d459524"
 EXP_KEY_2="8b6f330060da45e0a06b6606cf2a6fd8"
 
