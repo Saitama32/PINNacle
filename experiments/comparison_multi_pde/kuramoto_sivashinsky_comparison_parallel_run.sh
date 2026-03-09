@@ -4,8 +4,8 @@
 SCRIPT="experiments/comparison_multi_pde/kuramoto_sivashinsky_comparison_chain.py"
 
 LOG_KEY="true"
-EXP_KEY_1="0fa8832ce3294dcca9ec009838de23af"
-EXP_KEY_2="013de9060b884e2b874468ba7cd88245"
+EXP_KEY_1="562978c095e445278197642e144bc1e6"
+EXP_KEY_2="61b9ec1399924b0bae46ae4b14643135"
 
 # Detect available GPUs
 NUM_GPUS=$(nvidia-smi --query-gpu=name --format=csv,noheader | wc -l)

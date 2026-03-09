@@ -4,8 +4,8 @@
 SCRIPT="experiments/comparison_multi_pde/burgers_1d_comparison_chain.py"
 
 LOG_KEY="true"
-EXP_KEY_1="be1d358aa22c4aad9a145385c81ab5ac"
-EXP_KEY_2="d1d048b958ee48b99eca7f5c88951305"
+EXP_KEY_1="bf21e8f2a1a449e0bf17cc590c9c7c73"
+EXP_KEY_2="d1b6cd2c5d4348be869513c373a424e2"
 
 # Detect available GPUs
 NUM_GPUS=$(nvidia-smi --query-gpu=name --format=csv,noheader | wc -l)
