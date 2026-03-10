@@ -3,7 +3,7 @@ import sys
 from comet_ml import start
 experiment = start(
     api_key="aP71fQTYPNqfsYWvudPPmoBl5",
-    project_name="rlpinn_wave2d_heterogeneous_tolerance",
+    project_name="rlpinn_wave2d_heterogeneous_farm_transitions",
     workspace="saitama32",
 )
 os.environ["DDEBACKEND"] = "pytorch"

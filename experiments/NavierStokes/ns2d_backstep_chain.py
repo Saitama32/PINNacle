@@ -19,7 +19,7 @@ from rl_trainer import train_process_rl
 
 experiment = start(
     api_key="aP71fQTYPNqfsYWvudPPmoBl5",
-    project_name="rlpinn_ns2d_backstep_tolerance",
+    project_name="rlpinn_ns2d_backstep_farm_transitions",
     workspace="saitama32",
 )
 

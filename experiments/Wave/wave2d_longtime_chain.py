@@ -19,7 +19,7 @@ from rl_trainer import train_process_rl
 
 experiment = start(
     api_key="aP71fQTYPNqfsYWvudPPmoBl5",
-    project_name="rlpinn_wave2d_longtime_tolerance",
+    project_name="rlpinn_wave2d_longtime_farm_transitions",
     workspace="saitama32",
 )
 

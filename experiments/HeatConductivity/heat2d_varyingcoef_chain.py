@@ -31,7 +31,7 @@ torch.set_default_dtype(torch.float32)
 experiment.log_parameters({
     "param": "v_1",
     "reward_function": "v_2",
-    "description": "farm_transitions_grayscott_basic_RL_optimizer"
+    "description": "farm_transitions_heat2d_varyingcoef_rl_optimizer"
 })
 
 def build_get_model_heat2d_varyingcoef(hidden_layers: str):
