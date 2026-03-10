@@ -1,11 +1,11 @@
 #!/bin/bash
-# Автоматический запуск poisson_2d_cg_chain.py с распределением по GPU
+# Auto-run RL chain and distribute jobs across available GPUs.
 
-SCRIPT="experiments/HeatConductivity/heat2d_varyingcoef_chain.py"
+SCRIPT="experiments/HeatConductivity/heat2d_complexgeometry_chain.py"
 
 LOG_KEY="true"
-EXP_KEY_1="a0b7111029c2420eaf73ec026188ca3d"
-EXP_KEY_2="90c368a552074ba1aa8eabbc90978d86"
+EXP_KEY_1="b10a9e8a852e4cb18c73169bfb52108c"
+EXP_KEY_2="6fd9f61526f3425a9abd47c04024554e"
 
 # Detect available GPUs
 NUM_GPUS=$(nvidia-smi --query-gpu=name --format=csv,noheader | wc -l)
