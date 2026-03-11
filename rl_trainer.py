@@ -349,21 +349,21 @@ def run_deepxde_rl_training(
             # callbacks.callbacks[1].save_every = self.t
             # env.render()
 
-            if done == 1:
-                break
-            elif done == 0:
-                if t == 10:
-                    rl_penalty = -1 
-            elif done == -1:
-                rl_penalty = 0
-                break
+            # if done == 1:
+            #     break
+            # elif done == 0:
+            #     if t == 10:
+            #         rl_penalty = -1 
+            # elif done == -1:
+            #     rl_penalty = 0
+            #     break
 
         if comparison_budget_exhausted:
             print("Stopping comparison run: global epoch budget exhausted.")
             break
 
-        if done == 1:
-            idx_traj += 1
+        # if done == 1:
+        #     idx_traj += 1
 
     if final_eval_mode and tester_callback is not None and hasattr(tester_callback, "get_best_metrics"):
         best_metrics = tester_callback.get_best_metrics()
