@@ -22,7 +22,7 @@ import tempfile
 
 
 GAMMA = 0.95
-EPS_START = 0.5
+EPS_START = 0.05
 EPS_END = 0.05
 EPS_DECAY = 100
 TAU = 0.01
@@ -670,8 +670,12 @@ class DQNAgent:
         state_tensor = state_tensor.unsqueeze(0)
 
         # eps-greedy
-        sample = 1.0 if force_greedy else random.random()
-        eps_threshold = 0.0 if force_greedy else EPS_END + (EPS_START - EPS_END) * math.exp(-1. * self.steps_done / EPS_DECAY)
+        # sample = 1.0 if force_greedy else random.random()
+        # eps_threshold = 0.0 if force_greedy else EPS_END + (EPS_START - EPS_END) * math.exp(-1. * self.steps_done / EPS_DECAY)
+        # self.steps_done += 1
+
+        sample = random.random()
+        eps_threshold = EPS_END + (EPS_START - EPS_END) * math.exp(-1. * self.steps_done / EPS_DECAY)
         self.steps_done += 1
 
         if (not force_greedy) and self.steps_done < self.slot_bootstrap_steps:
