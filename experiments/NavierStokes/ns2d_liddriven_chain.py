@@ -201,7 +201,7 @@ def main():
         "lr": 1e-3,
         "exp": experiment,
         "log_key": True,
-        "proj_name": "rlpinn_ns2d_liddriven_farm_transitions"
+        "proj_name": "rlpinn-ns2d-liddriven-farm-transitions"
     }
     
     # backup_params = {
