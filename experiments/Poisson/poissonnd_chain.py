@@ -1,13 +1,14 @@
 # run_ns2d_liddriven_rl.py
 import os, sys
 os.environ["DDEBACKEND"] = "pytorch"
+os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 
 from comet_ml import start
 from comet_ml.integration.pytorch import log_model
 
 experiment = start(
   api_key="aP71fQTYPNqfsYWvudPPmoBl5",
-  project_name="rlpinn_ns2d_liddriven_optimization",
+  project_name="rlpinn_poissonnd_optimization",
   workspace="saitama32"
 )
 
@@ -18,23 +19,28 @@ import time
 import argparse
 import dill
 import numpy as np
+
+
 import torch
 import deepxde as dde
 
-from src.pde.ns import NS2D_LidDriven
+from src.pde.poisson import PoissonND
 from src.utils.args import parse_hidden_layers
 from src.utils.callbacks import TesterCallback, PlotCallback, LossCallback
 from rl_trainer import train_process_rl
 
+
+
 experiment.log_parameters({
     "param": "v_1",
     "reward_function": "v_2",
-    "description": "optimization_ns2d_liddriven_rl_optimizer"
+    "description": "optimization_poissonnd_rl_optimizer",
 })
 
-def build_get_model_ns2d_liddriven(hidden_layers: str, datapath: str, a: float, nu: float):
+
+def build_get_model_poissonnd(hidden_layers: str, **pde_kwargs):
     def get_model():
-        pde = NS2D_LidDriven(datapath=datapath, a=a, nu=nu)
+        pde = PoissonND(**pde_kwargs)
 
         layers = [pde.input_dim] + parse_hidden_layers(argparse.Namespace(hidden_layers=hidden_layers)) + [pde.output_dim]
         net = dde.nn.FNN(layers, "tanh", "Glorot normal")
@@ -58,23 +64,19 @@ def build_get_model_ns2d_liddriven(hidden_layers: str, datapath: str, a: float, 
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--name", type=str, default="ns2d_liddriven_rl")
+    parser.add_argument("--name", type=str, default="poissonnd_rl")
     parser.add_argument("--device", type=str, default="0")
     parser.add_argument("--seed", type=int, default=1234)
-
-    parser.add_argument("--datapath", type=str, default="ref/lid_driven_a4.dat")
-    parser.add_argument("--a", type=float, default=4.0)
-    parser.add_argument("--nu", type=float, default=1e-2)
-
     parser.add_argument("--hidden-layers", type=str, default="100*5")
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--log-every", type=int, default=100)
     parser.add_argument("--plot-every", type=int, default=2000)
-
     parser.add_argument("--n-trajectories", type=int, default=1000)
     parser.add_argument("--n-save-models", type=int, default=10)
-
     parser.add_argument("--out", type=str, default="runs_single")
+
+    parser.add_argument("--dim", type=int, default=5, help="Problem dimensionality")
+    parser.add_argument("--length", type=float, default=1.0, help="Hypercube side length")
 
     args = parser.parse_args()
 
@@ -82,8 +84,13 @@ def main():
     save_path = os.path.join(args.out, f"{date_str}-{args.name}")
     os.makedirs(save_path, exist_ok=True)
 
-    get_model = build_get_model_ns2d_liddriven(args.hidden_layers, args.datapath, args.a, args.nu)
-    get_model_rec = build_get_model_ns2d_liddriven(args.hidden_layers, args.datapath, args.a, args.nu)
+    pde_kwargs = dict(
+        dim=args.dim,
+        len=args.length
+    )
+
+    get_model = build_get_model_poissonnd(args.hidden_layers, **pde_kwargs)
+    get_model_rec = build_get_model_poissonnd(args.hidden_layers, **pde_kwargs)
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -102,18 +109,9 @@ def main():
     }
 
     optimizers = {
-        "Adam": {
-            "lr": [1e-2, 1e-3, 1e-4],
-            "epochs": [100, 1000, 2500],
-        },
-        "LBFGS": {
-            "lr": [1, 5e-1, 1e-1],
-            "epochs": [100, 500, 1000],
-        },
-        "PSO": {
-            "lr": [0.0, 1e-3, 1e-4],
-            "epochs": [100, 200, 300],
-        },
+        "Adam": {"lr": [1e-2, 1e-3, 1e-4], "epochs": [100, 1000, 2500]},
+        "LBFGS": {"lr": [1, 5e-1, 1e-1], "epochs": [100, 500, 1000]},
+        "PSO": {"lr": [0.0, 1e-3, 1e-4], "epochs": [100, 200, 300]},
     }
 
     AE_model_params = {
@@ -183,7 +181,7 @@ def main():
     rl_agent_params = {
         "n_save_models": args.n_save_models,
         "n_trajectories": args.n_trajectories,
-        "tolerance": 0.00898298574611544,
+        "tolerance": 0.000433647801401093,
         "use_tol": True,
         "prev_tol": 0.0,
         "stuck_threshold": 10,
@@ -201,17 +199,10 @@ def main():
         "lr": 1e-3,
         "exp": experiment,
         "log_key": True,
-        "proj_name": "rlpinn_ns2d_liddriven_farm_transitions"
+        "proj_name": "rlpinn-poissonnd-farm-transitions"
     }
-    
-    # backup_params = {
-    #     "experiment_key" : "b0dae86c42924e4484b8bd194e2d58d9",
-    # }
-    backup_params = None
 
     experiment.log_parameters(rl_agent_params)
-    # experiment.log_parameters(backup_params)
-    # --- вызов train_process_rl ---
 
     data = dill.dumps((get_model, train_args, optimizers, AE_model_params, AE_train_params, loss_surface_params))
     train_process_rl(data=data, save_path=save_path, device=args.device, seed=args.seed, rl_agent_params=rl_agent_params)
