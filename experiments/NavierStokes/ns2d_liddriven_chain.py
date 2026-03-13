@@ -7,7 +7,7 @@ from comet_ml.integration.pytorch import log_model
 
 experiment = start(
   api_key="aP71fQTYPNqfsYWvudPPmoBl5",
-  project_name="rlpinn_ns2d_liddriven_farm_transitions",
+  project_name="rlpinn_ns2d_liddriven_comparison",
   workspace="saitama32"
 )
 
@@ -29,8 +29,18 @@ from rl_trainer import train_process_rl
 experiment.log_parameters({
     "param": "v_1",
     "reward_function": "v_2",
-    "description": "farm_transitions_grayscott_basic_RL_optimizer"
+    "description": "comparison_ns2d_liddriven_rl_optimizer"
 })
+
+def str2bool(v):
+    if isinstance(v, bool):
+        return v
+    val = str(v).strip().lower()
+    if val in {"true", "True", "1", "yes", "y", "on"}:
+        return True
+    if val in {"false", "False","0", "no", "n", "off"}:
+        return False
+    raise argparse.ArgumentTypeError(f"Invalid boolean value: {v}")
 
 def build_get_model_ns2d_liddriven(hidden_layers: str, datapath: str, a: float, nu: float):
     def get_model():
@@ -43,7 +53,7 @@ def build_get_model_ns2d_liddriven(hidden_layers: str, datapath: str, a: float, 
         loss_weights = np.ones(pde.num_loss, dtype=float)
         for i, c in enumerate(pde.loss_config):
             t = c.get("type", "")
-            if t in ("boundary", "initial"):
+            if t in ("boundary", "initial", "ic"):
                 loss_weights[i] = 100.0
             elif t == "pde":
                 loss_weights[i] = 1.0
@@ -62,18 +72,23 @@ def main():
     parser.add_argument("--device", type=str, default="0")
     parser.add_argument("--seed", type=int, default=1234)
 
-    parser.add_argument("--datapath", type=str, default="ref/lid_driven_a4.dat")
-    parser.add_argument("--a", type=float, default=4.0)
-    parser.add_argument("--nu", type=float, default=1e-2)
-
     parser.add_argument("--hidden-layers", type=str, default="100*5")
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--log-every", type=int, default=100)
     parser.add_argument("--plot-every", type=int, default=2000)
 
-    parser.add_argument("--n-trajectories", type=int, default=1000)
+    # RL config
+    parser.add_argument("--n-trajectories", type=int, default=100)
+    parser.add_argument("--n-steps-max", type=int, default=1000)
+    parser.add_argument("--state-h", type=int, default=26)
+    parser.add_argument("--state-w", type=int, default=26)
     parser.add_argument("--n-save-models", type=int, default=10)
+    parser.add_argument("--log_key", type=str2bool, nargs="?", const=True, default=False)
+    parser.add_argument("--exp_key", type=str, default="7f7a91cef55d4aeba0e509024977456b")
 
+    parser.add_argument("--datapath", type=str, default="ref/lid_driven_a4.dat")
+    parser.add_argument("--a", type=float, default=4.0)
+    parser.add_argument("--nu", type=float, default=1e-2)
     parser.add_argument("--out", type=str, default="runs_single")
 
     args = parser.parse_args()
@@ -152,7 +167,7 @@ def main():
         "learning_rate": 5e-4,
         "resume": True,
         "finetune_AE_model": False,
-        "log_key": True,
+        "log_key": args.log_key,
     }
 
     loss_surface_params = {
@@ -183,7 +198,7 @@ def main():
     rl_agent_params = {
         "n_save_models": args.n_save_models,
         "n_trajectories": args.n_trajectories,
-        "tolerance": 0,
+        "tolerance": 0.00898298574611544,
         "stuck_threshold": 10,
         "min_loss_change": 1e-7,
         "min_grad_norm": 1e-5,
@@ -198,20 +213,31 @@ def main():
         "agent_update_iters": 5,
         "lr": 1e-3,
         "exp": experiment,
+        "log_key": args.log_key
     }
     
-    # backup_params = {
-    #     "experiment_key" : "b0dae86c42924e4484b8bd194e2d58d9",
-    # }
-    backup_params = None
+    comparison_params = {
+        "seed": args.seed,
+        "total_epochs": 7000,
+        "experiment_key": args.exp_key,
+    }
 
     experiment.log_parameters(rl_agent_params)
-    # experiment.log_parameters(backup_params)
+    experiment.log_parameters(comparison_params)
     # --- вызов train_process_rl ---
 
-    data = dill.dumps((get_model, train_args, optimizers, AE_model_params, AE_train_params, loss_surface_params))
-    train_process_rl(data=data, save_path=save_path, device=args.device, seed=args.seed, rl_agent_params=rl_agent_params)
+    data = dill.dumps((get_model, train_args, optimizers, AE_model_params, AE_train_params, loss_surface_params, comparison_params))
+    train_process_rl(data=data, save_path=save_path, device=args.device, seed=args.seed, rl_agent_params=rl_agent_params, comparison_params=comparison_params,)
 
 
 if __name__ == "__main__":
-    main()
+    # список сидов для экспериментов
+    seeds = [123, 234, 345, 456, 567, 678, 789, 890, 901, 1012]   # можно расширить список
+    # seeds = [456, 567, 678, 789, 890, 901, 1012]   # можно расширить список
+    # seeds = [789, 890, 901, 1012]   # можно расширить список
+    # seeds = [901, 1012]   # можно расширить список
+
+
+    for seed in seeds:
+        print(f"\n🔹 Запуск эксперимента с seed = {seed}")
+        main(seed_override=seed)

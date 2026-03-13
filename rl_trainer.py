@@ -169,7 +169,7 @@ def run_deepxde_rl_training(
     #     rl_agent.replay_buffer = collect_all_comet_transitions(rl_agent.replay_buffer, n_exps, proj_name=proj_name, tolerance = rl_agent_params["tolerance"],prev_tol= rl_agent_params["prev_tol"], use_log_state=rl_agent_params["log_key"])
     
     # rl_agent.replay_buffer = collect_all_comet_transitions(rl_agent.replay_buffer, max_exps_last=200, tolerance = rl_agent_params["tolerance"],prev_tol= rl_agent_params["prev_tol"], use_log_state=rl_agent_params["log_key"])
-    comparison_mode = bool(comparison_params and comparison_params.get("multi_pde_comparison", False))
+    comparison_mode = bool(comparison_params)
     final_eval_mode = comparison_mode
     comparison_total_epochs = None
     if final_eval_mode and tester_callback is not None and hasattr(tester_callback, "reset_on_train_end"):

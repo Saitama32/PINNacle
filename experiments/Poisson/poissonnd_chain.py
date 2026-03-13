@@ -1,36 +1,40 @@
-import os
+# run_ns2d_liddriven_rl.py
+import os, sys
 os.environ["DDEBACKEND"] = "pytorch"
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
-import sys
+
 from comet_ml import start
 from comet_ml.integration.pytorch import log_model
 
 experiment = start(
   api_key="aP71fQTYPNqfsYWvudPPmoBl5",
-  project_name="rlpinn_heat_2d_cg_compare",
+  project_name="rlpinn_poissonnd_comparison",
   workspace="saitama32"
 )
 
-
-project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+os.environ['KMP_DUPLICATE_LIB_OK'] = 'TRUE'
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
 sys.path.append(project_root)
 import time
 import argparse
 import dill
 import numpy as np
+
+
 import torch
 import deepxde as dde
 
-from src.pde.heat import Heat2D_ComplexGeometry
+from src.pde.poisson import PoissonND
 from src.utils.args import parse_hidden_layers
 from src.utils.callbacks import TesterCallback, PlotCallback, LossCallback
 from rl_trainer import train_process_rl
 
 
+
 experiment.log_parameters({
     "param": "v_1",
     "reward_function": "v_2",
-    "description": "comparison_heat2d_complexgeometry_rl_optimizer",
+    "description": "comparison_poissonnd_rl_optimizer",
 })
 
 def str2bool(v):
@@ -44,9 +48,9 @@ def str2bool(v):
     raise argparse.ArgumentTypeError(f"Invalid boolean value: {v}")
 
 
-def build_get_model_heat2d_complexgeometry(hidden_layers: str, **pde_kwargs):
+def build_get_model_poissonnd(hidden_layers: str, **pde_kwargs):
     def get_model():
-        pde = Heat2D_ComplexGeometry(**pde_kwargs)
+        pde = PoissonND(**pde_kwargs)
 
         layers = [pde.input_dim] + parse_hidden_layers(argparse.Namespace(hidden_layers=hidden_layers)) + [pde.output_dim]
         net = dde.nn.FNN(layers, "tanh", "Glorot normal")
@@ -70,7 +74,7 @@ def build_get_model_heat2d_complexgeometry(hidden_layers: str, **pde_kwargs):
 
 def main(seed_override=None):
     parser = argparse.ArgumentParser()
-    parser.add_argument("--name", type=str, default="heat2d_complexgeometry_rl")
+    parser.add_argument("--name", type=str, default="poissonnd_rl")
     parser.add_argument("--device", type=str, default="0")
     parser.add_argument("--seed", type=int, default=1234)
     parser.add_argument("--hidden-layers", type=str, default="100*5")
@@ -86,10 +90,10 @@ def main(seed_override=None):
     parser.add_argument("--log_key", type=str2bool, nargs="?", const=True, default=False)
     parser.add_argument("--exp_key", type=str, default="7f7a91cef55d4aeba0e509024977456b")
 
-    # куда писать
     parser.add_argument("--out", type=str, default="runs_single")
 
-    parser.add_argument("--datapath", type=str, default="ref/heat_complex.dat", help="Reference data path")
+    parser.add_argument("--dim", type=int, default=5, help="Problem dimensionality")
+    parser.add_argument("--length", type=float, default=1.0, help="Hypercube side length")
 
     args = parser.parse_args()
     if seed_override is not None:
@@ -100,11 +104,12 @@ def main(seed_override=None):
     os.makedirs(save_path, exist_ok=True)
 
     pde_kwargs = dict(
-        datapath=args.datapath
+        dim=args.dim,
+        len=args.length
     )
 
-    get_model = build_get_model_heat2d_complexgeometry(args.hidden_layers, **pde_kwargs)
-    get_model_rec = build_get_model_heat2d_complexgeometry(args.hidden_layers, **pde_kwargs)
+    get_model = build_get_model_poissonnd(args.hidden_layers, **pde_kwargs)
+    get_model_rec = build_get_model_poissonnd(args.hidden_layers, **pde_kwargs)
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -195,7 +200,7 @@ def main(seed_override=None):
     rl_agent_params = {
         "n_save_models": args.n_save_models,
         "n_trajectories": args.n_trajectories,
-        "tolerance": 0.0455133201723103,
+        "tolerance": 0.000433647801401093,
         "stuck_threshold": 10,
         "min_loss_change": 1e-7,
         "min_grad_norm": 1e-5,
@@ -222,18 +227,19 @@ def main(seed_override=None):
 
     experiment.log_parameters(rl_agent_params)
     experiment.log_parameters(comparison_params)
-    # --- вызов train_process_rl ---
 
     data = dill.dumps((get_model, train_args, optimizers, AE_model_params, AE_train_params, loss_surface_params, comparison_params))
     train_process_rl(data=data, save_path=save_path, device=args.device, seed=args.seed, rl_agent_params=rl_agent_params, comparison_params=comparison_params,)
+    # --- вызов train_process_rl ---
+
 
 
 if __name__ == "__main__":
     # список сидов для экспериментов
-    # seeds = [123, 234, 345, 456, 567, 678, 789, 890, 901, 1012]   # можно расширить список
+    seeds = [123, 234, 345, 456, 567, 678, 789, 890, 901, 1012]   # можно расширить список
     # seeds = [456, 567, 678, 789, 890, 901, 1012]   # можно расширить список
     # seeds = [789, 890, 901, 1012]   # можно расширить список
-    seeds = [901, 1012]   # можно расширить список
+    # seeds = [901, 1012]   # можно расширить список
 
 
     for seed in seeds:

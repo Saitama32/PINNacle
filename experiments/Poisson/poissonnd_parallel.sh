@@ -1,11 +1,11 @@
 #!/bin/bash
-# Автоматический запуск poisson_2d_cg_chain.py с распределением по GPU
+# Auto-run RL chain and distribute jobs across available GPUs.
 
-SCRIPT="experiments/NavierStokes/ns2d_liddriven_chain.py"
+SCRIPT="experiments/Poisson/poissonnd_chain.py"
 
 LOG_KEY="true"
-EXP_KEY_1="d8468dc6afaa417d9dc54d003715e37c"
-EXP_KEY_2="1f810086c5284921a3b1c8c2af6a0952"
+EXP_KEY_1="350f25d066bd4903b73e170367e4bcbf"
+EXP_KEY_2="273e728b1668435eb50c669b2b452808"
 
 # Detect available GPUs
 NUM_GPUS=$(nvidia-smi --query-gpu=name --format=csv,noheader | wc -l)
