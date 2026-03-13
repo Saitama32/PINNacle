@@ -66,7 +66,7 @@ def build_get_model_ns2d_liddriven(hidden_layers: str, datapath: str, a: float, 
     return get_model
 
 
-def main():
+def main(seed_override=None):
     parser = argparse.ArgumentParser()
     parser.add_argument("--name", type=str, default="ns2d_liddriven_rl")
     parser.add_argument("--device", type=str, default="0")
@@ -92,6 +92,8 @@ def main():
     parser.add_argument("--out", type=str, default="runs_single")
 
     args = parser.parse_args()
+    if seed_override is not None:
+        args.seed = int(seed_override)
 
     date_str = time.strftime("%m.%d-%H.%M.%S", time.localtime())
     save_path = os.path.join(args.out, f"{date_str}-{args.name}")
