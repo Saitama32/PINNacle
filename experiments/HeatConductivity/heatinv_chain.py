@@ -168,7 +168,7 @@ def main():
         "n_save_models": args.n_save_models,
         "n_trajectories": args.n_trajectories,
         "tolerance": 0.0588327879086136,
-        "use_tol": True,
+        "use_tol": False,
         "prev_tol": 0.0,
         "stuck_threshold": 10,
         "min_loss_change": 1e-7,
