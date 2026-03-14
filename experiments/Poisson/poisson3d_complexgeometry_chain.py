@@ -1,5 +1,22 @@
 import os
+os.environ["DDEBACKEND"] = "pytorch"
+os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
+
+from comet_ml import start
+
+experiment = start(
+    api_key="aP71fQTYPNqfsYWvudPPmoBl5",
+    project_name="rlpinn_poisson3d_complexgeometry_fram_trans",
+    workspace="saitama32",
+)
+
+
+
 import sys
+
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+sys.path.append(project_root)
+
 import time
 import argparse
 import dill
@@ -7,29 +24,21 @@ import numpy as np
 import torch
 import deepxde as dde
 
-os.environ["DDEBACKEND"] = "pytorch"
-os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 
-from comet_ml import start
+
+
 from src.pde.poisson import Poisson3D_ComplexGeometry
 from src.utils.args import parse_hidden_layers
 from src.utils.callbacks import TesterCallback, PlotCallback, LossCallback
 from rl_trainer import train_process_rl
 
 
-experiment = start(
-    api_key="aP71fQTYPNqfsYWvudPPmoBl5",
-    project_name="rlpinn_poisson3d_complexgeometry_farm_transitions",
-    workspace="saitama32",
-)
 
-project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-sys.path.append(project_root)
 
 experiment.log_parameters({
     "param": "v_1",
     "reward_function": "v_2",
-    "description": "farm_transitions_poisson3d_complexgeometry_rl_optimizer",
+    "description": "farm_trans_poisson3d_complexgeometry_rl_optimizer",
 })
 
 
@@ -174,7 +183,7 @@ def main():
     rl_agent_params = {
         "n_save_models": args.n_save_models,
         "n_trajectories": args.n_trajectories,
-        "tolerance": 0,
+        "tolerance": 0.0319534661248326,
         "stuck_threshold": 10,
         "min_loss_change": 1e-7,
         "min_grad_norm": 1e-5,
