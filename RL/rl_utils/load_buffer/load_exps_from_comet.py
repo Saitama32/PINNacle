@@ -338,7 +338,7 @@ def truncate_failure_chains_by_tol(transitions, tol=0.0, shift_reward=10.0):
         for idx, tr in enumerate(chain):
             reward = float(tr.get("reward", 0.0))
             done = int(tr.get("done", 0))
-            if done == 0 and reward <= tol:
+            if done == 0 and abs(reward) <= tol:
                 cut_idx = idx
                 break
 
