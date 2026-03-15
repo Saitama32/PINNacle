@@ -55,7 +55,9 @@ def is_crashed(exp):
 
 
 # === Основная функция ===
-def collect_all_comet_transitions(replay_buffer=None, max_exps_last=10, duration_grater_hours = 1, save_dir=None, tolerance = 0.0, prev_tol=0.0, use_tol=True,  use_log_state=False, proj_name=None, mark_states=None) -> PrioritizedReplayBuffer:
+def collect_all_comet_transitions(replay_buffer=None, max_exps_last=10, duration_grater_hours = 1, 
+                                  save_dir=None, tolerance = 0.0, prev_tol=0.0, use_tol=True, new_tol=False,
+                                  use_log_state=False, proj_name=None, mark_states=None) -> PrioritizedReplayBuffer:
     """Собирает все переходы из не-crashed экспериментов проекта и возвращает заполненный PrioritizedReplayBuffer."""
     print("🔍 Получаем эксперименты из Comet...")
     if proj_name is not None:
@@ -151,7 +153,7 @@ def collect_all_comet_transitions(replay_buffer=None, max_exps_last=10, duration
                 print(f"   ❌ Ошибка при чтении {filename}: {e}")
     # tolerance =0.0608023 
     # prev_tol= 0.060776
-    if tolerance > 0.0 and prev_tol == 0.0:
+    if tolerance > 0.0 and prev_tol == 0.0 and new_tol:
         all_transitions = truncate_failure_chains_by_tol(
             all_transitions,
             tol=tolerance,
