@@ -33,7 +33,7 @@ torch.set_default_dtype(torch.float32)
 experiment.log_parameters({
     "param": "v_1",
     "reward_function": "v_2",
-    "description": "farm_transitions_heat2d_multiscale_rl_optimizer",
+    "description": "tolerance_heat2d_multiscale_rl_optimizer",
 })
 
 
