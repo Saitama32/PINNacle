@@ -6,7 +6,7 @@ from comet_ml import start
 
 experiment = start(
     api_key="aP71fQTYPNqfsYWvudPPmoBl5",
-    project_name="rlpinn_heat2d_multiscale_tolerance",
+    project_name="rlpinn_heat2d_multiscale_tolerance_corrected",
     workspace="saitama32",
 )
 
