@@ -215,8 +215,8 @@ def main():
 
     # --- вызов train_process_rl ---
 
-    data = dill.dumps((get_model, train_args, optimizers, AE_model_params, AE_train_params, loss_surface_params, rl_agent_params))
-    train_process_rl(data=data, save_path=save_path, device=0, seed=args.seed)
+    data = dill.dumps((get_model, train_args, optimizers, AE_model_params, AE_train_params, loss_surface_params))
+    train_process_rl(data=data, save_path=save_path, device=args.device, seed=args.seed, rl_agent_params=rl_agent_params)
 
 
 if __name__ == "__main__":
