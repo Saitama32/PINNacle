@@ -5,7 +5,7 @@ import json
 import dill
 import random
 import itertools
-import copy
+import numpy as np
 from dataclasses import dataclass
 from typing import Any, Dict, Optional, Tuple, List
 import datetime
@@ -217,43 +217,55 @@ def run_deepxde_rl_training(
             rmse = tester_callback.rmse
             b_rmse = tester_callback.brmse
 
-            print(f"Operator RMSE: {rmse}, Boundary RMSE: {b_rmse}")
+            if np.isfinite(rmse) and np.isfinite(b_rmse):
 
-            env.solver_models = solver_models
-            env.reward_params = {
-                "operator": {"coeff": train_args['operator_coeff'], "error": rmse},
-                "bconds": {"coeff": train_args['bnd_coeff'], "error": b_rmse},
-            }
-            env.rl_penalty = rl_penalty
+                print(f"Operator RMSE: {rmse}, Boundary RMSE: {b_rmse}")
 
-            optimizers_history.append(action["type"])
-            print(f'\nPassed optimizer {action["type"]}.')
+                env.solver_models = solver_models
+                env.reward_params = {
+                    "operator": {"coeff": train_args['operator_coeff'], "error": rmse},
+                    "bconds": {"coeff": train_args['bnd_coeff'], "error": b_rmse},
+                }
+                env.rl_penalty = rl_penalty
+
+                optimizers_history.append(action["type"])
+                print(f'\nPassed optimizer {action["type"]}.')
 
 
-            env.set_step_context(
-                prev_state=state,
-                step_i=t,
-                same_opt_streak=same_opt_streak,
-                is_model=is_model,
-                rl_opt_step=rl_agent.opt_step,
-                prev_reward_scalar=None if prev_reward == -1 else prev_reward,
-            )
+                env.set_step_context(
+                    prev_state=state,
+                    step_i=t,
+                    same_opt_streak=same_opt_streak,
+                    is_model=is_model,
+                    rl_opt_step=rl_agent.opt_step,
+                    prev_reward_scalar=None if prev_reward == -1 else prev_reward,
+                )
 
-            next_state, reward_shaped, done, info = env.step()
+                next_state, reward_shaped, done, info = env.step()
 
-            # prev_reward — теперь просто хранит reward_scalar из info
-            prev_reward = info["reward_scalar"]
+                # prev_reward — теперь просто хранит reward_scalar из info
+                prev_reward = info["reward_scalar"]
 
-            # reward уже финальный (reward_model_i)
-            rl_agent.push_memory((state, next_state, action_raw, float(reward_shaped.item()),
-                                done, float(reward_shaped.item()), info["opt_model_i"]))
+                # reward уже финальный (reward_model_i)
+                rl_agent.push_memory((state, next_state, action_raw, float(reward_shaped.item()),
+                                    done, float(reward_shaped.item()), info["opt_model_i"]))
 
-            # update agent
-            if len(rl_agent.replay_buffer) >= rl_agent_params["agent_min_buffer"]:
-                rl_agent.optim_(iters=rl_agent_params["agent_update_iters"])
+                # update agent
+                if len(rl_agent.replay_buffer) >= rl_agent_params["agent_min_buffer"]:
+                    rl_agent.optim_(iters=rl_agent_params["agent_update_iters"])
 
-            state = next_state
-            total_reward += float(reward_shaped.item())
+                state = next_state
+                total_reward += float(reward_shaped.item())
+            else:
+                done = -1
+                next_state = state
+                reward_shaped = torch.tensor(-10.0, device=device)
+                info = {
+                    "reward_scalar": 0.0,
+                    "opt_model_i": -1,
+                }
+
+                print(f"Operator RMSE: {rmse}, Boundary RMSE: {b_rmse}. Stopping trajectory with done = -1.")
 
             try:
                 # Сохраняем entry локально
