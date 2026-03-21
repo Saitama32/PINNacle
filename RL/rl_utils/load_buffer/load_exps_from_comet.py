@@ -278,7 +278,7 @@ def shift_done_rewards(transitions, done = 1, shift_value= -5):
     Увеличивает model_reward на shift_value для всех переходов, где done == 1 или -1.
     Возвращает изменённый список transitions.
     """
-    print(f"\n🔧 Сдвигаем reward_model на {shift_value} для всех успешных переходов (done=1)...")
+    print(f"\n🔧 Сдвигаем reward_model на {shift_value} для всех переходов (done={done})...")
     count = 0
 
     for tr in transitions:

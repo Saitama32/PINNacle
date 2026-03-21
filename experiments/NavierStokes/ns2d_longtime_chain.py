@@ -182,7 +182,7 @@ def main():
     rl_agent_params = {
         "n_save_models": args.n_save_models,
         "n_trajectories": args.n_trajectories,
-        "tolerance": 45.1064431696031,
+        "tolerance": 45.1579635690624,
         "use_tol": False,
         "new_tol": True,
         "prev_tol": 0.0,
