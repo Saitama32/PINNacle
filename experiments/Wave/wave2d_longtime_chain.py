@@ -204,7 +204,7 @@ def main():
         "lr": 1e-3,
         "exp": experiment,
         "log_key": True,
-        "proj_name": "rlpinn-ns2d-longtime-optimization"
+        "proj_name": "rlpinn-wave2d-longtime-tolerance"
     }
 
     experiment.log_parameters(rl_agent_params)
