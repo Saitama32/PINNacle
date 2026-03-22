@@ -4,8 +4,8 @@
 SCRIPT="experiments/HeatConductivity/heat2d_multiscale_chain.py"
 
 LOG_KEY="true"
-EXP_KEY_1="7aa952be4cb24e42abaf503875851989"
-EXP_KEY_2="564e333788b54cad9e811d98d6949faf"
+EXP_KEY_1="6b9330e993e842b8b877b78a51e3f922"
+EXP_KEY_2="a257812363a14c7ea481851fd3bb0ce4"
 
 # Detect available GPUs
 NUM_GPUS=$(nvidia-smi --query-gpu=name --format=csv,noheader | wc -l)
