@@ -157,7 +157,7 @@ def collect_all_comet_transitions(replay_buffer=None, max_exps_last=10, duration
         all_transitions = truncate_failure_chains_by_tol(
             all_transitions,
             tol=tolerance,
-            shift_reward=10.0,
+            shift_reward=100.0,
         )
     elif tolerance > prev_tol and prev_tol != 0.0:
         all_transitions = truncate_success_chains(all_transitions, current_tol=tolerance, prev_tol= prev_tol)
@@ -166,7 +166,7 @@ def collect_all_comet_transitions(replay_buffer=None, max_exps_last=10, duration
         all_transitions = add_proj_mark(all_transitions, proj_name)
 
     # --- Сдвиг наград для успешных переходов ---
-    all_transitions = shift_done_rewards(all_transitions,  done = -1, shift_value= -5)
+    all_transitions = shift_done_rewards(all_transitions,  done = -1, shift_value= -50)
     # --- Добавление delta loss ---
     all_entries = add_delta_to_all_entries(all_transitions)
 
