@@ -45,6 +45,24 @@ def to_cpu(obj):
         return t(to_cpu(v) for v in obj)
     return obj
 
+def contains_nan(obj):
+    if torch.is_tensor(obj):
+        return torch.isnan(obj).any().item()
+
+    if isinstance(obj, np.ndarray):
+        return np.isnan(obj).any()
+
+    if isinstance(obj, dict):
+        return any(contains_nan(v) for v in obj.values())
+
+    if isinstance(obj, (list, tuple)):
+        return any(contains_nan(v) for v in obj)
+
+    if isinstance(obj, (float, np.floating)):
+        return np.isnan(obj)
+
+    return False
+
 def load_transitions_to_replay_buffer(replay_buffer, source, learn_or_analyze="learn", prev_tol=0.0, current_tol=0.0):
     """
     Загружает переходы в replay_buffer.
@@ -71,11 +89,26 @@ def load_transitions_to_replay_buffer(replay_buffer, source, learn_or_analyze="l
         if not all(k in data for k in required_keys):
             print(f"⚠️ Пропуск {file_label}: отсутствуют обязательные ключи {set(required_keys) - set(data.keys())}")
             return
+        
+        # if np.isnan(data["reward"]):
+        #     print(f"⚠️ Пропуск {file_label}: обнаружен NaN в reward")
+        #     return
 
         # Перенос на CPU
         state_cpu      = to_cpu(data['state'])
         next_state_cpu = to_cpu(data['next_state'])
         action_cpu     = to_cpu(data['action'])
+
+            # Проверка на NaN
+        if (
+            contains_nan(state_cpu)
+            or contains_nan(next_state_cpu)
+            or contains_nan(action_cpu)
+            or np.isnan(data['reward'])
+            or np.isnan(data['reward_model'])
+        ):
+            print(f"⚠️ Пропуск {file_label}: обнаружен NaN в transition")
+            return
 
         # reward / model_reward — сразу CPU float32
         BLOCKED_ROUNDED = {round(x, 4) for x in [-1.3047, -1.3186, -1.0238]}
