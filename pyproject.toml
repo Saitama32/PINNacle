@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pinnacle-benchmark"
+version = "0.1.0"
+description = "PINNacle benchmark for physics-informed neural networks"
+readme = "README.md"
+requires-python = ">=3.9"
+dynamic = ["dependencies"]
+
+[tool.setuptools]
+py-modules = ["benchmark", "benchmark_xxx", "rl_trainer", "trainer"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["RL*", "deepxde*", "landscape_visualization*", "src*"]
+exclude = ["data*", "experiments*", "ref*", "resources*", "runs*", "test*", "transitions*", "venv*"]
+
+[tool.setuptools.dynamic]
+dependencies = { file = ["requirements.txt"] }

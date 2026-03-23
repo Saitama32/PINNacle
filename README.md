@@ -49,7 +49,14 @@ See these references for more details,
 # conda activate pinnacle  # To keep Python environments separate
 git clone https://github.com/i207M/PINNacle.git --depth 1
 cd PINNacle
+pip install -e .
+```
+
+If you prefer to install dependencies separately first, this still works:
+
+```shell
 pip install -r requirements.txt
+pip install -e . --no-deps
 ```
 
 ## Usage
