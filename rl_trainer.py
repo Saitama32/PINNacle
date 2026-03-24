@@ -1,4 +1,4 @@
-import os
+﻿import os
 import sys
 import time
 import json
@@ -259,7 +259,7 @@ def run_deepxde_rl_training(
             else:
                 done = -1
                 next_state = state
-                reward_shaped = torch.tensor(-10.0, device=device)
+                reward_shaped = torch.tensor(-50.0, device=device)
                 info = {
                     "reward_scalar": 0.0,
                     "opt_model_i": -1,
