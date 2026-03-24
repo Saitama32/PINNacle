@@ -89,8 +89,8 @@ class EnvRLOptimizer(gym.Env):
         self.repeat_k = 3
         self.repeat_penalty = 0.5
         self.time_penalty = 0.05
-        self.done_bonus = 10.0
-        self.fail_penalty = -5.0
+        self.done_bonus = 100.0
+        self.fail_penalty = -50.0
 
         # step context (будем заполнять из training loop)
         self._ctx = {}
