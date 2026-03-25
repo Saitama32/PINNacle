@@ -1,13 +1,15 @@
 import os
 import sys
+os.environ["DDEBACKEND"] = "pytorch"
+os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
+
 from comet_ml import start
 experiment = start(
     api_key="aP71fQTYPNqfsYWvudPPmoBl5",
     project_name="rlpinn_wave2d_heterogeneous_tolerance",
     workspace="saitama32",
 )
-os.environ["DDEBACKEND"] = "pytorch"
-os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
+
 
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 sys.path.append(project_root)
@@ -29,7 +31,7 @@ from rl_trainer import train_process_rl
 experiment.log_parameters({
     "param": "v_1",
     "reward_function": "v_2",
-    "description": "farm_transitions_wave2d_heterogeneous_rl_optimizer",
+    "description": "tolerance_wave2d_heterogeneous_rl_optimizer",
 })
 
 
