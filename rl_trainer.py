@@ -218,16 +218,19 @@ def run_deepxde_rl_training(
             b_rmse = tester_callback.brmse
 
             if np.isfinite(rmse) or np.isfinite(b_rmse):
-                if not np.isfinite(b_rmse):
-                    b_rmse = 0.0 
-
 
                 print(f"Operator RMSE: {rmse}, Boundary RMSE: {b_rmse}")
 
                 env.solver_models = solver_models
                 env.reward_params = {
-                    "operator": {"coeff": train_args['operator_coeff'], "error": rmse},
-                    "bconds": {"coeff": train_args['bnd_coeff'], "error": b_rmse},
+                    "operator": {
+                        "coeff": train_args["operator_coeff"] if np.isfinite(rmse) else 0.0,
+                        "error": rmse if np.isfinite(rmse) else 0.0,
+                    },
+                    "bconds": {
+                        "coeff": train_args["bnd_coeff"] if np.isfinite(b_rmse) else 0.0,
+                        "error": b_rmse if np.isfinite(b_rmse) else 0.0,
+                    },
                 }
                 env.rl_penalty = rl_penalty
 
