@@ -138,6 +138,8 @@ class TesterCallback(Callback):
         self.valid_epoch = 0
         self.disable = False
         self._warned_missing_bc_ref = False
+        self.test_x_bc = None
+        self.test_y_bc = None
 
     def on_train_begin(self):
         self.save_path = self.model.model_save_path + "/"
@@ -155,6 +157,14 @@ class TesterCallback(Callback):
             
             self.test_x = sample_func(sample_points, boundary=True)
             self.test_y = pde.ref_sol(self.test_x)
+
+            bc_sample_points = max(sample_points // 10, 1024)
+            if getattr(self.model.data.geom, "uniform_boundary_points", None) is not None:
+                self.test_x_bc = self.model.data.geom.uniform_boundary_points(bc_sample_points)
+            elif getattr(self.model.data.geom, "random_boundary_points", None) is not None:
+                self.test_x_bc = self.model.data.geom.random_boundary_points(bc_sample_points)
+            if self.test_x_bc is not None:
+                self.test_y_bc = pde.ref_sol(self.test_x_bc)
         elif pde.ref_data is not None:
             nan_mask = np.isnan(pde.ref_data).any(axis=1)
             self.test_x = pde.ref_data[~nan_mask, :pde.input_dim]
@@ -258,7 +268,12 @@ class TesterCallback(Callback):
             ic_mse = np.nan
 
         # BC MSE (на ref grid)
-        if np.any(self.bc_mask):
+        if self.test_x_bc is not None and len(self.test_x_bc) > 0:
+            y_bc = self.model.predict(self.test_x_bc)
+            bc_mse = ((y_bc - self.test_y_bc) ** 2).mean()
+            bc_rmse = np.sqrt(bc_mse)
+            bc_l2re = bc_rmse / (self.solution_l2 + 1e-12)
+        elif np.any(self.bc_mask):
             y_bc = self.model.predict(self.test_x[self.bc_mask])
             bc_mse = ((y_bc - self.test_y[self.bc_mask]) ** 2).mean()
             bc_rmse = np.sqrt(bc_mse)
