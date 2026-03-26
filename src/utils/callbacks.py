@@ -151,6 +151,8 @@ class TesterCallback(Callback):
         self._initialized = False
         self.test_x_bc = None
         self.test_y_bc = None
+        self.test_x_bc = None
+        self.test_y_bc = None
 
     def on_train_begin(self):
         self.save_path = self.model.model_save_path + "/"
@@ -170,6 +172,14 @@ class TesterCallback(Callback):
             
             self.test_x = sample_func(sample_points, boundary=True)
             self.test_y = pde.ref_sol(self.test_x)
+
+            bc_sample_points = max(sample_points // 10, 1024)
+            if getattr(self.model.data.geom, "uniform_boundary_points", None) is not None:
+                self.test_x_bc = self.model.data.geom.uniform_boundary_points(bc_sample_points)
+            elif getattr(self.model.data.geom, "random_boundary_points", None) is not None:
+                self.test_x_bc = self.model.data.geom.random_boundary_points(bc_sample_points)
+            if self.test_x_bc is not None:
+                self.test_y_bc = pde.ref_sol(self.test_x_bc)
 
             bc_sample_points = max(sample_points // 10, 1024)
             if getattr(self.model.data.geom, "uniform_boundary_points", None) is not None:
