@@ -211,11 +211,21 @@ class TesterCallback(Callback):
         # BC: любая пространственная координата на min/max (исключая time dim), и не IC
         bc_mask = np.zeros(len(X), dtype=bool)
         spatial_dims = range(pde.input_dim - 1) if has_time else range(pde.input_dim)
+        spatial_geom = getattr(geom, "geometry", geom) if has_time else geom
 
-        for d in spatial_dims:
-            lo = bbox[2 * d]
-            hi = bbox[2 * d + 1]
-            bc_mask |= np.isclose(X[:, d], lo, atol=eps) | np.isclose(X[:, d], hi, atol=eps)
+        if isinstance(spatial_geom, dde.geometry.Hypersphere):
+            center = np.asarray(spatial_geom.center)
+            radius = float(spatial_geom.radius)
+            bc_mask = np.isclose(
+                np.linalg.norm(X[:, list(spatial_dims)] - center, axis=1),
+                radius,
+                atol=1e-6,
+            )
+        else:
+            for d in spatial_dims:
+                lo = bbox[2 * d]
+                hi = bbox[2 * d + 1]
+                bc_mask |= np.isclose(X[:, d], lo, atol=eps) | np.isclose(X[:, d], hi, atol=eps)
 
         self.bc_mask = bc_mask & (~self.ic_mask)  # “только BC, без IC”
 
