@@ -137,6 +137,7 @@ class TesterCallback(Callback):
         self.epochs_since_last_resample = 0
         self.valid_epoch = 0
         self.disable = False
+        self._warned_missing_bc_ref = False
 
     def on_train_begin(self):
         self.save_path = self.model.model_save_path + "/"
@@ -204,6 +205,16 @@ class TesterCallback(Callback):
             bc_mask |= np.isclose(X[:, d], lo, atol=eps) | np.isclose(X[:, d], hi, atol=eps)
 
         self.bc_mask = bc_mask & (~self.ic_mask)  # “только BC, без IC”
+
+        if not np.any(self.bc_mask) and pde.ref_data is not None and not self._warned_missing_bc_ref:
+            logger.warning(
+                "TesterCallback found no reference points on the spatial boundary for %s. "
+                "Boundary RMSE on the reference grid is undefined and will stay NaN. "
+                "Reference bbox: %s.",
+                type(pde).__name__,
+                pde.bbox,
+            )
+            self._warned_missing_bc_ref = True
 
         if self.fRMSE:
             self.frmse_init()
