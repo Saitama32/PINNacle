@@ -1,4 +1,4 @@
-import os
+﻿import os
 import sys
 import time
 import json
@@ -213,7 +213,10 @@ def run_deepxde_rl_training(
             rmse = tester_callback.rmse
             b_rmse = tester_callback.brmse
 
-            if np.isfinite(rmse) and np.isfinite(b_rmse):
+            if np.isfinite(rmse) or np.isfinite(b_rmse):
+                if not np.isfinite(b_rmse):
+                    b_rmse = 0.0 
+
 
                 print(f"Operator RMSE: {rmse}, Boundary RMSE: {b_rmse}")
 
