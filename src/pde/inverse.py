@@ -71,8 +71,8 @@ class PoissonInv(baseclass.BasePDE):
         return (
             2 * np.pi**2 * torch.sin(np.pi * x) * torch.sin(np.pi * y) * PoissonInv.a_ref(xy)
             + 2 * np.pi * (
-                (2 * x + 1) * torch.cos(np.pi * x) * torch.sin(np.pi * y)
-                + (2 * y + 1) * torch.sin(np.pi * x) * torch.cos(np.pi * y)
+                (2 * x - 1) * torch.cos(np.pi * x) * torch.sin(np.pi * y)
+                + (2 * y - 1) * torch.sin(np.pi * x) * torch.cos(np.pi * y)
             ) * PoissonInv.a_ref(xy) ** 2
         )
         # fmt: on
