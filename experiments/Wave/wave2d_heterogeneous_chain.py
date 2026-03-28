@@ -6,7 +6,7 @@ os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 from comet_ml import start
 experiment = start(
     api_key="aP71fQTYPNqfsYWvudPPmoBl5",
-    project_name="rlpinn_wave2d_heterogeneous_tolerance",
+    project_name="rlpinn_wave2d_heterogeneous_optimization",
     workspace="saitama32",
 )
 
@@ -31,7 +31,7 @@ from rl_trainer import train_process_rl
 experiment.log_parameters({
     "param": "v_1",
     "reward_function": "v_2",
-    "description": "tolerance_wave2d_heterogeneous_rl_optimizer",
+    "description": "optimization_wave2d_heterogeneous_rl_optimizer",
 })
 
 
@@ -177,6 +177,9 @@ def main():
         "n_save_models": args.n_save_models,
         "n_trajectories": args.n_trajectories,
         "tolerance": 0.416952918396262,
+        "use_tol": False,
+        "new_tol": True,
+        "prev_tol": 0.0,
         "stuck_threshold": 10,
         "min_loss_change": 1e-7,
         "min_grad_norm": 1e-5,
@@ -191,6 +194,8 @@ def main():
         "agent_update_iters": 5,
         "lr": 1e-3,
         "exp": experiment,
+        "log_key": True,
+        "proj_name": "rlpinn-wave2d-heterogeneous-tolerance"
     }
 
     experiment.log_parameters(rl_agent_params)

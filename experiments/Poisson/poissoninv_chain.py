@@ -4,7 +4,7 @@ os.environ["DDEBACKEND"] = "pytorch"
 from comet_ml import start
 experiment = start(
     api_key="aP71fQTYPNqfsYWvudPPmoBl5",
-    project_name="rlpinn_poissoninv_tolerance",
+    project_name="rlpinn_poissoninv_optimization",
     workspace="saitama32",
 )
 
@@ -32,7 +32,7 @@ from rl_trainer import train_process_rl
 experiment.log_parameters({
     "param": "v_1",
     "reward_function": "v_2",
-    "description": "tolerance_poissoninv_rl_optimizer",
+    "description": "optimization_poissoninv_rl_optimizer",
 })
 
 
@@ -172,6 +172,9 @@ def main():
         "n_save_models": args.n_save_models,
         "n_trajectories": args.n_trajectories,
         "tolerance": 0.01331138913578,
+        "use_tol": False,
+        "new_tol": True,
+        "prev_tol": 0.0,
         "stuck_threshold": 10,
         "min_loss_change": 1e-7,
         "min_grad_norm": 1e-5,
@@ -186,6 +189,8 @@ def main():
         "agent_update_iters": 5,
         "lr": 1e-3,
         "exp": experiment,
+        "log_key": True,
+        "proj_name": "rlpinn-poissoninv-tolerance"
     }
 
     experiment.log_parameters(rl_agent_params)

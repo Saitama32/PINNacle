@@ -7,7 +7,7 @@ from comet_ml import start
 
 experiment = start(
     api_key="aP71fQTYPNqfsYWvudPPmoBl5",
-    project_name="rlpinn_burgers2d_tolerance",
+    project_name="rlpinn_burgers2d_optimization",
     workspace="saitama32",
 )
 
@@ -20,9 +20,6 @@ import dill
 import numpy as np
 import torch
 import deepxde as dde
-
-os.environ["DDEBACKEND"] = "pytorch"
-os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 
 
 from src.pde.burgers import Burgers2D
@@ -37,7 +34,7 @@ from rl_trainer import train_process_rl
 experiment.log_parameters({
     "param": "v_1",
     "reward_function": "v_2",
-    "description": "tolerance_burgers2d_rl_optimizer",
+    "description": "optimization_burgers2d_rl_optimizer",
 })
 
 
@@ -192,6 +189,9 @@ def main():
         "n_save_models": args.n_save_models,
         "n_trajectories": args.n_trajectories,
         "tolerance": 0.799297723448543,
+        "use_tol": False,
+        "new_tol": True,
+        "prev_tol": 0.0,
         "stuck_threshold": 10,
         "min_loss_change": 1e-7,
         "min_grad_norm": 1e-5,
@@ -206,6 +206,8 @@ def main():
         "agent_update_iters": 5,
         "lr": 1e-3,
         "exp": experiment,
+        "log_key": True,
+        "proj_name": "rlpinn-burgers2d-tolerance"
     }
 
     experiment.log_parameters(rl_agent_params)
