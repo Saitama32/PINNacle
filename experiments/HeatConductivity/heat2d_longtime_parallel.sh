@@ -4,7 +4,7 @@
 SCRIPT="experiments/HeatConductivity/heat2d_longtime_chain.py"
 
 LOG_KEY="true"
-EXP_KEY_1="8fd177530bcc430698600d74d02a874b"
+EXP_KEY_1="06c13213e45940f4a7989e406b3eeb97"
 EXP_KEY_2="3d59931adcca4310970234b3f631af65"
 
 # Detect available GPUs
