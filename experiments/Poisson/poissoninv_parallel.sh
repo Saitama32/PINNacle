@@ -4,8 +4,8 @@
 SCRIPT="experiments/Poisson/poissoninv_chain.py"
 
 LOG_KEY="true"
-EXP_KEY_1="78b14a7d17e34b5e8a6fc16635bddc14"
-EXP_KEY_2="c17d062d596e435997627753f75fcd4b"
+EXP_KEY_1="1ff18bebb2e84606958f92dd504af2b1"
+EXP_KEY_2="6777737e6d0c495eb6d669484424841b"
 
 # Detect available GPUs
 NUM_GPUS=$(nvidia-smi --query-gpu=name --format=csv,noheader | wc -l)
