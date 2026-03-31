@@ -70,10 +70,10 @@ def main():
     parser.add_argument("--out", type=str, default="runs_single")
 
     parser.add_argument("--a", type=float, default=float(np.sqrt(2.0)), help="Wave speed anisotropy factor")
-    parser.add_argument("--m1", type=int, default=1, help="Frequency m1")
-    parser.add_argument("--m2", type=int, default=3, help="Frequency m2")
-    parser.add_argument("--n1", type=int, default=1, help="Frequency n1")
-    parser.add_argument("--n2", type=int, default=2, help="Frequency n2")
+    parser.add_argument("--m1", type=int, default=3, help="Frequency m1")
+    parser.add_argument("--m2", type=int, default=1, help="Frequency m2")
+    parser.add_argument("--n1", type=int, default=2, help="Frequency n1")
+    parser.add_argument("--n2", type=int, default=1, help="Frequency n2")
     parser.add_argument("--p1", type=int, default=1, help="Frequency p1")
     parser.add_argument("--p2", type=int, default=1, help="Frequency p2")
 
