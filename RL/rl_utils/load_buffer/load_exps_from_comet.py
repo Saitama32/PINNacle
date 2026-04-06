@@ -2,13 +2,13 @@ from comet_ml import API
 import torch
 import io, os
 from datetime import datetime
-from tedeous.rl_algorithms import PrioritizedReplayBuffer
-from tedeous.RL_utils.load_transitions_into_buffer_pickle import load_transitions_to_replay_buffer
+from RL.rl_algorithms import PrioritizedReplayBuffer
+from RL.rl_utils.load_buffer.load_transitions_into_buffer_pickle import load_transitions_to_replay_buffer
 
 
 # === Настройки ===
 WORKSPACE = "saitama32"
-PROJECT_NAME = "rlpinn-poisson-2d-ms-farm-trans"
+PROJECT_NAME = "rlpinn-grayscott-farm-transitions"
 # MAX_EXPERIMENTS = 15  # можно изменить при необходимости
 
 api = API(api_key="aP71fQTYPNqfsYWvudPPmoBl5")  # или просто API()
@@ -55,7 +55,9 @@ def is_crashed(exp):
 
 
 # === Основная функция ===
-def collect_all_comet_transitions(replay_buffer=None, max_exps_last=10, duration_grater_hours = 1, save_dir=None, tolerance = 0.0, prev_tol=0.0, use_log_state=False, proj_name=None, mark_states=None) -> PrioritizedReplayBuffer:
+def collect_all_comet_transitions(replay_buffer=None, max_exps_last=10, duration_grater_hours = 1, 
+                                  save_dir=None, tolerance = 0.0, prev_tol=0.0, use_tol=True, new_tol=False,
+                                  use_log_state=False, proj_name=None, mark_states=None) -> PrioritizedReplayBuffer:
     """Собирает все переходы из не-crashed экспериментов проекта и возвращает заполненный PrioritizedReplayBuffer."""
     print("🔍 Получаем эксперименты из Comet...")
     if proj_name is not None:
@@ -71,17 +73,21 @@ def collect_all_comet_transitions(replay_buffer=None, max_exps_last=10, duration
     # experiments_sorted = [api.get_experiment(workspace=WORKSPACE, project_name=PROJECT_NAME, experiment='751c7ca595dd4dafb22a0cfe61c26b6f')]
 
     experiments_sorted_duration = experiments_sorted_duration[:max_exps_last]
-    if prev_tol>0.0:
+    if prev_tol > 0.0 and use_tol:
 
         experiments_sorted_tol = [
             exp for exp in experiments_sorted_duration 
             if float(get_param_value(exp, "tolerance", 0.0)) >= prev_tol
         ]
-    else:
+    elif prev_tol == 0 and use_tol:
         experiments_sorted_tol = [
             exp for exp in experiments_sorted_duration 
             if float(get_param_value(exp, "tolerance", 0.0)) >= tolerance
         ]
+    else:
+        experiments_sorted_tol = experiments_sorted_duration 
+
+
 
     print(f"✅ Найдено {len(experiments_sorted_tol)} активных экспериментов для загрузки буферов.\n")
 
@@ -147,7 +153,13 @@ def collect_all_comet_transitions(replay_buffer=None, max_exps_last=10, duration
                 print(f"   ❌ Ошибка при чтении {filename}: {e}")
     # tolerance =0.0608023 
     # prev_tol= 0.060776
-    if tolerance > prev_tol and prev_tol != 0.0:
+    if tolerance > 0.0 and prev_tol == 0.0 and new_tol:
+        all_transitions = truncate_failure_chains_by_tol(
+            all_transitions,
+            tol=tolerance,
+            shift_reward=10.0,
+        )
+    elif tolerance > prev_tol and prev_tol != 0.0:
         all_transitions = truncate_success_chains(all_transitions, current_tol=tolerance, prev_tol= prev_tol)
 
     if mark_states:
@@ -263,10 +275,10 @@ def add_delta_to_all_entries(entries):
 
 def shift_done_rewards(transitions, done = 1, shift_value= -5):
     """
-    Увеличивает model_reward на shift_value для всех переходов, где done == 1.
+    Увеличивает model_reward на shift_value для всех переходов, где done == 1 или -1.
     Возвращает изменённый список transitions.
     """
-    print(f"\n🔧 Сдвигаем reward_model на {shift_value} для всех успешных переходов (done=1)...")
+    print(f"\n🔧 Сдвигаем reward_model на {shift_value} для всех переходов (done={done})...")
     count = 0
 
     for tr in transitions:
@@ -300,10 +312,89 @@ def shift_done_rewards(transitions, done = 1, shift_value= -5):
 
 
 
+def truncate_failure_chains_by_tol(transitions, tol=0.0, shift_reward=10.0):
+    """
+    Разбивает поток переходов на цепочки, которые оканчиваются done == -1.
+    Внутри каждой такой цепочки ищет первый переход, где reward <= tol.
+
+    Если такой переход найден:
+    - помечает его как done = 1
+    - увеличивает reward_model на reward_bonus
+    - отбрасывает все последующие переходы в этой цепочке, включая исходный done == -1
+
+    Если в цепочке подходящего перехода нет, цепочка сохраняется без изменений.
+    Уже успешные эпизоды (done == 1) сохраняются как есть и сбрасывают текущую цепочку.
+    """
+    print(f"\n🔧 Обрезаем failure-цепочки по tol={tol}")
+
+    cleaned = []
+    current_chain = []
+    truncated_chains = 0
+
+    def flush_chain(chain):
+        nonlocal truncated_chains
+        if not chain:
+            return
+
+        cut_idx = None
+        for idx, tr in enumerate(chain):
+            reward = float(tr.get("reward", 0.0))
+            done = int(tr.get("done", 0))
+            if done == 0 and abs(reward) <= tol:
+                cut_idx = idx
+                break
+
+        if cut_idx is None:
+            cleaned.extend(chain)
+            return
+
+        tr = chain[cut_idx]
+        print("\n=== ⚙️ Failure chain before modification ===")
+        print({
+            "reward": tr.get("reward"),
+            "reward_model": tr.get("reward_model"),
+            "done": tr.get("done"),
+            "opt_model_i": tr.get("opt_model_i"),
+        })
+
+        tr["done"] = 1
+        tr["reward_model"] = float(tr["reward_model"]) + shift_reward
+        cleaned.extend(chain[:cut_idx + 1])
+        truncated_chains += 1
+
+        print("=== ✅ Failure chain after modification ===")
+        print({
+            "reward": tr.get("reward"),
+            "reward_model": tr.get("reward_model"),
+            "done": tr.get("done"),
+            "opt_model_i": tr.get("opt_model_i"),
+        })
+        print("=" * 50)
+
+    for tr in transitions:
+        done = int(tr.get("done", 0))
+
+        if done == 1:
+            flush_chain(current_chain)
+            current_chain = []
+            cleaned.append(tr)
+            continue
+
+        current_chain.append(tr)
+
+        if done == -1:
+            flush_chain(current_chain)
+            current_chain = []
+
+    flush_chain(current_chain)
+    print(f"✅ Обрезано failure-цепочек: {truncated_chains}")
+    return cleaned
+
+
 def truncate_success_chains(transitions, current_tol=0.0608023, prev_tol= 0.060776):
     """
     transitions: общий список переходов, отсортированный последовательно.
-    Каждый эпизод заканчивается done = -1.
+    Каждый эпизод заканчивается done = 1.
     Нужно: если reward < threshold → done = 1 + удалить все последующие в эпизоде.
     
     Возвращает новый список переходов.

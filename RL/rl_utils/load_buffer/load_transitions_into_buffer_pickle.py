@@ -7,7 +7,7 @@ import random
 import pickle
 import numpy as np
 
-from tedeous.rl_algorithms import PrioritizedReplayBuffer, Transition
+from RL.rl_algorithms import PrioritizedReplayBuffer, Transition
 
 # class ReplayBuffer:
 #     def __init__(self, capacity):
