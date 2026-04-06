@@ -51,6 +51,25 @@ def get_state_shape(loss_surface_params):
     return tuple(torch.meshgrid(x_coords, y_coords)[0].shape)
 
 
+def _serialize_solver_models(solver_models):
+    if solver_models is None:
+        return None
+
+    serialized_models = []
+    for solver_model in solver_models:
+        if solver_model is None:
+            serialized_models.append(None)
+            continue
+        serialized_models.append({
+            "class_name": type(solver_model).__name__,
+            "state_dict": {
+                key: value.detach().to("cpu").clone()
+                for key, value in solver_model.state_dict().items()
+            },
+        })
+    return serialized_models
+
+
 def _build_torch_optimizer(opt_name: str, params, action: Dict[str, Any]):
 
     name = (opt_name or "").lower()
@@ -280,6 +299,7 @@ def run_deepxde_rl_training(
                 entry = {
                             'state': state,
                             'next_state': next_state,
+                            'solver_models': _serialize_solver_models(solver_models),
                             'action': action_raw,
                             'reward': float(info["reward_scalar"]),
                             'done': done, 
