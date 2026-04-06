@@ -308,7 +308,7 @@ def plot_state(pde, train_state, output_dir, is_best=False, fast=False):
                         )
 
 
-def plot_loss_history(pde, loss_history, output_dir, loss_weights=None):
+def plot_loss_history(pde, loss_history, output_dir, loss_weights=None, path_prefix=None):
     """Plot the training and testing loss history.
 
     Note:
@@ -331,6 +331,9 @@ def plot_loss_history(pde, loss_history, output_dir, loss_weights=None):
         loss_test = np.array(loss_history.loss_test)
         loss_type = "loss"
 
+    if path_prefix is None:
+        path_prefix = output_dir + f"{loss_type}"
+
     plt.figure()
     plt.semilogy(loss_history.steps, loss_train_sum, label="Train loss")
     plt.semilogy(loss_history.steps, loss_test_sum, label="Test loss")
@@ -342,7 +345,7 @@ def plot_loss_history(pde, loss_history, output_dir, loss_weights=None):
         )
     plt.xlabel("# Steps")
     plt.legend()
-    plt.savefig(output_dir + f"{loss_type}.png")
+    plt.savefig(path_prefix + ".png")
     plt.close()
 
     plt.figure()
@@ -351,5 +354,5 @@ def plot_loss_history(pde, loss_history, output_dir, loss_weights=None):
 
     plt.xlabel("# Steps")
     plt.legend()
-    plt.savefig(output_dir + f"{loss_type}_detail.png")
+    plt.savefig(path_prefix + "_detail.png")
     plt.close()

@@ -15,6 +15,34 @@ import deepxde as dde
 logger = logging.getLogger(__name__)
 
 
+def _get_comet_context(model):
+    exp = getattr(model, "comet_experiment", None)
+    step = getattr(model, "comet_step", None)
+    if exp is None or step is None:
+        return None, None
+    return exp, step
+
+
+def _log_comet_assets(model, assets, overwrite=False):
+    exp, step = _get_comet_context(model)
+    if exp is None:
+        return
+
+    for local_path, remote_name in assets:
+        if not os.path.exists(local_path):
+            logger.warning("Skipping Comet asset logging because file does not exist: %s", local_path)
+            continue
+        try:
+            exp.log_asset(
+                local_path,
+                file_name=remote_name,
+                step=step,
+                overwrite=overwrite,
+            )
+        except Exception:
+            logger.exception("Failed to log asset to Comet: %s", local_path)
+
+
 class PlotCallback(Callback):
 
     def __init__(self, log_every=None, verbose=False, fast=False):
@@ -92,15 +120,36 @@ class LossCallback(Callback):
         save_path = self.model.model_save_path + "/"
         loss_history = self.model.losshistory
         loss_weights = np.array(self.loss_weights)
+        _, comet_step = _get_comet_context(self.model)
         loss = np.hstack((
             np.array(loss_history.steps)[:, None],
             np.array(loss_history.loss_train) / loss_weights,
             np.array(loss_history.loss_test) / loss_weights,
             loss_weights,
         ))
-        np.savetxt(save_path + "loss.txt", loss, header="step, loss_train, loss_test, loss_weight")
-        plot.plot_loss_history(self.model.pde, loss_history, save_path)
-        plot.plot_loss_history(self.model.pde, loss_history, save_path, loss_weights=loss_weights)
+        loss_txt_path = save_path + "loss.txt"
+        loss_plot_prefix = save_path + "loss"
+        loss_plot_weighted_prefix = save_path + "unweighted_loss"
+
+        np.savetxt(loss_txt_path, loss, header="step, loss_train, loss_test, loss_weight")
+        plot.plot_loss_history(self.model.pde, loss_history, save_path, path_prefix=loss_plot_prefix)
+        plot.plot_loss_history(
+            self.model.pde,
+            loss_history,
+            save_path,
+            loss_weights=loss_weights,
+            path_prefix=loss_plot_weighted_prefix,
+        )
+        _log_comet_assets(
+            self.model,
+            [
+                (loss_txt_path, f"loss/loss_step_{comet_step}.txt"),
+                (loss_plot_prefix + ".png", f"loss/loss_history_step_{comet_step}.png"),
+                (loss_plot_prefix + "_detail.png", f"loss/loss_history_detail_step_{comet_step}.png"),
+                (loss_plot_weighted_prefix + ".png", f"loss/loss_history_weighted_step_{comet_step}.png"),
+                (loss_plot_weighted_prefix + "_detail.png", f"loss/loss_history_weighted_detail_step_{comet_step}.png"),
+            ],
+        )
 
 
 class TesterCallback(Callback):
@@ -344,10 +393,12 @@ class TesterCallback(Callback):
         if self.disable:
             return
 
+        _, comet_step = _get_comet_context(self.model)
         self.indexes = np.array(self.indexes)
         self.frmses = np.array(self.frmses)
+        errors_path = self.save_path + "errors.txt"
         np.savetxt(
-            self.save_path + 'errors.txt',
+            errors_path,
             np.array([self.indexes, self.maes, self.mses, self.mxes, self.bc_mses, self.l1res, self.l2res, self.crmses,\
                       self.frmses[:, 0], self.frmses[:, 1], self.frmses[:, 2], self.mses_interp, self.bc_mse_interp]).T,
             header="epochs, maes, mses, mxes, bnd_mse, l1res, l2res, crmses, frmses(low, mid, high), mses_interp, bc_mse_interp"
@@ -389,6 +440,24 @@ class TesterCallback(Callback):
                         labels=['low freq', 'mid freq', 'high freq'], 
                         path=self.save_path + "frmses.png", 
                         title="mean square error in fourier space")
+
+        _log_comet_assets(
+            self.model,
+            [
+                (errors_path, f"tester/errors_step_{comet_step}.txt"),
+                (self.save_path + "maes.png", f"tester/maes_step_{comet_step}.png"),
+                (self.save_path + "mses.png", f"tester/mses_step_{comet_step}.png"),
+                (self.save_path + "mxes.png", f"tester/mxes_step_{comet_step}.png"),
+                (self.save_path + "ic_mses.png", f"tester/ic_mses_step_{comet_step}.png"),
+                (self.save_path + "bc_mses.png", f"tester/bc_mses_step_{comet_step}.png"),
+                (self.save_path + "bc_rmses.png", f"tester/bc_rmses_step_{comet_step}.png"),
+                (self.save_path + "bc_l2res.png", f"tester/bc_l2res_step_{comet_step}.png"),
+                (self.save_path + "mses_interp.png", f"tester/mses_interp_step_{comet_step}.png"),
+                (self.save_path + "bc_mse_interp.png", f"tester/bc_mse_interp_step_{comet_step}.png"),
+                (self.save_path + "relerr.png", f"tester/relerr_step_{comet_step}.png"),
+                (self.save_path + "frmses.png", f"tester/frmses_step_{comet_step}.png"),
+            ],
+        )
         
         self.rmse = np.sqrt(self.mses[-1])
         self.brmse = self.bc_rmses[-1]

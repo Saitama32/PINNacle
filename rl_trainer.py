@@ -200,6 +200,9 @@ def run_deepxde_rl_training(
                     f'\nUsing optimizer: {action["type"]} for {action["epochs"]} epochs.'
                     f'\nTotal Reward = {total_reward}.\n')
 
+            model.comet_experiment = rl_agent_params.get("exp")
+            model.comet_step = rl_agent.steps_done
+
             model.train(
                 iterations=chunk_iters,
                 display_every=display_every,
