@@ -88,23 +88,27 @@ class LossCallback(Callback):
         self.verbose = verbose
         self.valid_epoch = 0
         self.loss_weights = []
+        self.chunk_start_idx = 0
 
+    def _current_loss_weights(self):
+        if self.model.losshistory.loss_weights is not None:
+            return np.array(self.model.losshistory.loss_weights, copy=True)
+        return np.ones(self.model.pde.num_loss)
+             
     def on_train_begin(self):
         self.log_every = self.model.display_every
-        if self.model.losshistory.loss_weights is not None:
-            self.loss_weights.append(self.model.losshistory.loss_weights)
-        else:
-            self.loss_weights.append(np.ones(self.model.pde.num_loss))
-            
+        self.valid_epoch = 0
+        # `model.train()` appends one baseline point to `losshistory` before callbacks.on_train_begin().
+        # Include that point in the per-chunk loss plots.
+        self.chunk_start_idx = max(0, len(self.model.losshistory.steps) - 1)
+        self.loss_weights = [self._current_loss_weights()]
+             
     def on_epoch_end(self):
         self.valid_epoch += 1
         if self.valid_epoch % self.log_every != 0:
             return
 
-        if self.model.losshistory.loss_weights is not None:
-            self.loss_weights.append(self.model.losshistory.loss_weights.copy())
-        else:
-            self.loss_weights.append(np.ones(self.model.pde.num_loss))
+        self.loss_weights.append(self._current_loss_weights())
 
         if self.verbose:
             loss_weight = self.loss_weights[-1]
@@ -118,18 +122,43 @@ class LossCallback(Callback):
 
     def on_train_end(self):
         save_path = self.model.model_save_path + "/"
-        loss_history = self.model.losshistory
+        global_loss_history = self.model.losshistory
         loss_weights = np.array(self.loss_weights)
         _, comet_step = _get_comet_context(self.model)
+        chunk_slice = slice(self.chunk_start_idx, len(global_loss_history.steps))
+        loss_history = copy.copy(global_loss_history)
+        loss_history.steps = list(global_loss_history.steps[chunk_slice])
+        loss_history.loss_train = list(global_loss_history.loss_train[chunk_slice])
+        loss_history.loss_test = list(global_loss_history.loss_test[chunk_slice])
+        loss_history.metrics_test = list(global_loss_history.metrics_test[chunk_slice])
+
+        if len(loss_history.steps) != len(loss_weights):
+            logger.warning(
+                "LossCallback chunk history/weights length mismatch: %s vs %s. Truncating to shortest.",
+                len(loss_history.steps),
+                len(loss_weights),
+            )
+            n = min(len(loss_history.steps), len(loss_weights))
+            loss_history.steps = loss_history.steps[:n]
+            loss_history.loss_train = loss_history.loss_train[:n]
+            loss_history.loss_test = loss_history.loss_test[:n]
+            loss_history.metrics_test = loss_history.metrics_test[:n]
+            loss_weights = loss_weights[:n]
+
+        if len(loss_history.steps) == 0:
+            logger.warning("LossCallback found no chunk-local loss history to save.")
+            return
+
         loss = np.hstack((
             np.array(loss_history.steps)[:, None],
             np.array(loss_history.loss_train) / loss_weights,
             np.array(loss_history.loss_test) / loss_weights,
             loss_weights,
         ))
-        loss_txt_path = save_path + "loss.txt"
-        loss_plot_prefix = save_path + "loss"
-        loss_plot_weighted_prefix = save_path + "unweighted_loss"
+        step_suffix = f"_step_{comet_step}" if comet_step is not None else ""
+        loss_txt_path = save_path + f"loss{step_suffix}.txt"
+        loss_plot_prefix = save_path + f"loss{step_suffix}"
+        loss_plot_weighted_prefix = save_path + f"unweighted_loss{step_suffix}"
 
         np.savetxt(loss_txt_path, loss, header="step, loss_train, loss_test, loss_weight")
         plot.plot_loss_history(self.model.pde, loss_history, save_path, path_prefix=loss_plot_prefix)
@@ -140,6 +169,18 @@ class LossCallback(Callback):
             loss_weights=loss_weights,
             path_prefix=loss_plot_weighted_prefix,
         )
+
+        if comet_step is not None:
+            np.savetxt(save_path + "loss.txt", loss, header="step, loss_train, loss_test, loss_weight")
+            plot.plot_loss_history(self.model.pde, loss_history, save_path, path_prefix=save_path + "loss")
+            plot.plot_loss_history(
+                self.model.pde,
+                loss_history,
+                save_path,
+                loss_weights=loss_weights,
+                path_prefix=save_path + "unweighted_loss",
+            )
+
         _log_comet_assets(
             self.model,
             [
