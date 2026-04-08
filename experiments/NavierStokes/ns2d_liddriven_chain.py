@@ -200,7 +200,7 @@ def main():
         "agent_update_iters": 5,
         "lr": 1e-3,
         "exp": experiment,
-        "log_key": True,
+        "log_key": False,
         "proj_name": "rlpinn-ns2d-liddriven-farm-transitions"
     }
     
