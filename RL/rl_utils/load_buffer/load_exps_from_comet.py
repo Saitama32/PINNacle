@@ -156,11 +156,11 @@ def _log_experiment_result(result, running_total):
         print(f"   ERROR loading experiment: {result.error}")
         return
 
-    if result.loaded_files:
-        for filename in result.loaded_files:
-            print(f"   loaded {filename}")
-    else:
-        print("   no transition files were loaded")
+    # if result.loaded_files:
+    #     for filename in result.loaded_files:
+    #         print(f"   loaded {filename}")
+    # else:
+    #     print("   no transition files were loaded")
 
     for skipped in result.skipped_files:
         if skipped == "NO_ENTRY_STEP_ASSETS":
