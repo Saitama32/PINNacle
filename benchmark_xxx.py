@@ -113,15 +113,15 @@ if __name__ == "__main__":
             else:
                 loss_weights = np.ones(pde.num_loss, dtype=float)
 
-                for i, c in enumerate(pde.loss_config):
-                    t = c.get("type", "")
-                    if t in ("boundary", "initial"):
-                        loss_weights[i] = 100.0
-                    elif t == "pde":
-                        loss_weights[i] = 1.0
-                    else:
-                        # на всякий случай: оставляем 1 для прочих типов (например, gepinn/data/regularization)
-                        loss_weights[i] = 1.0
+                # for i, c in enumerate(pde.loss_config):
+                #     t = c.get("type", "")
+                #     if t in ("boundary", "initial"):
+                #         loss_weights[i] = 100.0
+                #     elif t == "pde":
+                #         loss_weights[i] = 1.0
+                #     else:
+                #         # на всякий случай: оставляем 1 для прочих типов (например, gepinn/data/regularization)
+                #         loss_weights[i] = 1.0
 
             opt = torch.optim.Adam(net.parameters(), command_args.lr)
             if command_args.method == "multiadam":
