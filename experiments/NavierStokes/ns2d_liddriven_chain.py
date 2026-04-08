@@ -185,6 +185,7 @@ def main():
         "n_trajectories": args.n_trajectories,
         "tolerance": 0.00898298574611544,
         "use_tol": True,
+        "new_tol": False,
         "prev_tol": 0.0,
         "stuck_threshold": 10,
         "min_loss_change": 1e-7,
