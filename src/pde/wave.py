@@ -126,7 +126,7 @@ class Wave2D_Heterogeneous(baseclass.BasePDE):
 
 class Wave2D_LongTime(baseclass.BaseTimePDE):
 
-    def __init__(self, bbox=[0, 1, 0, 1, 0, 100], a=np.sqrt(2), m1=3, m2=1, n1=2, n2=1, p1=1, p2=1):
+    def __init__(self, bbox=[0, 1, 0, 1, 0, 100], a=np.sqrt(2), m1=1, m2=3, n1=1, n2=2, p1=1, p2=1):
         super().__init__()
 
         # output dim
