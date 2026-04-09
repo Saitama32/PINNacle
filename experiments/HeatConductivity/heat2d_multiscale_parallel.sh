@@ -3,16 +3,15 @@
 
 SCRIPT="experiments/HeatConductivity/heat2d_multiscale_chain.py"
 
-LOG_KEY="true"
-EXP_KEY_1="7879c100a14b4166a8efef7413026c3d"
-EXP_KEY_2="80fc355fc52a47a28de66a375ba772a9"
+LOG_KEY_FOR_NEW_STATE="true"
+EXP_KEY_1="ef0f9b5048044bf7843ee0e504f28276"
+EXP_KEY_2="92f2d09a45b1413c8c90a920b67a00da"
 
 # Detect available GPUs
 NUM_GPUS=$(nvidia-smi --query-gpu=name --format=csv,noheader | wc -l)
 
 echo "Detected GPUs: $NUM_GPUS"
-echo "log_key: $LOG_KEY"
-echo "exp_key: $EXP_KEY"
+echo "log_key: $LOG_KEY_FOR_NEW_STATE"
 
 if [ "$NUM_GPUS" -eq 0 ]; then
     echo "No CUDA devices found. Exiting."
@@ -21,12 +20,12 @@ fi
 
 if [ "$NUM_GPUS" -eq 1 ]; then
     echo "Launching 2 processes on a single GPU..."
-    CUDA_VISIBLE_DEVICES=0 python "$SCRIPT" --log_key "$LOG_KEY" --exp_key "$EXP_KEY_1" &
-    CUDA_VISIBLE_DEVICES=0 python "$SCRIPT" --log_key "$LOG_KEY" --exp_key "$EXP_KEY_2" &
+    CUDA_VISIBLE_DEVICES=0 python "$SCRIPT" --log_key_for_new_state "$LOG_KEY_FOR_NEW_STATE" --exp_key "$EXP_KEY_1" &
+    CUDA_VISIBLE_DEVICES=0 python "$SCRIPT" --log_key_for_new_state "$LOG_KEY_FOR_NEW_STATE" --exp_key "$EXP_KEY_2" &
 else
     echo "Launching one process per GPU on first two GPUs..."
-    CUDA_VISIBLE_DEVICES=0 python "$SCRIPT" --log_key "$LOG_KEY" --exp_key "$EXP_KEY_1" &
-    CUDA_VISIBLE_DEVICES=1 python "$SCRIPT" --log_key "$LOG_KEY" --exp_key "$EXP_KEY_2" &
+    CUDA_VISIBLE_DEVICES=0 python "$SCRIPT" --log_key_for_new_state "$LOG_KEY_FOR_NEW_STATE" --exp_key "$EXP_KEY_1" &
+    CUDA_VISIBLE_DEVICES=1 python "$SCRIPT" --log_key_for_new_state "$LOG_KEY_FOR_NEW_STATE" --exp_key "$EXP_KEY_2" &
 fi
 
 wait
