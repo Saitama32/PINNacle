@@ -6,7 +6,7 @@ os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 from comet_ml import start
 experiment = start(
     api_key="aP71fQTYPNqfsYWvudPPmoBl5",
-    project_name="rlpinn_burgers1d_tolerance",
+    project_name="rlpinn_kuramoto_sivashinsky_tolerance",
     workspace="saitama32",
 )
 
@@ -22,7 +22,7 @@ import torch
 import deepxde as dde
 
 
-from src.pde.burgers import Burgers1D
+from src.pde.chaotic import KuramotoSivashinskyEquation
 from src.utils.args import parse_hidden_layers
 from src.utils.callbacks import TesterCallback, PlotCallback, LossCallback
 from rl_trainer import train_process_rl
@@ -31,13 +31,13 @@ from rl_trainer import train_process_rl
 experiment.log_parameters({
     "param": "v_1",
     "reward_function": "v_2",
-    "description": "tolerance_burgers1d_rl_optimizer",
+    "description": "tolerance_kuramoto_sivashinsky_rl_optimizer",
 })
 
 
-def build_get_model_burgers1d(hidden_layers: str, **pde_kwargs):
+def build_get_model_kuramoto_sivashinsky(hidden_layers: str, **pde_kwargs):
     def get_model():
-        pde = Burgers1D(**pde_kwargs)
+        pde = KuramotoSivashinskyEquation(**pde_kwargs)
 
         layers = [pde.input_dim] + parse_hidden_layers(argparse.Namespace(hidden_layers=hidden_layers)) + [pde.output_dim]
         net = dde.nn.FNN(layers, "tanh", "Glorot normal")
@@ -61,7 +61,7 @@ def build_get_model_burgers1d(hidden_layers: str, **pde_kwargs):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--name", type=str, default="burgers1d_rl")
+    parser.add_argument("--name", type=str, default="kuramoto_sivashinsky_rl")
     parser.add_argument("--device", type=str, default="0")
     parser.add_argument("--seed", type=int, default=1234)
     parser.add_argument("--hidden-layers", type=str, default="100*5")
@@ -72,8 +72,10 @@ def main():
     parser.add_argument("--n-save-models", type=int, default=10)
     parser.add_argument("--out", type=str, default="runs_single")
 
-    parser.add_argument("--datapath", type=str, default="ref/burgers1d.dat", help="Reference data path")
-    parser.add_argument("--nu", type=float, default=float(0.01 / np.pi), help="Viscosity")
+    parser.add_argument("--datapath", type=str, default="ref/Kuramoto_Sivashinsky.dat", help="Reference data path")
+    parser.add_argument("--alpha", type=float, default=float(100 / 16), help="Nonlinear coefficient")
+    parser.add_argument("--beta", type=float, default=float(100 / (16 * 16)), help="Diffusion coefficient")
+    parser.add_argument("--gamma", type=float, default=float(100 / (16**4)), help="Hyperdiffusion coefficient")
 
     args = parser.parse_args()
 
@@ -83,11 +85,13 @@ def main():
 
     pde_kwargs = dict(
         datapath=args.datapath,
-        nu=args.nu,
+        alpha=args.alpha,
+        beta=args.beta,
+        gamma=args.gamma,
     )
 
-    get_model = build_get_model_burgers1d(args.hidden_layers, **pde_kwargs)
-    get_model_rec = build_get_model_burgers1d(args.hidden_layers, **pde_kwargs)
+    get_model = build_get_model_kuramoto_sivashinsky(args.hidden_layers, **pde_kwargs)
+    get_model_rec = build_get_model_kuramoto_sivashinsky(args.hidden_layers, **pde_kwargs)
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -107,7 +111,7 @@ def main():
 
     optimizers = {
         "Adam": {"lr": [1e-2, 1e-3, 1e-4], "epochs": [100, 1000, 2500]},
-        "LBFGS": {"lr": [1, 5e-1, 1e-1], "epochs": [100, 500, 1500]},
+        "LBFGS": {"lr": [1, 5e-1, 1e-1], "epochs": [100, 500, 1000]},
         "PSO": {"lr": [0.0, 1e-3, 1e-4], "epochs": [100, 200, 300]},
     }
 
@@ -178,7 +182,7 @@ def main():
     rl_agent_params = {
         "n_save_models": args.n_save_models,
         "n_trajectories": args.n_trajectories,
-        "tolerance": 0.040956,
+        "tolerance": 0,
         "stuck_threshold": 10,
         "min_loss_change": 1e-7,
         "min_grad_norm": 1e-5,
