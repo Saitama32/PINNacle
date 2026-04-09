@@ -84,7 +84,7 @@ def main(seed_override=None):
     parser.add_argument("--state-h", type=int, default=26)
     parser.add_argument("--state-w", type=int, default=26)
     parser.add_argument("--n-save-models", type=int, default=10)
-    parser.add_argument("--log_key", type=str2bool, nargs="?", const=True, default=False)
+    parser.add_argument("--log_key_for_new_state", type=str2bool, nargs="?", const=True, default=False)
     parser.add_argument("--exp_key", type=str, default="7f7a91cef55d4aeba0e509024977456b")
 
     parser.add_argument("--out", type=str, default="runs_single")
@@ -166,7 +166,7 @@ def main(seed_override=None):
         "learning_rate": 5e-4,
         "resume": True,
         "finetune_AE_model": False,
-        "log_key": args.log_key
+        "log_key": args.log_key_for_new_state,
     }
 
     loss_surface_params = {
@@ -215,8 +215,7 @@ def main(seed_override=None):
         "agent_update_iters": 5,
         "lr": 1e-3,
         "exp": experiment,
-        "log_key": args.log_key,
-        # "proj_name": "rlpinn-heatnd-tolerance"
+        "log_key": False
     }
     comparison_params = {
         "seed": args.seed,
@@ -229,14 +228,14 @@ def main(seed_override=None):
     experiment.log_parameters(comparison_params)
 
     data = dill.dumps((get_model, train_args, optimizers, AE_model_params, AE_train_params, loss_surface_params, comparison_params))
-    train_process_rl(data=data, save_path=save_path, device=0, seed=args.seed, rl_agent_params=rl_agent_params, comparison_params=comparison_params,)
+    train_process_rl(data=data, save_path=save_path, device=args.device, seed=args.seed, rl_agent_params=rl_agent_params, comparison_params=comparison_params,)
 
 
 
 if __name__ == "__main__":
     # список сидов для экспериментов
-    # seeds = [123, 234, 345, 456, 567, 678, 789, 890, 901, 1012]   # можно расширить список
-    seeds = [901, 1012]   # можно расширить список
+    seeds = [123, 234, 345, 456, 567, 678, 789, 890, 901, 1012]   # можно расширить список
+    # seeds = [901, 1012]   # можно расширить список
 
     for seed in seeds:
         print(f"\n🔹 Запуск эксперимента с seed = {seed}")
