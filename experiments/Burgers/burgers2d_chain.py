@@ -86,7 +86,7 @@ def main(seed_override=None):
     parser.add_argument("--state-h", type=int, default=26)
     parser.add_argument("--state-w", type=int, default=26)
     parser.add_argument("--n-save-models", type=int, default=10)
-    parser.add_argument("--log_key", type=str2bool, nargs="?", const=True, default=False)
+    parser.add_argument("--log_key_for_new_state", type=str2bool, nargs="?", const=True, default=False)
     parser.add_argument("--exp_key", type=str, default="7f7a91cef55d4aeba0e509024977456b")
     parser.add_argument("--out", type=str, default="runs_single")
 
@@ -174,7 +174,7 @@ def main(seed_override=None):
         "learning_rate": 5e-4,
         "resume": True,
         "finetune_AE_model": False,
-        "log_key": args.log_key
+        "log_key": args.log_key_for_new_state,
     }
 
     loss_surface_params = {
@@ -223,8 +223,7 @@ def main(seed_override=None):
         "agent_update_iters": 5,
         "lr": 1e-3,
         "exp": experiment,
-        "log_key": args.log_key
-        # "proj_name": "rlpinn-burgers2d-tolerance"
+        "log_key": False
     }
     comparison_params = {
         "seed": args.seed,
@@ -243,8 +242,8 @@ def main(seed_override=None):
 
 if __name__ == "__main__":
     # список сидов для экспериментов
-    # seeds = [123, 234, 345, 456, 567, 678, 789, 890, 901, 1012]   # можно расширить список
-    seeds = [1012]   # можно расширить список
+    seeds = [123, 234, 345, 456, 567, 678, 789, 890, 901, 1012]   # можно расширить список
+    # seeds = [1012]   # можно расширить список
 
     for seed in seeds:
         print(f"\n🔹 Запуск эксперимента с seed = {seed}")
