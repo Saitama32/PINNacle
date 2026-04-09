@@ -3,15 +3,15 @@
 
 SCRIPT="experiments/NavierStokes/ns2d_liddriven_chain.py"
 
-LOG_KEY="true"
-EXP_KEY_1="c0b0841538514927a70117ddc6af36e6"
-EXP_KEY_2="82c99480791d4bb3b0a38830e8766b5f"
+LOG_KEY_FOR_NEW_STATE="false"
+EXP_KEY_1="4b14919160db4cbd9a857c09daf2fc9f"
+EXP_KEY_2="edc2d6c0591449c89f2b554b8f3a6fbb"
 
 # Detect available GPUs
 NUM_GPUS=$(nvidia-smi --query-gpu=name --format=csv,noheader | wc -l)
 
 echo "Detected GPUs: $NUM_GPUS"
-echo "log_key: $LOG_KEY"
+echo "log_key: $LOG_KEY_FOR_NEW_STATE"
 echo "exp_key: $EXP_KEY"
 
 if [ "$NUM_GPUS" -eq 0 ]; then
@@ -21,12 +21,12 @@ fi
 
 if [ "$NUM_GPUS" -eq 1 ]; then
     echo "Launching 2 processes on a single GPU..."
-    CUDA_VISIBLE_DEVICES=0 python "$SCRIPT" --log_key "$LOG_KEY" --exp_key "$EXP_KEY_1" &
-    CUDA_VISIBLE_DEVICES=0 python "$SCRIPT" --log_key "$LOG_KEY" --exp_key "$EXP_KEY_2" &
+    CUDA_VISIBLE_DEVICES=0 python "$SCRIPT" --log_key_for_new_state "$LOG_KEY_FOR_NEW_STATE" --exp_key "$EXP_KEY_1" &
+    CUDA_VISIBLE_DEVICES=0 python "$SCRIPT" --log_key_for_new_state "$LOG_KEY_FOR_NEW_STATE" --exp_key "$EXP_KEY_2" &
 else
     echo "Launching one process per GPU on first two GPUs..."
-    CUDA_VISIBLE_DEVICES=0 python "$SCRIPT" --log_key "$LOG_KEY" --exp_key "$EXP_KEY_1" &
-    CUDA_VISIBLE_DEVICES=1 python "$SCRIPT" --log_key "$LOG_KEY" --exp_key "$EXP_KEY_2" &
+    CUDA_VISIBLE_DEVICES=0 python "$SCRIPT" --log_key_for_new_state "$LOG_KEY_FOR_NEW_STATE" --exp_key "$EXP_KEY_1" &
+    CUDA_VISIBLE_DEVICES=1 python "$SCRIPT" --log_key_for_new_state "$LOG_KEY_FOR_NEW_STATE" --exp_key "$EXP_KEY_2" &
 fi
 
 wait
