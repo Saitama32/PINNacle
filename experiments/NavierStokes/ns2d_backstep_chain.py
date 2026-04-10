@@ -215,6 +215,7 @@ def main(seed_override=None):
         "seed": args.seed,
         "total_epochs": 7000,
         "experiment_key": args.exp_key,
+        "multi_pde_compare": True,
     }
 
     experiment.log_parameters(rl_agent_params)
