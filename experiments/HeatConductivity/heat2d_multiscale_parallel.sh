@@ -4,7 +4,7 @@
 SCRIPT="experiments/HeatConductivity/heat2d_multiscale_chain.py"
 
 LOG_KEY_FOR_NEW_STATE="true"
-EXP_KEY_1="e5c4be4baee043d88c8dc330eb0548ed"
+EXP_KEY_1="7412807cb2684db6aca88f6ab1c28875"
 EXP_KEY_2="17c10318c0e14938b7cdd48c38c5ea99"
 
 # Detect available GPUs
