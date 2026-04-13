@@ -4,8 +4,8 @@
 SCRIPT="experiments/Poisson/poisson3d_complexgeometry_chain.py"
 
 LOG_KEY="true"
-EXP_KEY_1="13eb6bf9e8724e589d0bd2c7cd416f2f"
-EXP_KEY_2="eed1cd69650949ce905d5ac11e7b82b9"
+EXP_KEY_1="17c10318c0e14938b7cdd48c38c5ea99"
+EXP_KEY_2="8dd9b51dbc9c49d1ae639ebbd54fda51"
 
 # Detect available GPUs
 NUM_GPUS=$(nvidia-smi --query-gpu=name --format=csv,noheader | wc -l)

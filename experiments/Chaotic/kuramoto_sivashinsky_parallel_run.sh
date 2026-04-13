@@ -1,11 +1,11 @@
 #!/bin/bash
-# Automatic launch of burgers_1d_comparison_chain.py with GPU distribution
+# Automatic launch of kuramoto_sivashinsky_comparison_chain.py with GPU distribution
 
-SCRIPT="experiments/Burgers/burgers_1d_comparison_chain.py"
+SCRIPT="experiments/Chaotic/kuramoto_sivashinsky_comparison_chain.py"
 
 LOG_KEY="true"
-EXP_KEY_1="bf21e8f2a1a449e0bf17cc590c9c7c73"
-EXP_KEY_2="d1b6cd2c5d4348be869513c373a424e2"
+EXP_KEY_1="17c10318c0e14938b7cdd48c38c5ea99"
+EXP_KEY_2="8dd9b51dbc9c49d1ae639ebbd54fda51"
 
 # Detect available GPUs
 NUM_GPUS=$(nvidia-smi --query-gpu=name --format=csv,noheader | wc -l)

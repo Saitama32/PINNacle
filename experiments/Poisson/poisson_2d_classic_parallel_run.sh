@@ -1,11 +1,12 @@
 #!/bin/bash
-# Automatic launch of wave_1d_comparison_chain.py with GPU distribution
+# Automatic launch of poisson_2d_classic_comparison_chain.py with GPU distribution
 
-SCRIPT="experiments/Wave/wave_1d_comparison_chain.py"
+SCRIPT="experiments/Poisson/poisson_2d_classic_comparison_chain.py"
 
 LOG_KEY="true"
-EXP_KEY_1="591f92bb15304c9895a6899997d42bcd"
-EXP_KEY_2="492c2f6ec71a4deb82d4c23cbd1284ce"
+EXP_KEY_1="17c10318c0e14938b7cdd48c38c5ea99"
+EXP_KEY_2="8dd9b51dbc9c49d1ae639ebbd54fda51"
+
 
 # Detect available GPUs
 NUM_GPUS=$(nvidia-smi --query-gpu=name --format=csv,noheader | wc -l)

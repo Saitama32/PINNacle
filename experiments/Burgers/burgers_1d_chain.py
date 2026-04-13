@@ -6,7 +6,7 @@ from comet_ml.integration.pytorch import log_model
 
 experiment = start(
   api_key="aP71fQTYPNqfsYWvudPPmoBl5",
-  project_name="rlpinn-grayscott-optimization",
+  project_name="rlpinn-burgers-comparison",
   workspace="saitama32"
 )
 
@@ -29,8 +29,18 @@ from rl_trainer import train_process_rl
 experiment.log_parameters({
     "param": "v_1",
     "reward_function": "v_2",
-    "description": "farm_transitions_grayscott_basic_RL_optimizer"
+    "description": "comparison_burgers_loaded_dqn_final_eval"
 })
+
+def str2bool(v):
+    if isinstance(v, bool):
+        return v
+    val = str(v).strip().lower()
+    if val in {"true", "True", "1", "yes", "y", "on"}:
+        return True
+    if val in {"false", "False","0", "no", "n", "off"}:
+        return False
+    raise argparse.ArgumentTypeError(f"Invalid boolean value: {v}")
 
 
 
@@ -72,7 +82,7 @@ def build_get_model_burgers1d(hidden_layers: str):
     return get_model
 
 
-def main():
+def main(seed_override=None):
     parser = argparse.ArgumentParser()
     parser.add_argument("--name", type=str, default="burgers1d_rl")
     parser.add_argument("--device", type=str, default="0")  # "cpu" or cuda index
@@ -90,11 +100,15 @@ def main():
     parser.add_argument("--state-h", type=int, default=26)
     parser.add_argument("--state-w", type=int, default=26)
     parser.add_argument("--n-save-models", type=int, default=10)
+    parser.add_argument("--log_key", type=str2bool, nargs="?", const=True, default=False)
+    parser.add_argument("--exp_key", type=str, default="7f7a91cef55d4aeba0e509024977456b")
 
     # куда писать
     parser.add_argument("--out", type=str, default="runs_single")
 
     args = parser.parse_args()
+    if seed_override is not None:
+        args.seed = int(seed_override)
 
     # --- папка эксперимента ---
     date_str = time.strftime("%m.%d-%H.%M.%S", time.localtime())
@@ -179,7 +193,7 @@ def main():
         "learning_rate": 5e-4,
         "resume": True,
         "finetune_AE_model": False,
-        "log_key": True,
+        "log_key": args.log_key
     }
 
     loss_surface_params = {
@@ -214,7 +228,7 @@ def main():
     rl_agent_params = {
         "n_save_models": 10,
         "n_trajectories": 1000,
-        "tolerance": 0.040956, 
+        "tolerance": 0.000001, 
         "prev_tol": 0,
         "stuck_threshold": 10,  # Число эпох без значительного изменения прогресса
         "min_loss_change": 1e-7,
@@ -230,23 +244,38 @@ def main():
         "agent_update_iters": 5,
         "lr": 1e-3,
         "exp": experiment,
-        "log_key": True,
-
+        "log_key": args.log_key
+    }
+    comparison_params = {
+        "seed": args.seed,
+        "total_epochs": 7000,
+        "experiment_key": args.exp_key,
+        "multi_pde_comparison": True,
+        "agent_optimizing_status": "all_epoch"
     }
 
-    # backup_params = {
-    #     "experiment_key" : "b0dae86c42924e4484b8bd194e2d58d9",
-    # }
-    backup_params = None
-
     experiment.log_parameters(rl_agent_params)
-    # experiment.log_parameters(backup_params)
+    experiment.log_parameters(comparison_params)
     # --- вызов train_process_rl ---
 
     # --- вызов train_process_rl ---
 
-    data = dill.dumps((get_model, train_args, optimizers, AE_model_params, AE_train_params, loss_surface_params))
-    train_process_rl(data=data, save_path=save_path, device=0, seed=args.seed, rl_agent_params=rl_agent_params)
+
+    data = dill.dumps((get_model, train_args, optimizers, AE_model_params, AE_train_params, loss_surface_params, comparison_params))
+    train_process_rl(
+        data=data,
+        save_path=save_path,
+        device=0,
+        seed=args.seed,
+        rl_agent_params=rl_agent_params,
+        comparison_params=comparison_params,
+    )
 
 if __name__ == "__main__":
-    main()
+
+    # список сидов для экспериментов
+    seeds = [123, 234, 345, 456, 567, 678, 789, 890, 901, 1012]   # можно расширить список
+
+    for seed in seeds:
+        print(f"\n🔹 Запуск эксперимента с seed = {seed}")
+        main(seed_override=seed)
