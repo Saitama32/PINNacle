@@ -207,7 +207,7 @@ def main(seed_override=None):
         "agent_update_iters": 5,
         "lr": 1e-3,
         "exp": experiment,
-        "log_key": args.log_key
+        "log_key": False
         # "proj_name": "rlpinn-poissoninv-tolerance"
     }
     comparison_params = {
