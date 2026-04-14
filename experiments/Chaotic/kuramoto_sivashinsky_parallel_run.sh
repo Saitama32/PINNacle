@@ -1,7 +1,7 @@
 #!/bin/bash
 # Automatic launch of kuramoto_sivashinsky_comparison_chain.py with GPU distribution
 
-SCRIPT="experiments/Chaotic/kuramoto_sivashinsky_comparison_chain.py"
+SCRIPT="experiments/Chaotic/kuramoto_sivashinsky_chain.py"
 
 LOG_KEY="true"
 EXP_KEY_1="17c10318c0e14938b7cdd48c38c5ea99"
