@@ -1,13 +1,11 @@
-# run_grayscott_rl.py
 import os, sys
 os.environ["DDEBACKEND"] = "pytorch"
-
 from comet_ml import start
 from comet_ml.integration.pytorch import log_model
 
 experiment = start(
   api_key="aP71fQTYPNqfsYWvudPPmoBl5",
-  project_name="rlpinn-grayscott-optimization",
+  project_name="rlpinn-gray-scott-comparison",
   workspace="saitama32"
 )
 
@@ -21,6 +19,7 @@ import numpy as np
 import torch
 import deepxde as dde
 
+
 from src.pde.chaotic import GrayScottEquation
 from src.utils.args import parse_hidden_layers, parse_loss_weight
 from src.utils.callbacks import TesterCallback, PlotCallback, LossCallback, ModelSaverCallback
@@ -29,23 +28,28 @@ from rl_trainer import train_process_rl
 experiment.log_parameters({
     "param": "v_1",
     "reward_function": "v_2",
-    "description": "farm_transitions_grayscott_basic_RL_optimizer"
+    "description": "comparison_gray_scott_loaded_dqn_final_eval"
 })
 
+def str2bool(v):
+    if isinstance(v, bool):
+        return v
+    val = str(v).strip().lower()
+    if val in {"true", "True", "1", "yes", "y", "on"}:
+        return True
+    if val in {"false", "False","0", "no", "n", "off"}:
+        return False
+    raise argparse.ArgumentTypeError(f"Invalid boolean value: {v}")
 
-def build_get_model_grayscott(hidden_layers: str):
-    """
-    """
 
+def build_get_model_gray_scott(hidden_layers: str):
     def get_model():
         pde = GrayScottEquation()
 
         layers = [pde.input_dim] + parse_hidden_layers(argparse.Namespace(hidden_layers=hidden_layers)) + [pde.output_dim]
         net = dde.nn.FNN(layers, "tanh", "Glorot normal")
-
         net = net.float()
 
-        # loss weights
         loss_weights = np.ones(pde.num_loss, dtype=float)
 
         for i, c in enumerate(pde.loss_config):
@@ -55,20 +59,18 @@ def build_get_model_grayscott(hidden_layers: str):
             elif t == "pde":
                 loss_weights[i] = 1.0
             else:
-
                 loss_weights[i] = 1.0
 
         model = pde.create_model(net)
-
         return model, loss_weights
 
     return get_model
 
 
-def main():
+def main(seed_override=None):
     parser = argparse.ArgumentParser()
-    parser.add_argument("--name", type=str, default="grayscott_rl")
-    parser.add_argument("--device", type=str, default="0")  # "cpu" or cuda index
+    parser.add_argument("--name", type=str, default="gray_scott_rl")
+    parser.add_argument("--device", type=str, default="0")
     parser.add_argument("--seed", type=int, default=1234)
 
     parser.add_argument("--hidden-layers", type=str, default="100*5")
@@ -76,25 +78,28 @@ def main():
     parser.add_argument("--log-every", type=int, default=100)
     parser.add_argument("--plot-every", type=int, default=2000)
 
-    # RL config
     parser.add_argument("--n-trajectories", type=int, default=100)
     parser.add_argument("--n-steps-max", type=int, default=1000)
     parser.add_argument("--state-h", type=int, default=26)
     parser.add_argument("--state-w", type=int, default=26)
     parser.add_argument("--n-save-models", type=int, default=10)
+    parser.add_argument("--log_key", type=str2bool, nargs="?", const=True, default=False)
+    parser.add_argument("--exp_key", type=str, default="PUT_GRAY_SCOTT_EXP_KEY")
 
     parser.add_argument("--out", type=str, default="runs_single")
 
     args = parser.parse_args()
+    if seed_override is not None:
+        args.seed = int(seed_override)
 
     date_str = time.strftime("%m.%d-%H.%M.%S", time.localtime())
     save_path = os.path.join(args.out, f"{date_str}-{args.name}")
     os.makedirs(save_path, exist_ok=True)
 
-    get_model = build_get_model_grayscott(args.hidden_layers)
-    get_model_rec = build_get_model_grayscott(args.hidden_layers)
+    get_model = build_get_model_gray_scott(args.hidden_layers)
+    get_model_rec = build_get_model_gray_scott(args.hidden_layers)
 
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
     train_args = {
         "iterations": 1,
@@ -130,7 +135,7 @@ def main():
         "layers_AE": [
             991,
             125,
-            15,
+            15
         ],
         "num_models": None,
         "from_last": False,
@@ -145,7 +150,7 @@ def main():
         "polars_weight": 0.0,
         "wellspacedtrajectory_weight": 0.0,
         "gridscaling_weight": 0.0,
-        "device": device,
+        "device": device
     }
 
     AE_train_params = {
@@ -164,7 +169,7 @@ def main():
         "learning_rate": 5e-4,
         "resume": True,
         "finetune_AE_model": False,
-        "log_key": True,
+        "log_key": args.log_key
     }
 
     loss_surface_params = {
@@ -174,7 +179,7 @@ def main():
         "layers_AE": [
             991,
             125,
-            15,
+            15
         ],
         "batch_size": 32,
         "num_models": None,
@@ -192,21 +197,21 @@ def main():
         "density_vmax": -1,
         "density_vmin": -1,
         "colorFromGridOnly": True,
-        "img_dir": "",
-        "dde_pde_model": get_model_rec,
+        "img_dir": '',
+        "dde_pde_model": get_model_rec
     }
 
     rl_agent_params = {
         "n_save_models": 10,
         "n_trajectories": 1000,
-        "tolerance": 0.0687427339144051,
+        "tolerance": 0.000001,
         "prev_tol": 0,
         "stuck_threshold": 10,
         "min_loss_change": 1e-7,
         "min_grad_norm": 1e-5,
         "rl_buffer_size": 10000,
         "rl_batch_size": 32,
-        "n_transitions_reinit": 2000,
+        "n_transitions_reinit" : 2000,
         "gamma": 0.9,
         "rl_reward_method": "absolute",
         "reward_operator_coeff": 1,
@@ -215,21 +220,32 @@ def main():
         "agent_update_iters": 5,
         "lr": 1e-3,
         "exp": experiment,
-        "log_key": True,
+        "log_key": False
+    }
+    comparison_params = {
+        "seed": args.seed,
+        "total_epochs": 7000,
+        "experiment_key": args.exp_key,
+        "multi_pde_comparison": True,
     }
 
-    # backup_params = {
-    #     "experiment_key" : "b0dae86c42924e4484b8bd194e2d58d9",
-    # }
-    backup_params = None
-
     experiment.log_parameters(rl_agent_params)
-    # experiment.log_parameters(backup_params)
-    # --- вызов train_process_rl ---
+    experiment.log_parameters(comparison_params)
 
-    data = dill.dumps((get_model, train_args, optimizers, AE_model_params, AE_train_params, loss_surface_params))
-    train_process_rl(data=data, save_path=save_path, device=0, seed=args.seed, rl_agent_params=rl_agent_params)
+    data = dill.dumps((get_model, train_args, optimizers, AE_model_params, AE_train_params, loss_surface_params, comparison_params))
+    train_process_rl(
+        data=data,
+        save_path=save_path,
+        device=0,
+        seed=args.seed,
+        rl_agent_params=rl_agent_params,
+        comparison_params=comparison_params,
+    )
 
 
 if __name__ == "__main__":
-    main()
+    seeds = [123, 234, 345, 456, 567, 678, 789, 890, 901, 1012]
+
+    for seed in seeds:
+        print(f"\nStarting experiment with seed = {seed}")
+        main(seed_override=seed)

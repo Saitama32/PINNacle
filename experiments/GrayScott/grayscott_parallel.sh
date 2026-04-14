@@ -1,39 +1,33 @@
 #!/bin/bash
-# Автоматический запуск poisson_2d_cg_chain.py с распределением по GPU
+# Automatic launch of gray_scott_comparison_chain.py with GPU distribution
 
 SCRIPT="experiments/GrayScott/grayscott_chain.py"
+LOG_KEY="true"
+# Replace these with experiment keys of the trained Gray-Scott RL agent you want to compare.
+EXP_KEY_1="17c10318c0e14938b7cdd48c38c5ea99"
+EXP_KEY_2="4ebd70b7eddd49c1a864a2ad7374d46c"
 
-# Проверяем, сколько доступно GPU
 NUM_GPUS=$(nvidia-smi --query-gpu=name --format=csv,noheader | wc -l)
 
-# log_enable="True"
-# log_unenable="False"
-
-echo "Обнаружено GPU: $NUM_GPUS"
+echo "Detected GPUs: $NUM_GPUS"
+echo "log_key: $LOG_KEY"
+echo "exp_key_1: $EXP_KEY_1"
+echo "exp_key_2: $EXP_KEY_2"
 
 if [ "$NUM_GPUS" -eq 0 ]; then
-    echo "❌ Не найдено ни одного CUDA-устройства. Выходим."
+    echo "No CUDA devices found. Exiting."
     exit 1
 fi
 
 if [ "$NUM_GPUS" -eq 1 ]; then
-    echo "Запускаем 2 процесса на одной GPU..."
-    CUDA_VISIBLE_DEVICES=0 python "$SCRIPT"&
-    CUDA_VISIBLE_DEVICES=0 python "$SCRIPT"&
-elif [ "$NUM_GPUS" -ge 2 ]; then
-    echo "Запускаем по 2 процесса на каждую из двух GPU..."
-    CUDA_VISIBLE_DEVICES=0 python "$SCRIPT"&
-    # CUDA_VISIBLE_DEVICES=0 python "$SCRIPT" --log_key "$log_enable"&
-    CUDA_VISIBLE_DEVICES=1 python "$SCRIPT"&
-    # CUDA_VISIBLE_DEVICES=1 python "$SCRIPT" --log_key "$log_unenable"&
+    echo "Launching 2 processes on a single GPU..."
+    CUDA_VISIBLE_DEVICES=0 python "$SCRIPT" --log_key "$LOG_KEY" --exp_key "$EXP_KEY_1" &
+    CUDA_VISIBLE_DEVICES=0 python "$SCRIPT" --log_key "$LOG_KEY" --exp_key "$EXP_KEY_2" &
 else
-    echo "⚠️ Найдено более 2 GPU, но используется только первые две."
-    CUDA_VISIBLE_DEVICES=0 python "$SCRIPT" &
-    CUDA_VISIBLE_DEVICES=0 python "$SCRIPT" &
-    CUDA_VISIBLE_DEVICES=1 python "$SCRIPT" &
-    CUDA_VISIBLE_DEVICES=1 python "$SCRIPT" &
+    echo "Launching one process per GPU on first two GPUs..."
+    CUDA_VISIBLE_DEVICES=0 python "$SCRIPT" --log_key "$LOG_KEY" --exp_key "$EXP_KEY_1" &
+    CUDA_VISIBLE_DEVICES=1 python "$SCRIPT" --log_key "$LOG_KEY" --exp_key "$EXP_KEY_2" &
 fi
 
-# Ждём завершения всех процессов
 wait
-echo "✅ Все процессы завершены."
+echo "All processes finished."
