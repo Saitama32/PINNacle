@@ -1,7 +1,7 @@
 #!/bin/bash
 # Automatic launch of wave_1d_comparison_chain.py with GPU distribution
 
-SCRIPT="experiments/Wave/wave_1d_comparison_chain.py"
+SCRIPT="experiments/Wave/wave_1d_chain.py"
 
 LOG_KEY="true"
 EXP_KEY_1="17c10318c0e14938b7cdd48c38c5ea99"
