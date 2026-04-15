@@ -5,7 +5,7 @@ SCRIPT="experiments/NavierStokes/ns2d_longtime_chain.py"
 
 LOG_KEY="true"
 EXP_KEY_1="17c10318c0e14938b7cdd48c38c5ea99"
-EXP_KEY_2="4ebd70b7eddd49c1a864a2ad7374d46c"
+EXP_KEY_2="0715d87731114f9abe013a4df4fb3b1b"
 
 # Detect available GPUs
 NUM_GPUS=$(nvidia-smi --query-gpu=name --format=csv,noheader | wc -l)
