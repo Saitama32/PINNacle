@@ -82,10 +82,11 @@ class PlotCallback(Callback):
 
 class LossCallback(Callback):
 
-    def __init__(self, verbose=False):
+    def __init__(self, verbose=False, log_comet_assets=True):
         super(LossCallback, self).__init__()
         self.log_every = None
         self.verbose = verbose
+        self.log_comet_assets = log_comet_assets
         self.valid_epoch = 0
         self.loss_weights = []
         self.chunk_start_idx = 0
@@ -181,25 +182,33 @@ class LossCallback(Callback):
                 path_prefix=save_path + "unweighted_loss",
             )
 
-        _log_comet_assets(
-            self.model,
-            [
-                (loss_txt_path, f"loss/loss_step_{comet_step}.txt"),
-                (loss_plot_prefix + ".png", f"loss/loss_history_step_{comet_step}.png"),
-                (loss_plot_prefix + "_detail.png", f"loss/loss_history_detail_step_{comet_step}.png"),
-                (loss_plot_weighted_prefix + ".png", f"loss/loss_history_weighted_step_{comet_step}.png"),
-                (loss_plot_weighted_prefix + "_detail.png", f"loss/loss_history_weighted_detail_step_{comet_step}.png"),
-            ],
-        )
+        if self.log_comet_assets:
+            _log_comet_assets(
+                self.model,
+                [
+                    (loss_txt_path, f"loss/loss_step_{comet_step}.txt"),
+                    (loss_plot_prefix + ".png", f"loss/loss_history_step_{comet_step}.png"),
+                    (loss_plot_prefix + "_detail.png", f"loss/loss_history_detail_step_{comet_step}.png"),
+                    (loss_plot_weighted_prefix + ".png", f"loss/loss_history_weighted_step_{comet_step}.png"),
+                    (loss_plot_weighted_prefix + "_detail.png", f"loss/loss_history_weighted_detail_step_{comet_step}.png"),
+                ],
+            )
 
 
 class TesterCallback(Callback):
 
-    def __init__(self, log_every=100, verbose=True, fRMSE_param={'enable':True, 'iLow':5, 'iHigh':13, 'calc_every':2000}):
+    def __init__(
+        self,
+        log_every=100,
+        verbose=True,
+        fRMSE_param={'enable':True, 'iLow':5, 'iHigh':13, 'calc_every':2000},
+        log_comet_assets=False,
+    ):
         super(TesterCallback, self).__init__()
 
         self.log_every = log_every
         self.verbose = verbose
+        self.log_comet_assets = log_comet_assets
         self.fRMSE = fRMSE_param.get('enable', True)
         if self.fRMSE:
             self.fRMSE_l = fRMSE_param.get('iLow', 5)
@@ -482,23 +491,24 @@ class TesterCallback(Callback):
                         path=self.save_path + "frmses.png", 
                         title="mean square error in fourier space")
 
-        _log_comet_assets(
-            self.model,
-            [
-                (errors_path, f"tester/errors_step_{comet_step}.txt"),
-                (self.save_path + "maes.png", f"tester/maes_step_{comet_step}.png"),
-                (self.save_path + "mses.png", f"tester/mses_step_{comet_step}.png"),
-                (self.save_path + "mxes.png", f"tester/mxes_step_{comet_step}.png"),
-                (self.save_path + "ic_mses.png", f"tester/ic_mses_step_{comet_step}.png"),
-                (self.save_path + "bc_mses.png", f"tester/bc_mses_step_{comet_step}.png"),
-                (self.save_path + "bc_rmses.png", f"tester/bc_rmses_step_{comet_step}.png"),
-                (self.save_path + "bc_l2res.png", f"tester/bc_l2res_step_{comet_step}.png"),
-                (self.save_path + "mses_interp.png", f"tester/mses_interp_step_{comet_step}.png"),
-                (self.save_path + "bc_mse_interp.png", f"tester/bc_mse_interp_step_{comet_step}.png"),
-                (self.save_path + "relerr.png", f"tester/relerr_step_{comet_step}.png"),
-                (self.save_path + "frmses.png", f"tester/frmses_step_{comet_step}.png"),
-            ],
-        )
+        if self.log_comet_assets:
+            _log_comet_assets(
+                self.model,
+                [
+                    (errors_path, f"tester/errors_step_{comet_step}.txt"),
+                    (self.save_path + "maes.png", f"tester/maes_step_{comet_step}.png"),
+                    (self.save_path + "mses.png", f"tester/mses_step_{comet_step}.png"),
+                    (self.save_path + "mxes.png", f"tester/mxes_step_{comet_step}.png"),
+                    (self.save_path + "ic_mses.png", f"tester/ic_mses_step_{comet_step}.png"),
+                    (self.save_path + "bc_mses.png", f"tester/bc_mses_step_{comet_step}.png"),
+                    (self.save_path + "bc_rmses.png", f"tester/bc_rmses_step_{comet_step}.png"),
+                    (self.save_path + "bc_l2res.png", f"tester/bc_l2res_step_{comet_step}.png"),
+                    (self.save_path + "mses_interp.png", f"tester/mses_interp_step_{comet_step}.png"),
+                    (self.save_path + "bc_mse_interp.png", f"tester/bc_mse_interp_step_{comet_step}.png"),
+                    (self.save_path + "relerr.png", f"tester/relerr_step_{comet_step}.png"),
+                    (self.save_path + "frmses.png", f"tester/frmses_step_{comet_step}.png"),
+                ],
+            )
         
         self.rmse = np.sqrt(self.mses[-1])
         self.brmse = self.bc_rmses[-1]
