@@ -82,7 +82,7 @@ class PlotCallback(Callback):
 
 class LossCallback(Callback):
 
-    def __init__(self, verbose=False, log_comet_assets=True):
+    def __init__(self, verbose=False, log_comet_assets=False):
         super(LossCallback, self).__init__()
         self.log_every = None
         self.verbose = verbose
