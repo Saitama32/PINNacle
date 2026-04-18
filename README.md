@@ -50,6 +50,13 @@ See these references for more details,
 git clone https://github.com/i207M/PINNacle.git --depth 1
 cd PINNacle
 pip install -r requirements.txt
+pip install -e .
+```
+
+For notebooks, run the editable install once from the repository root:
+
+```python
+!pip install -e .
 ```
 
 ## Usage
