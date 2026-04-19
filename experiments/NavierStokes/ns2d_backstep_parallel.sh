@@ -4,8 +4,8 @@
 SCRIPT="experiments/NavierStokes/ns2d_backstep_chain.py"
 
 LOG_KEY="true"
-EXP_KEY_1="b97686c7854c4316b5111cc0f2458e5a"
-EXP_KEY_2="5c3d5b2fe4bf4866a51d8839255c3198"
+EXP_KEY_1="f457212dd3024d139c7909c7f00fade9"
+EXP_KEY_2="2797d7e2f48d4b09af4181f5ffc617be"
 
 # Detect available GPUs
 NUM_GPUS=$(nvidia-smi --query-gpu=name --format=csv,noheader | wc -l)
