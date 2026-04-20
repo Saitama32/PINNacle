@@ -4,8 +4,8 @@
 SCRIPT="experiments/Wave/wave2d_heterogeneous_chain.py"
 
 LOG_KEY="true"
-EXP_KEY_1="b419965bf0f64a609f0a5e215360ae30"
-EXP_KEY_2="4a15f92e2fe2417a91e9253cf7d91d20"
+EXP_KEY_1="49fe7c5104374bad88fb8decdf995a3c"
+EXP_KEY_2="ea9574173098445aaac683c9dcd7dcda"
 
 # Detect available GPUs
 NUM_GPUS=$(nvidia-smi --query-gpu=name --format=csv,noheader | wc -l)
