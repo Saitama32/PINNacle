@@ -1,7 +1,7 @@
 #!/bin/bash
 # Auto-run RL chain and distribute jobs across available GPUs.
 
-SCRIPT="experiments/HeatConductivity/heat2d_complexgeometry_chain.py"
+SCRIPT="experiments/HeatConductivity_multi_agent_compare/heat2d_complexgeometry_chain.py"
 
 LOG_KEY="true"
 EXP_KEY_1="589a5328da7b4497b19d2a26ddb82809"

@@ -1,7 +1,7 @@
 #!/bin/bash
 # Автоматический запуск poisson_2d_cg_chain.py с распределением по GPU
 
-SCRIPT="experiments/HeatConductivity/heat2d_varyingcoef_chain.py"
+SCRIPT="experiments/HeatConductivity_multi_agent_compare/heat2d_varyingcoef_chain.py"
 
 LOG_KEY="true"
 EXP_KEY_1="17c10318c0e14938b7cdd48c38c5ea99"
