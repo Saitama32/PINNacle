@@ -4,7 +4,7 @@
 SCRIPT="experiments/HeatConductivity_multi_agent_compare/heat2d_varyingcoef_chain.py"
 
 LOG_KEY="true"
-EXP_KEY_1="86af92b70a684cc7b0dd29815a747b54"
+EXP_KEY_1="94abad8c7f6642099af8a4ece6daa32f"
 EXP_KEY_2="fa12f93a53264f44a50873a11d9e4713"
 
 # Detect available GPUs
