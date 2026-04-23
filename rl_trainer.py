@@ -278,11 +278,9 @@ def run_deepxde_rl_training(
                 if len(rl_agent.replay_buffer) >= rl_agent_params["agent_min_buffer"]:
                     rl_agent.optim_(iters=rl_agent_params["agent_update_iters"])
 
-                state = next_state
                 total_reward += float(reward_shaped.item())
             else:
                 done = -1
-                next_state = state
                 reward_shaped = torch.tensor(-10.0, device=device)
                 info = {
                     "reward_scalar": 0.0,
@@ -327,7 +325,7 @@ def run_deepxde_rl_training(
 
             # callbacks.callbacks[1].save_every = self.t
             # env.render()
-
+            next_state = state
             if done == 1:
                 break
             elif done == 0:
