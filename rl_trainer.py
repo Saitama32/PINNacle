@@ -245,8 +245,7 @@ def run_deepxde_rl_training(
             # update agent
             if len(rl_agent.replay_buffer) >= rl_agent_params["agent_min_buffer"]:
                 rl_agent.optim_(iters=rl_agent_params["agent_update_iters"])
-
-            state = next_state
+                
             total_reward += float(reward_shaped.item())
 
             try:
@@ -284,7 +283,7 @@ def run_deepxde_rl_training(
 
             # callbacks.callbacks[1].save_every = self.t
             # env.render()
-
+            state = next_state
             if done == 1:
                 break
             elif done == 0:
