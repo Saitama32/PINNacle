@@ -1,7 +1,7 @@
 #!/bin/bash
 # Автоматический запуск poisson_2d_cg_chain.py с распределением по GPU
 
-SCRIPT="experiments/Burgers/grayscott_chain.py"
+SCRIPT="experiments/Chaotic/grayscott_chain.py"
 
 # Проверяем, сколько доступно GPU
 NUM_GPUS=$(nvidia-smi --query-gpu=name --format=csv,noheader | wc -l)
