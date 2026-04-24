@@ -2,7 +2,11 @@ import os
 import sys
 os.environ["DDEBACKEND"] = "pytorch"
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
+from dotenv import load_dotenv
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 
+load_dotenv(os.path.join(PROJECT_ROOT, ".env"))
+api_key=os.getenv("COMET_API_KEY")
 from comet_ml import start
 experiment = start(
     api_key="aP71fQTYPNqfsYWvudPPmoBl5",

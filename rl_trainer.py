@@ -101,6 +101,15 @@ def _build_torch_optimizer(opt_name: str, params, action: Dict[str, Any]):
     raise ValueError(f"Unknown optimizer type: {opt_name}. Expected Adam / LBFGS / PSO.")
 
 
+def _extract_weighted_train_loss(model) -> float:
+    loss_train = getattr(getattr(model, "train_state", None), "loss_train", None)
+    if loss_train is None:
+        return float("nan")
+
+    loss_train = np.asarray(loss_train, dtype=np.float64)
+    return float(np.sum(loss_train))
+
+
 def run_deepxde_rl_training(
     model,
     loss_weights,
@@ -235,21 +244,16 @@ def run_deepxde_rl_training(
             tester_callback = callbacks[0]
             rmse = tester_callback.rmse
             b_rmse = tester_callback.brmse
+            train_loss = _extract_weighted_train_loss(model)
+            transition_ready = False
 
-            if np.isfinite(rmse) or np.isfinite(b_rmse):
-
+            if np.isfinite(train_loss):
                 print(f"Operator RMSE: {rmse}, Boundary RMSE: {b_rmse}")
+                print(f"Weighted train loss: {train_loss}")
 
                 env.solver_models = solver_models
                 env.reward_params = {
-                    "operator": {
-                        "coeff": train_args["operator_coeff"] if np.isfinite(rmse) else 0.0,
-                        "error": rmse if np.isfinite(rmse) else 0.0,
-                    },
-                    "bconds": {
-                        "coeff": train_args["bnd_coeff"] if np.isfinite(b_rmse) else 0.0,
-                        "error": b_rmse if np.isfinite(b_rmse) else 0.0,
-                    },
+                    "loss": train_loss,
                 }
                 env.rl_penalty = rl_penalty
 
@@ -267,6 +271,7 @@ def run_deepxde_rl_training(
                 )
 
                 next_state, reward_shaped, done, info = env.step()
+                transition_ready = True
 
                 # prev_reward — теперь просто хранит reward_scalar из info
                 prev_reward = info["reward_scalar"]
@@ -287,14 +292,15 @@ def run_deepxde_rl_training(
                     "reward_scalar": 0.0,
                     "opt_model_i": -1,
                 }
-
                 print(f"Operator RMSE: {rmse}, Boundary RMSE: {b_rmse}. Stopping trajectory with done = -1.")
+                print(f"Weighted train loss: {train_loss}. Stopping trajectory with done = -1.")
 
-            try:
-                # Сохраняем entry локально
-                file_path = os.path.join(output_dir, f'transitions_{rl_agent.steps_done}.pt')
+            if transition_ready:
+                try:
+                    # Сохраняем entry локально
+                    file_path = os.path.join(output_dir, f'transitions_{rl_agent.steps_done}.pt')
 
-                entry = {
+                    entry = {
                             'state': state,
                             'next_state': next_state,
                             'solver_models': _serialize_solver_models(solver_models),
@@ -305,18 +311,18 @@ def run_deepxde_rl_training(
                             'reward_model': float(reward_shaped.item()),
                             'opt_model_i': info["opt_model_i"]
                         }
-                torch.save(entry, file_path)
+                    torch.save(entry, file_path)
 
-                # Логируем тот же файл в comet
-                rl_agent_params['exp'].log_asset(
-                    file_path,
-                    file_name=f"entry_step_{rl_agent.steps_done}.pt",
-                    step=rl_agent.steps_done,
-                    overwrite=True
-                )
+                    # Логируем тот же файл в comet
+                    rl_agent_params['exp'].log_asset(
+                        file_path,
+                        file_name=f"entry_step_{rl_agent.steps_done}.pt",
+                        step=rl_agent.steps_done,
+                        overwrite=True
+                    )
 
-            except Exception as e:
-                print(e)
+                except Exception as e:
+                    print(e)
 
             print(f'\nCurrent reward after {action["type"]} optimizer: {info["reward_scalar"]}.\n'
                     f'Reward after taking prev reward and penalty: {reward_shaped}\n'
@@ -326,7 +332,8 @@ def run_deepxde_rl_training(
 
             # callbacks.callbacks[1].save_every = self.t
             # env.render()
-            state = next_state
+            if transition_ready:
+                state = next_state
             if done == 1:
                 break
             elif done == 0:
