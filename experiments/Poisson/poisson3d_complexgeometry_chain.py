@@ -3,9 +3,14 @@ os.environ["DDEBACKEND"] = "pytorch"
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 
 from comet_ml import start
+from dotenv import load_dotenv
+
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+load_dotenv(os.path.join(PROJECT_ROOT, ".env"))
+api_key = os.getenv("COMET_API_KEY")
 
 experiment = start(
-    api_key="aP71fQTYPNqfsYWvudPPmoBl5",
+    api_key=api_key,
     project_name="rlpinn_poisson3d_complexgeometry_tolerance",
     workspace="saitama32",
 )
@@ -14,8 +19,7 @@ experiment = start(
 
 import sys
 
-project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-sys.path.append(project_root)
+sys.path.append(PROJECT_ROOT)
 
 import time
 import argparse
