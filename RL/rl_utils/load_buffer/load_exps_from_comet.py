@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime
 
 import torch
+from dotenv import load_dotenv
 
 from RL.rl_algorithms import PrioritizedReplayBuffer
 from RL.rl_utils.load_buffer.load_transitions_into_buffer_pickle import (
@@ -15,8 +16,10 @@ from RL.rl_utils.load_buffer.load_transitions_into_buffer_pickle import (
 
 WORKSPACE = "saitama32"
 PROJECT_NAME = "rlpinn-grayscott-farm-transitions"
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
 
-api = API(api_key="aP71fQTYPNqfsYWvudPPmoBl5")
+load_dotenv(os.path.join(PROJECT_ROOT, ".env"))
+api = API(api_key=os.getenv("COMET_API_KEY"))
 
 
 # === Вспомогательные функции ===
@@ -297,6 +300,7 @@ def collect_all_comet_transitions(
 
     if use_log_state:
         apply_log_transform_to_transitions(all_entries)
+    all_entries = add_loss_reward_to_transitions(all_entries)
 
 
     print(f"\n🚀 Всего собрано {len(all_entries)} переходов из {len(experiments_sorted_duration)} экспериментов.")
@@ -626,3 +630,123 @@ def add_proj_mark(all_transitions, proj_name):
     for tr in all_transitions:
         tr["pde"] = proj_name
     return all_transitions
+
+
+def _extract_loss_scalar_from_state(state, loss_key="loss_total"):
+    if not isinstance(state, dict) or loss_key not in state:
+        return None
+
+    value = state[loss_key]
+    if torch.is_tensor(value):
+        tensor = value.detach().float()
+        if tensor.numel() == 0:
+            return None
+        finite = tensor[torch.isfinite(tensor)]
+        if finite.numel() == 0:
+            return None
+        return float(finite.min().item())
+
+    try:
+        scalar = float(value)
+    except (TypeError, ValueError):
+        return None
+
+    return scalar if torch.isfinite(torch.tensor(scalar)) else None
+
+
+def _state_loss_matches_next_state(state, next_state, loss_key="loss_total"):
+    if not isinstance(state, dict) or not isinstance(next_state, dict):
+        return False
+    if loss_key not in state or loss_key not in next_state:
+        return False
+
+    state_loss = state[loss_key]
+    next_loss = next_state[loss_key]
+    if torch.is_tensor(state_loss) and torch.is_tensor(next_loss):
+        if state_loss.shape != next_loss.shape:
+            return False
+        return bool(torch.allclose(state_loss, next_loss, equal_nan=True))
+
+    try:
+        return float(state_loss) == float(next_loss)
+    except (TypeError, ValueError):
+        return False
+
+
+def _zero_state_like(state):
+    if not isinstance(state, dict) or "loss_total" not in state:
+        return state
+
+    zero = {}
+    for key in ("loss_total", "loss_oper", "loss_bnd"):
+        value = state.get(key)
+        if torch.is_tensor(value):
+            zero[key] = torch.zeros_like(value)
+    return zero
+
+
+def _repair_equal_states_from_previous_next_states(seq, loss_key="loss_total"):
+    repaired = 0
+    for i, tr in enumerate(seq):
+        tr = seq[i]
+        if _state_loss_matches_next_state(
+            tr.get("state"),
+            tr.get("next_state"),
+            loss_key=loss_key,
+        ):
+            if i == 0:
+                tr["state"] = _zero_state_like(tr.get("next_state"))
+            else:
+                tr["state"] = seq[i - 1]["next_state"]
+            repaired += 1
+    return repaired
+
+
+def add_loss_reward_to_sequence(seq, loss_key="loss_total"):
+    if not seq:
+        return
+
+    _repair_equal_states_from_previous_next_states(seq, loss_key=loss_key)
+
+    for tr in seq:
+        prev_loss = _extract_loss_scalar_from_state(tr["state"], loss_key=loss_key)
+        next_loss = _extract_loss_scalar_from_state(tr["next_state"], loss_key=loss_key)
+        loss_reward = float(prev_loss - next_loss)
+
+        if "reward_model_original" not in tr and "reward_model" in tr:
+            tr["reward_model_original"] = float(tr["reward_model"])
+        if "reward_model_raw_original" not in tr and "reward_model_raw" in tr:
+            tr["reward_model_raw_original"] = float(tr["reward_model_raw"])
+
+        tr["reward_loss"] = loss_reward
+        tr["reward_model"] = loss_reward
+        if "reward_model_raw" in tr:
+            tr["reward_model_raw"] = loss_reward
+
+        tr["loss_prev"] = float(prev_loss)
+        tr["loss_current"] = float(next_loss)
+
+
+def add_loss_reward_to_transitions(entries, loss_key="loss_total"):
+    """
+    Пересчитывает reward_model из разности loss между соседними стейтами
+    """
+    sequences = []
+    curr_seq = []
+
+    for tr in entries:
+        curr_seq.append(tr)
+        if tr.get("done") in (1, -1):
+            sequences.append(curr_seq)
+            curr_seq = []
+
+    if curr_seq:
+        sequences.append(curr_seq)
+
+    updated = 0
+    for seq in sequences:
+        add_loss_reward_to_sequence(seq, loss_key=loss_key)
+        updated += len(seq)
+
+    print(f"\n🔧 Recomputed loss-based reward_model for {updated} transitions using '{loss_key}'.")
+    return entries
