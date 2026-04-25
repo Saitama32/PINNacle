@@ -107,7 +107,10 @@ def _extract_weighted_train_loss(model) -> float:
         return float("nan")
 
     loss_train = np.asarray(loss_train, dtype=np.float64)
-    return float(np.sum(loss_train))
+    loss_value = float(np.sum(loss_train))
+    if not np.isfinite(loss_value) or loss_value < -1.0:
+        return float("nan")
+    return float(np.log1p(loss_value))
 
 
 def run_deepxde_rl_training(
