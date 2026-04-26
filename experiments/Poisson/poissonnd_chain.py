@@ -13,7 +13,7 @@ api_key = os.getenv("COMET_API_KEY")
 
 experiment = start(
   api_key=api_key,
-  project_name="rlpinn_ns2d_liddriven_tolerance",
+  project_name="rlpinn_poissonnd_tolerance",
   workspace="saitama32"
 )
 
