@@ -47,6 +47,7 @@ class PlotLossSurface:
                  density_p: float = 2,
                  density_vmax: float = -1,
                  density_vmin: float = -1,
+                 latent_dim: int = 2,
                  colorFromGridOnly: bool = True,
                  img_dir: str = None,
                  dde_pde_model = None
@@ -106,7 +107,7 @@ class PlotLossSurface:
         self.density_vmin = density_vmin
         self.colorFromGridOnly = colorFromGridOnly
         self.loss_types = loss_types
-        self.latent_dim = 2
+        self.latent_dim = latent_dim
         self.img_dir = img_dir
         self.dde_pde_model, loss_weights = dde_pde_model()
 

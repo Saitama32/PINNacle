@@ -6,17 +6,23 @@ from dataclasses import dataclass
 from datetime import datetime
 
 import torch
-
+from dotenv import load_dotenv
 from RL.rl_algorithms import PrioritizedReplayBuffer
 from RL.rl_utils.load_buffer.load_transitions_into_buffer_pickle import (
     load_transitions_to_replay_buffer,
+)
+from RL.rl_utils.load_buffer.rebuild_states_from_solver_models import (
+    rebuild_transitions_states_from_solver_models,
 )
 
 
 WORKSPACE = "saitama32"
 PROJECT_NAME = "rlpinn-grayscott-farm-transitions"
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
 
-api = API(api_key="aP71fQTYPNqfsYWvudPPmoBl5")
+load_dotenv(os.path.join(PROJECT_ROOT, ".env"))
+api = API(api_key=os.getenv("COMET_API_KEY"))
+
 
 
 # === Вспомогательные функции ===
@@ -195,6 +201,10 @@ def collect_all_comet_transitions(
     proj_name=None,
     mark_states=None,
     num_workers=None,
+    rebuild_states_from_solver_models=False,
+    AE_model_params=None,
+    AE_train_params=None,
+    loss_surface_params=None,
 ) -> PrioritizedReplayBuffer:
     """Собирает все переходы из не-crashed экспериментов проекта и возвращает заполненный PrioritizedReplayBuffer."""
     print("🔍 Получаем эксперименты из Comet...")
@@ -293,9 +303,17 @@ def collect_all_comet_transitions(
     # --- Сдвиг наград для успешных переходов ---
     all_transitions = shift_done_rewards(all_transitions, done=-1, shift_value=-5)
     # --- Добавление delta loss ---
-    all_entries = add_delta_to_all_entries(all_transitions)
+    if rebuild_states_from_solver_models:
+        all_entries = rebuild_transitions_states_from_solver_models(
+            all_transitions,
+            AE_model_params=AE_model_params,
+            AE_train_params=AE_train_params,
+            loss_surface_params=loss_surface_params,
+        )
+    else:
+        all_entries = add_delta_to_all_entries(all_transitions)
 
-    if use_log_state:
+    if use_log_state and not rebuild_states_from_solver_models:
         apply_log_transform_to_transitions(all_entries)
 
 
