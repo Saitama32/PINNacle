@@ -302,6 +302,7 @@ def collect_all_comet_transitions(
 
     # --- Сдвиг наград для успешных переходов ---
     all_transitions = shift_done_rewards(all_transitions, done=-1, shift_value=-5)
+    all_transitions = all_transitions[:10]
     # --- Добавление delta loss ---
     if rebuild_states_from_solver_models:
         all_entries = rebuild_transitions_states_from_solver_models(

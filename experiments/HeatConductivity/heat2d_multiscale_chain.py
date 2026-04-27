@@ -171,7 +171,7 @@ def main():
         "from_last": False,
         "prefix": "model-",
         "loss_name": "loss_total",
-        "x_range": [-1.25, 1.25, 25],
+        "x_range": [-1.0, 1.0, 10],
         "vmax": -1.0,
         "vmin": -1.0,
         "vlevel": 30.0,

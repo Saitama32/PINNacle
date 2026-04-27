@@ -170,7 +170,7 @@ class DQNAgent:
         else:
             delta = torch.zeros_like(total)
 
-        x = torch.stack((total, oper, bnd, delta), dim=0)   # (4,26,26)
+        x = torch.stack((total, oper, bnd, delta), dim=0)   # (4,*spatial_dims)
         return x
 
     def _get_param_act_idx(self, action_i, pname):
@@ -257,7 +257,7 @@ class DQNAgent:
     
 
     def _greedy_mask(self, s_batch, a_batch):
-    # s_batch: Tensor[B, ..., 26,26], a_batch: LongTensor[B]
+    # s_batch: Tensor[B, 4, *spatial_dims], a_batch: LongTensor[B]
         with torch.no_grad():
             _, q_all = self.model_optim(s_batch)       # [B, A]
             a_star = q_all.argmax(dim=1)               # [B]
@@ -333,7 +333,7 @@ class DQNAgent:
 
             B = len(first_trs)
 
-            state  = torch.stack([self._stack_state(s)  for s in state])      # (B,2,26,26)
+            state  = torch.stack([self._stack_state(s)  for s in state])      # (B,4,*spatial_dims)
             next_state = torch.stack([self._stack_state(s2) for s2 in next_state])
             reward   = torch.tensor(reward, dtype=torch.float, device=self.device)              # (B,)
             done_raw = torch.tensor(done, dtype=torch.int8, device=self.device)    # сохраняем знак для метрик
@@ -666,7 +666,7 @@ class DQNAgent:
             delta
         ], dim=0).to(self.device)
 
-        # сделать батч: (1,4,26,26)
+        # сделать батч: (1,4,*spatial_dims)
         state_tensor = state_tensor.unsqueeze(0)
 
         # eps-greedy

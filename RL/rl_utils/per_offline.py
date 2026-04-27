@@ -14,7 +14,7 @@ def recalc_all_priorities_batched(agent, batch_size: int = 32):
       - replay_buffer (из per_buffer.PrioritizedReplayBuffer)
       - model_optim, target_model_optim
       - model_params, target_model_params
-      - _stack_state(dict)->Tensor[2,26,26]
+      - _stack_state(dict)->Tensor[4,*spatial_dims]
       - _get_param_act_idx(action, pname) -> int
       - i2opt, optimizer_dict, device, gamma
     """
@@ -32,7 +32,7 @@ def recalc_all_priorities_batched(agent, batch_size: int = 32):
     new_priors = []
 
     def _stack_batch(transitions):
-        state  = torch.stack([agent._stack_state(tr.state)      for tr in transitions]).to(dev)   # (b,2,26,26)
+        state  = torch.stack([agent._stack_state(tr.state)      for tr in transitions]).to(dev)   # (b,4,*spatial_dims)
         nstate = torch.stack([agent._stack_state(tr.next_state) for tr in transitions]).to(dev)
         reward = torch.tensor([float(tr.reward) for tr in transitions], dtype=torch.float, device=dev)
         # Terminal flag: both done==1 and done==-1 must stop bootstrap.
