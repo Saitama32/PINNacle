@@ -119,6 +119,8 @@ def main():
         "PSO": {"lr": [0.0, 1e-3, 1e-4], "epochs": [100, 200, 300]},
     }
 
+    latent_dim = 3
+
     AE_model_params = {
         "mode": "NN",
         "num_of_layers": 3,
@@ -136,6 +138,7 @@ def main():
         "polars_weight": 0.0,
         "wellspacedtrajectory_weight": 0.0,
         "gridscaling_weight": 0.0,
+        "latent_dim": latent_dim,
         "device": device,
     }
 
@@ -181,7 +184,7 @@ def main():
         "colorFromGridOnly": True,
         "img_dir": "",
         "dde_pde_model": get_model_rec,
-        "latent_dim": 3,
+        "latent_dim": latent_dim,
     }
 
     rl_agent_params = {

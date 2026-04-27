@@ -35,7 +35,7 @@ class VisualizationModel:
                  prefix: str = 'model-',
                  every_nth: int = 1,
                  grid_step: float = 0.1,
-                 d_max_latent: float = 2.0,
+                 d_max_latent: int = 2,
                  anchor_mode: str = "circle",
                  rec_weight: float = 1.0,
                  anchor_weight: float = 0.0,
@@ -43,6 +43,7 @@ class VisualizationModel:
                  polars_weight: float = 0.0,
                  wellspacedtrajectory_weight: float = 0.0,
                  gridscaling_weight: float = 0.0,
+                 latent_dim: int = 2,
                  device: str = None,
                  # resume: bool = False
                  ):
@@ -74,7 +75,7 @@ class VisualizationModel:
         self.layers_AE = layers_AE
         self.AE_model = None
         self.path_to_plot_model = path_to_plot_model
-        self.latent_dim = 2
+        self.latent_dim = latent_dim
         self.rec_weight = rec_weight
 
         # Data-related arguments
