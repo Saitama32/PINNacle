@@ -4,7 +4,7 @@ os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 import sys
 from dotenv import load_dotenv
 from comet_ml import start
-PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
 sys.path.append(PROJECT_ROOT)
 load_dotenv(os.path.join(PROJECT_ROOT, ".env"))
 api_key = os.getenv("COMET_API_KEY")
