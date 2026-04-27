@@ -155,6 +155,71 @@ def load_single_experiment_transitions(exp, index, save_dir=None):
     )
 
 
+def rebuild_single_comet_experiment_transitions(
+    *,
+    source_project_name,
+    source_experiment_key,
+    target_experiment,
+    output_dir,
+    workspace=WORKSPACE,
+    AE_model_params=None,
+    AE_train_params=None,
+    loss_surface_params=None,
+):
+    """Rebuild transitions from one Comet experiment and log them to another run."""
+    if not source_project_name:
+        raise ValueError("source_project_name is required.")
+    if not source_experiment_key:
+        raise ValueError("source_experiment_key is required.")
+    if target_experiment is None:
+        raise ValueError("target_experiment is required.")
+
+    os.makedirs(output_dir, exist_ok=True)
+
+    print(
+        "Loading source Comet experiment: "
+        f"workspace={workspace}, project={source_project_name}, "
+        f"experiment={source_experiment_key}"
+    )
+    source_exp = api.get_experiment(
+        workspace=workspace,
+        project_name=source_project_name,
+        experiment=source_experiment_key,
+    )
+
+    load_result = load_single_experiment_transitions(source_exp, index=1)
+    _log_experiment_result(load_result, len(load_result.transitions))
+    if load_result.error:
+        raise RuntimeError(load_result.error)
+    if not load_result.transitions:
+        print("No transitions loaded from source experiment.")
+        return []
+
+    rebuilt_entries = rebuild_transitions_states_from_solver_models(
+        load_result.transitions,
+        AE_model_params=AE_model_params,
+        AE_train_params=AE_train_params,
+        loss_surface_params=loss_surface_params,
+    )
+
+    for step, entry in enumerate(rebuilt_entries, 1):
+        file_path = os.path.join(output_dir, f"transitions_{step}.pt")
+        torch.save(entry, file_path)
+        target_experiment.log_asset(
+            file_path,
+            file_name=f"entry_step_{step}.pt",
+            step=step,
+            overwrite=True,
+        )
+
+    print(
+        "Rebuild buffer upload complete: "
+        f"{len(rebuilt_entries)} rebuilt entries logged to Comet, "
+        f"local output_dir={output_dir}"
+    )
+    return rebuilt_entries
+
+
 def _log_experiment_result(result, running_total):
     print(f"[{result.index:2d}] {result.exp_name} ({result.exp_id})")
 
