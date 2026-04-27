@@ -1,4 +1,5 @@
 import copy
+import statistics
 import time
 
 import torch
@@ -175,6 +176,7 @@ def rebuild_transitions_states_from_solver_models(
     skipped = 0
     rebuild_time_total = 0.0
     rebuild_time_count = 0
+    rebuild_times = []
     counter = 1
     for seq_i, sequence in enumerate(sequences, 1):
         previous_next_state = None
@@ -189,8 +191,10 @@ def rebuild_transitions_states_from_solver_models(
                     loss_surface_params=loss_surface_params,
                     counter=counter,
                 )
-                rebuild_time_total += time.perf_counter() - rebuild_started_at
+                rebuild_time = time.perf_counter() - rebuild_started_at
+                rebuild_time_total += rebuild_time
                 rebuild_time_count += 1
+                rebuild_times.append(rebuild_time)
             except Exception as exc:
                 skipped += 1
                 print(
@@ -224,11 +228,22 @@ def rebuild_transitions_states_from_solver_models(
         if rebuild_time_count
         else 0.0
     )
+    per_10_stats = []
+    for chunk_i in range(0, len(rebuild_times), 10):
+        chunk = rebuild_times[chunk_i : chunk_i + 10]
+        chunk_avg = statistics.fmean(chunk)
+        chunk_std = statistics.pstdev(chunk) if len(chunk) > 1 else 0.0
+        per_10_stats.append(
+            f"{chunk_i + 1}-{chunk_i + len(chunk)}: "
+            f"avg {chunk_avg:.2f}s, std {chunk_std:.2f}s"
+        )
+
     print(
         "Rebuilt transition states from solver_models: "
         f"{len(rebuilt_entries)} kept, {skipped} skipped. "
         f"next_state rebuild avg: {avg_rebuild_time:.2f}s "
         f"over {rebuild_time_count} runs "
-        f"(total {rebuild_time_total:.2f}s)."
+        f"(total {rebuild_time_total:.2f}s). "
+        f"Per 10 transitions: {'; '.join(per_10_stats) if per_10_stats else 'n/a'}."
     )
     return rebuilt_entries
