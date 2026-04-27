@@ -119,7 +119,7 @@ def main():
         "PSO": {"lr": [0.0, 1e-3, 1e-4], "epochs": [100, 200, 300]},
     }
 
-    latent_dim = 1
+    latent_dim = 2
 
     AE_model_params = {
         "mode": "NN",
