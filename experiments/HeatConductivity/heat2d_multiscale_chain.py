@@ -181,7 +181,7 @@ def main():
         "colorFromGridOnly": True,
         "img_dir": "",
         "dde_pde_model": get_model_rec,
-        "latent_dim": 2,
+        "latent_dim": 3,
     }
 
     rl_agent_params = {
