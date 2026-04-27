@@ -154,6 +154,7 @@ def rebuild_transitions_states_from_solver_models(
     AE_model_params,
     AE_train_params,
     loss_surface_params,
+    on_rebuilt_entry=None,
 ):
     if AE_model_params is None or AE_train_params is None or loss_surface_params is None:
         raise ValueError(
@@ -215,6 +216,8 @@ def rebuild_transitions_states_from_solver_models(
             rebuilt_entry["state"] = state
             rebuilt_entry["next_state"] = next_state
             rebuilt_entries.append(rebuilt_entry)
+            if on_rebuilt_entry is not None:
+                on_rebuilt_entry(rebuilt_entry, len(rebuilt_entries))
 
             previous_next_state = clone_state_dict(next_state)
             counter += 1

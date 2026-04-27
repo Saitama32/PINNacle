@@ -195,14 +195,7 @@ def rebuild_single_comet_experiment_transitions(
         print("No transitions loaded from source experiment.")
         return []
 
-    rebuilt_entries = rebuild_transitions_states_from_solver_models(
-        load_result.transitions,
-        AE_model_params=AE_model_params,
-        AE_train_params=AE_train_params,
-        loss_surface_params=loss_surface_params,
-    )
-
-    for step, entry in enumerate(rebuilt_entries, 1):
+    def log_rebuilt_entry(entry, step):
         file_path = os.path.join(output_dir, f"transitions_{step}.pt")
         torch.save(entry, file_path)
         target_experiment.log_asset(
@@ -211,6 +204,15 @@ def rebuild_single_comet_experiment_transitions(
             step=step,
             overwrite=True,
         )
+        print(f"Logged rebuilt transition to Comet: entry_step_{step}.pt")
+
+    rebuilt_entries = rebuild_transitions_states_from_solver_models(
+        load_result.transitions,
+        AE_model_params=AE_model_params,
+        AE_train_params=AE_train_params,
+        loss_surface_params=loss_surface_params,
+        on_rebuilt_entry=log_rebuilt_entry,
+    )
 
     print(
         "Rebuild buffer upload complete: "
