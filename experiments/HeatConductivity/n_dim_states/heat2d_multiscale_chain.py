@@ -11,7 +11,7 @@ api_key = os.getenv("COMET_API_KEY")
 
 experiment = start(
     api_key=api_key,
-    project_name="rlpinn_heat2d_multiscale_optimization_n_dim",
+    project_name="rlpinn_heat2d_multiscale_rebuild_buffer_3_dim",
     workspace="saitama32",
 )
 
@@ -37,7 +37,7 @@ torch.set_default_dtype(torch.float32)
 
 
 # OPTIMIZATION_PROJECT_NAME = "rlpinn_heat2d_multiscale_optimization_n_dim"
-REBUILD_PROJECT_NAME = "rlpinn_heat2d_multiscale_rebuild_buffer_3_dim"
+# REBUILD_PROJECT_NAME = "rlpinn_heat2d_multiscale_rebuild_buffer_3_dim"
 DEFAULT_SOURCE_PROJECT_NAME = "rlpinn-heat2d-multiscale-tolerance-with-models"
 path_to_trans=os.path.join("transitions_rebuilt", "heat2d_multiscale")
 
