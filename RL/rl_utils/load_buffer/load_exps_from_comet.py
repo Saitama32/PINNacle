@@ -272,19 +272,6 @@ def _process_loaded_transition_block(
 ):
     transitions = _filter_terminal_without_active_chain(transitions)
 
-    if tolerance > 0.0 and prev_tol == 0.0 and new_tol:
-        transitions = truncate_failure_chains_by_tol(
-            transitions,
-            tol=tolerance,
-            shift_reward=10.0,
-        )
-    elif tolerance > prev_tol and prev_tol != 0.0:
-        transitions = truncate_success_chains(
-            transitions,
-            current_tol=tolerance,
-            prev_tol=prev_tol,
-        )
-
     if mark_states:
         transitions = add_proj_mark(transitions, proj_name)
 
@@ -296,6 +283,19 @@ def _process_loaded_transition_block(
         apply_log_transform_to_transitions(entries)
 
     entries = add_loss_reward_to_non_terminal_transitions(entries, loss_key=loss_key)
+    if tolerance > 0.0 and prev_tol == 0.0 and new_tol:
+        entries = truncate_failure_chains_by_tol(
+            entries,
+            tol=tolerance,
+            shift_reward=10.0,
+        )
+    elif tolerance > prev_tol and prev_tol != 0.0:
+        entries = truncate_success_chains(
+            entries,
+            current_tol=tolerance,
+            prev_tol=prev_tol,
+        )
+
     entries = _filter_zero_current_reward_transitions(entries, loss_key=loss_key)
     return entries
 
@@ -320,6 +320,7 @@ def add_loss_reward_to_non_terminal_sequence(seq, loss_key="loss_total"):
             tr["reward_model_raw_original"] = float(tr["reward_model_raw"])
 
         tr["reward_loss"] = loss_reward
+        tr["reward"] = float(next_loss)
         tr["reward_model"] = loss_reward
         if "reward_model_raw" in tr:
             tr["reward_model_raw"] = loss_reward

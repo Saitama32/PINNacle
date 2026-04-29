@@ -122,6 +122,7 @@ def add_loss_reward_to_non_terminal_sequence(seq, loss_key="loss_total"):
             tr["reward_model_raw_original"] = float(tr["reward_model_raw"])
 
         tr["reward_loss"] = loss_reward
+        tr["reward"] = float(next_loss)
         tr["reward_model"] = loss_reward
         if "reward_model_raw" in tr:
             tr["reward_model_raw"] = loss_reward
