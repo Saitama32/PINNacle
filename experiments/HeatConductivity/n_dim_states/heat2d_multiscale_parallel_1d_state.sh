@@ -1,7 +1,7 @@
 #!/bin/bash
 # Auto-run RL chain and distribute jobs across available GPUs.
 
-SCRIPT="experiments/HeatConductivity/heat2d_complexgeometry_chain.py"
+SCRIPT="experiments/HeatConductivity/n_dim_states/heat2d_multiscale_chain_1d_state.py"
 
 NUM_GPUS=$(nvidia-smi --query-gpu=name --format=csv,noheader | wc -l)
 
