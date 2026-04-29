@@ -235,6 +235,19 @@ def _filter_terminal_without_active_chain(transitions):
     return filtered
 
 
+def _reset_success_done_to_failure(transitions):
+    reset_count = 0
+    for tr in transitions:
+        if _done_value(tr) == 1:
+            tr["_original_done"] = 1
+            tr["done"] = -1
+            reset_count += 1
+
+    if reset_count:
+        print(f"Reset {reset_count} old success terminals from done=1 to done=-1.")
+    return transitions
+
+
 def repair_equal_states_in_all_entries(entries, loss_key="loss_total"):
     sequences = []
     curr_seq = []
@@ -269,11 +282,15 @@ def _process_loaded_transition_block(
     mark_states=None,
     proj_name=None,
     loss_key="loss_total",
+    reset_success_done_to_failure=False,
 ):
     transitions = _filter_terminal_without_active_chain(transitions)
 
     if mark_states:
         transitions = add_proj_mark(transitions, proj_name)
+
+    if reset_success_done_to_failure:
+        transitions = _reset_success_done_to_failure(transitions)
 
     transitions = shift_done_rewards(transitions, done=-1, shift_value=-5)
     entries = repair_equal_states_in_all_entries(transitions, loss_key=loss_key)
@@ -367,6 +384,7 @@ def collect_all_comet_transitions(
     proj_name=None,
     mark_states=None,
     num_workers=None,
+    reset_success_done_to_failure=False,
 ) -> PrioritizedReplayBuffer:
     """Собирает все переходы из не-crashed экспериментов проекта и возвращает заполненный PrioritizedReplayBuffer."""
     print("🔍 Получаем эксперименты из Comet...")
@@ -465,6 +483,7 @@ def collect_all_comet_transitions(
             use_log_state=use_log_state,
             mark_states=mark_states,
             proj_name=proj_name,
+            reset_success_done_to_failure=reset_success_done_to_failure,
         )
         all_entries.extend(block_entries)
 
@@ -646,7 +665,8 @@ def truncate_failure_chains_by_tol(transitions, tol=0.0, shift_reward=10.0):
         for idx, tr in enumerate(chain):
             reward = float(tr.get("reward", 0.0))
             done = int(tr.get("done", 0))
-            if done == 0 and abs(reward) <= tol:
+            is_old_success_terminal = done == -1 and tr.get("_original_done") == 1
+            if (done == 0 or is_old_success_terminal) and abs(reward) <= tol:
                 cut_idx = idx
                 break
 
