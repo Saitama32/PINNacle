@@ -185,6 +185,174 @@ def _resolve_num_workers(num_workers, total_experiments):
     return max(1, min(int(num_workers), total_experiments))
 
 
+def _done_value(tr):
+    done = tr.get("done")
+    if torch.is_tensor(done):
+        if done.numel() != 1:
+            return None
+        done = done.detach().cpu().item()
+    try:
+        return int(done)
+    except (TypeError, ValueError):
+        return None
+
+
+def _filter_zero_current_reward_transitions(entries, loss_key="loss_total"):
+    filtered = []
+    skipped = 0
+
+    for tr in entries:
+        current_reward = _extract_loss_scalar_from_state(
+            tr.get("next_state"),
+            loss_key=loss_key,
+        )
+        if current_reward == 0:
+            skipped += 1
+            continue
+        filtered.append(tr)
+
+    if skipped:
+        print(f"Skipped {skipped} transitions with current_reward == 0.")
+    return filtered
+
+
+def _filter_terminal_without_active_chain(transitions):
+    filtered = []
+    chain_active = False
+    skipped = 0
+
+    for tr in transitions:
+        done = _done_value(tr)
+        if not chain_active and done in (1, -1):
+            skipped += 1
+            continue
+
+        filtered.append(tr)
+        chain_active = done not in (1, -1)
+
+    if skipped:
+        print(f"Skipped {skipped} terminal transitions without active chain.")
+    return filtered
+
+
+def repair_equal_states_in_all_entries(entries, loss_key="loss_total"):
+    sequences = []
+    curr_seq = []
+
+    for tr in entries:
+        curr_seq.append(tr)
+        if _done_value(tr) in (1, -1):
+            sequences.append(curr_seq)
+            curr_seq = []
+
+    if curr_seq:
+        sequences.append(curr_seq)
+
+    repaired = 0
+    for seq in sequences:
+        repaired += _repair_equal_states_from_previous_next_states(
+            seq,
+            loss_key=loss_key,
+        )
+
+    if repaired:
+        print(f"Repaired {repaired} transitions where state matched next_state.")
+    return entries
+
+
+def _process_loaded_transition_block(
+    transitions,
+    tolerance=0.0,
+    prev_tol=0.0,
+    new_tol=False,
+    use_log_state=False,
+    mark_states=None,
+    proj_name=None,
+    loss_key="loss_total",
+):
+    transitions = _filter_terminal_without_active_chain(transitions)
+
+    if tolerance > 0.0 and prev_tol == 0.0 and new_tol:
+        transitions = truncate_failure_chains_by_tol(
+            transitions,
+            tol=tolerance,
+            shift_reward=10.0,
+        )
+    elif tolerance > prev_tol and prev_tol != 0.0:
+        transitions = truncate_success_chains(
+            transitions,
+            current_tol=tolerance,
+            prev_tol=prev_tol,
+        )
+
+    if mark_states:
+        transitions = add_proj_mark(transitions, proj_name)
+
+    transitions = shift_done_rewards(transitions, done=-1, shift_value=-5)
+    entries = repair_equal_states_in_all_entries(transitions, loss_key=loss_key)
+    entries = add_delta_to_all_entries(entries)
+
+    if use_log_state:
+        apply_log_transform_to_transitions(entries)
+
+    entries = add_loss_reward_to_non_terminal_transitions(entries, loss_key=loss_key)
+    entries = _filter_zero_current_reward_transitions(entries, loss_key=loss_key)
+    return entries
+
+
+def add_loss_reward_to_non_terminal_sequence(seq, loss_key="loss_total"):
+    if not seq:
+        return
+
+    _repair_equal_states_from_previous_next_states(seq, loss_key=loss_key)
+
+    for tr in seq:
+        if _done_value(tr) in (1, -1):
+            continue
+
+        prev_loss = _extract_loss_scalar_from_state(tr["state"], loss_key=loss_key)
+        next_loss = _extract_loss_scalar_from_state(tr["next_state"], loss_key=loss_key)
+        loss_reward = float(prev_loss - next_loss)
+
+        if "reward_model_original" not in tr and "reward_model" in tr:
+            tr["reward_model_original"] = float(tr["reward_model"])
+        if "reward_model_raw_original" not in tr and "reward_model_raw" in tr:
+            tr["reward_model_raw_original"] = float(tr["reward_model_raw"])
+
+        tr["reward_loss"] = loss_reward
+        tr["reward_model"] = loss_reward
+        if "reward_model_raw" in tr:
+            tr["reward_model_raw"] = loss_reward
+
+        tr["loss_prev"] = float(prev_loss)
+        tr["loss_current"] = float(next_loss)
+
+
+def add_loss_reward_to_non_terminal_transitions(entries, loss_key="loss_total"):
+    sequences = []
+    curr_seq = []
+
+    for tr in entries:
+        curr_seq.append(tr)
+        if _done_value(tr) in (1, -1):
+            sequences.append(curr_seq)
+            curr_seq = []
+
+    if curr_seq:
+        sequences.append(curr_seq)
+
+    updated = 0
+    for seq in sequences:
+        add_loss_reward_to_non_terminal_sequence(seq, loss_key=loss_key)
+        updated += sum(1 for tr in seq if _done_value(tr) not in (1, -1))
+
+    print(
+        f"\nRecomputed loss-based reward_model for {updated} "
+        f"non-terminal transitions using '{loss_key}'."
+    )
+    return entries
+
+
 def collect_all_comet_transitions(
     replay_buffer=None,
     max_exps_last=10,
@@ -234,7 +402,7 @@ def collect_all_comet_transitions(
         os.makedirs(save_dir, exist_ok=True)
         print(f"Local save enabled: {save_dir}")
 
-    all_transitions = []
+    transition_blocks = []
     worker_count = _resolve_num_workers(num_workers, len(experiments_sorted_tol))
     indexed_experiments = list(enumerate(experiments_sorted_tol, 1))
 
@@ -272,36 +440,45 @@ def collect_all_comet_transitions(
 
     for result in experiment_results:
         if result.error:
-            _log_experiment_result(result, len(all_transitions))
+            _log_experiment_result(
+                result,
+                sum(len(block) for block in transition_blocks),
+            )
             continue
-        all_transitions.extend(result.transitions)
-        _log_experiment_result(result, len(all_transitions))
-
-    if tolerance > 0.0 and prev_tol == 0.0 and new_tol:
-        all_transitions = truncate_failure_chains_by_tol(
-            all_transitions,
-            tol=tolerance,
-            shift_reward=10.0,
+        transition_blocks.append(result.transitions)
+        _log_experiment_result(
+            result,
+            sum(len(block) for block in transition_blocks),
         )
-    elif tolerance > prev_tol and prev_tol != 0.0:
-        all_transitions = truncate_success_chains(
-            all_transitions,
-            current_tol=tolerance,
+
+    all_entries = []
+    for block_index, transitions in enumerate(transition_blocks, 1):
+        if not transitions:
+            continue
+
+        block_entries = _process_loaded_transition_block(
+            transitions,
+            tolerance=tolerance,
             prev_tol=prev_tol,
+            new_tol=new_tol,
+            use_log_state=use_log_state,
+            mark_states=mark_states,
+            proj_name=proj_name,
         )
+        all_entries.extend(block_entries)
 
-    if mark_states:
-        all_transitions = add_proj_mark(all_transitions, proj_name)
-
-    # --- Сдвиг наград для успешных переходов ---
-    all_transitions = shift_done_rewards(all_transitions, done=-1, shift_value=-5)
-    # --- Добавление delta loss ---
-    all_entries = add_delta_to_all_entries(all_transitions)
-
-    if use_log_state:
-        apply_log_transform_to_transitions(all_entries)
-    all_entries = add_loss_reward_to_transitions(all_entries)
-
+        chain = []
+        max_chain_len = 0
+        for tr in block_entries:
+            chain.append(tr)
+            max_chain_len = max(max_chain_len, len(chain))
+            if _done_value(tr) in (1, -1):
+                chain = []
+        if max_chain_len > 12:
+            print(
+                f"Warning: experiment block {block_index} has chain length "
+                f"{max_chain_len}; check source transitions."
+            )
 
     print(f"\n🚀 Всего собрано {len(all_entries)} переходов из {len(experiments_sorted_duration)} экспериментов.")
     if not all_entries:

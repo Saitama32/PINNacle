@@ -13,6 +13,7 @@ from RL.rl_utils.load_buffer.load_exps_from_comet import (
     get_end_time,
     get_param_value,
     load_single_experiment_transitions,
+    repair_equal_states_in_all_entries,
     shift_done_rewards,
 )
 
@@ -69,13 +70,25 @@ def _safe_float(value):
         return None
 
 
+def _done_value(tr):
+    done = tr.get("done")
+    if torch.is_tensor(done):
+        if done.numel() != 1:
+            return None
+        done = done.detach().cpu().item()
+    try:
+        return int(done)
+    except (TypeError, ValueError):
+        return None
+
+
 def _get_reward_prev_penalty(tr, prev_loss, next_loss):
     reward_loss = _safe_float(tr.get("reward_loss"))
     if reward_loss is not None:
         return reward_loss
 
     reward_model = _safe_float(tr.get("reward_model"))
-    if tr.get("done") in (1, -1) and reward_model is not None:
+    if _done_value(tr) in (1, -1) and reward_model is not None:
         return reward_model
 
     loss_prev = _safe_float(tr.get("loss_prev"))
@@ -96,7 +109,7 @@ def add_loss_reward_to_non_terminal_sequence(seq, loss_key="loss_total"):
     _repair_equal_states_from_previous_next_states(seq, loss_key=loss_key)
 
     for tr in seq:
-        if tr.get("done") in (1, -1):
+        if _done_value(tr) in (1, -1):
             continue
 
         prev_loss = _extract_loss_scalar_from_state(tr["state"], loss_key=loss_key)
@@ -123,7 +136,7 @@ def add_loss_reward_to_non_terminal_transitions(entries, loss_key="loss_total"):
 
     for tr in entries:
         curr_seq.append(tr)
-        if tr.get("done") in (1, -1):
+        if _done_value(tr) in (1, -1):
             sequences.append(curr_seq)
             curr_seq = []
 
@@ -133,7 +146,7 @@ def add_loss_reward_to_non_terminal_transitions(entries, loss_key="loss_total"):
     updated = 0
     for seq in sequences:
         add_loss_reward_to_non_terminal_sequence(seq, loss_key=loss_key)
-        updated += sum(1 for tr in seq if tr.get("done") not in (1, -1))
+        updated += sum(1 for tr in seq if _done_value(tr) not in (1, -1))
 
     print(
         f"\nRecomputed loss-based reward_model for {updated} "
@@ -147,21 +160,42 @@ def build_loss_reward_tolerance_rows(entries, loss_key="loss_total"):
     chain = []
 
     for tr in entries:
+        done = _done_value(tr)
+        if not chain and done in (1, -1):
+            print(
+                "Skipping terminal transition without an active chain: "
+                f"done={done}, action={tr.get('action')}"
+            )
+            continue
+
         last_optimizer = decode_optimizer_from_action(tr.get("action"))
         chain.append(last_optimizer)
 
         prev_loss = _extract_loss_scalar_from_state(tr.get("state"), loss_key=loss_key)
         next_loss = _extract_loss_scalar_from_state(tr.get("next_state"), loss_key=loss_key)
+        reward_prev_penalty = _get_reward_prev_penalty(tr, prev_loss, next_loss)
+
+        if next_loss == 0 and reward_prev_penalty == -5:
+            print(
+                "Skipping zero-loss failure transition: "
+                f"done={done}, action={tr.get('action')}"
+            )
+            if done in (1, -1):
+                chain = []
+            elif len(chain) == 1:
+                chain = []
+            continue
+
         rows.append(
             {
                 "last_optimizer": last_optimizer,
                 "current_reward": next_loss,
-                "reward_prev_penalty": _get_reward_prev_penalty(tr, prev_loss, next_loss),
+                "reward_prev_penalty": reward_prev_penalty,
                 "chain": ", ".join(chain),
             }
         )
 
-        if tr.get("done") in (1, -1):
+        if done in (1, -1):
             chain = []
 
     return rows
@@ -175,7 +209,7 @@ def _resolve_num_workers(num_workers, total_experiments):
     return max(1, min(int(num_workers), total_experiments))
 
 
-def _load_project_transitions(
+def _load_project_transition_blocks(
     proj_name,
     max_exps_last=10,
     duration_grater_hours=1,
@@ -211,7 +245,7 @@ def _load_project_transitions(
         experiments_selected = experiments_sorted_duration
 
     print(f"Selected {len(experiments_selected)} experiments.")
-    all_transitions = []
+    transition_blocks = []
     worker_count = _resolve_num_workers(num_workers, len(experiments_selected))
     indexed_experiments = list(enumerate(experiments_selected, 1))
 
@@ -243,14 +277,14 @@ def _load_project_transitions(
         if result.error:
             print(f"[{result.index}] {result.exp_name}: {result.error}")
             continue
-        all_transitions.extend(result.transitions)
+        transition_blocks.append(result.transitions)
         print(
             f"[{result.index}] {result.exp_name}: "
             f"{len(result.transitions)} transitions "
-            f"({len(all_transitions)} total)"
+            f"({sum(len(block) for block in transition_blocks)} total)"
         )
 
-    return all_transitions
+    return transition_blocks
 
 
 def collect_loss_reward_tolerance_rows(
@@ -264,7 +298,7 @@ def collect_loss_reward_tolerance_rows(
     num_workers=None,
     loss_key="loss_total",
 ):
-    transitions = _load_project_transitions(
+    transition_blocks = _load_project_transition_blocks(
         proj_name=proj_name,
         max_exps_last=max_exps_last,
         duration_grater_hours=duration_grater_hours,
@@ -275,13 +309,32 @@ def collect_loss_reward_tolerance_rows(
         num_workers=num_workers,
     )
 
-    if not transitions:
+    if not transition_blocks:
         return []
 
-    transitions = shift_done_rewards(transitions, done=-1, shift_value=-5)
-    entries = add_delta_to_all_entries(transitions)
-    entries = add_loss_reward_to_non_terminal_transitions(entries, loss_key=loss_key)
-    return build_loss_reward_tolerance_rows(entries, loss_key=loss_key)
+    rows = []
+    for block_index, transitions in enumerate(transition_blocks, 1):
+        if not transitions:
+            continue
+        transitions = shift_done_rewards(transitions, done=-1, shift_value=-5)
+        entries = repair_equal_states_in_all_entries(transitions, loss_key=loss_key)
+        entries = add_delta_to_all_entries(entries)
+        entries = add_loss_reward_to_non_terminal_transitions(entries, loss_key=loss_key)
+        block_rows = build_loss_reward_tolerance_rows(entries, loss_key=loss_key)
+        rows.extend(block_rows)
+
+        max_chain_len = max(
+            (len(row["chain"].split(", ")) for row in block_rows if row["chain"]),
+            default=0,
+        )
+        if max_chain_len > 12:
+            print(
+                f"Warning: experiment block {block_index} has chain length "
+                f"{max_chain_len}; source transitions may contain multiple "
+                "unfinished fragments."
+            )
+
+    return rows
 
 
 def collect_loss_reward_tolerance_dataframe(**kwargs):
