@@ -162,7 +162,7 @@ def run_deepxde_rl_training(
                                                            prev_tol= rl_agent_params["prev_tol"], use_tol = rl_agent_params["use_tol"], new_tol = rl_agent_params["new_tol"],
                                                            use_log_state=rl_agent_params["log_key"], 
                                                            proj_name=rl_agent_params["proj_name"],
-                                                           rebuild_states_from_solver_models=True,
+                                                           rebuild_states_from_solver_models=False,
                                                            AE_model_params=AE_model_params,
                                                            AE_train_params=AE_train_params,
                                                            loss_surface_params=loss_surface_params)
