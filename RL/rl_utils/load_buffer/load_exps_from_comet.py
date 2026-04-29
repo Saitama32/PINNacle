@@ -188,6 +188,109 @@ def _resolve_num_workers(num_workers, total_experiments):
     return max(1, min(int(num_workers), total_experiments))
 
 
+def _done_value(tr):
+    done = tr.get("done")
+    if torch.is_tensor(done):
+        if done.numel() != 1:
+            return None
+        done = done.detach().cpu().item()
+    try:
+        return int(done)
+    except (TypeError, ValueError):
+        return None
+
+
+def _filter_terminal_without_active_chain(transitions):
+    filtered = []
+    chain_active = False
+    skipped = 0
+
+    for tr in transitions:
+        done = _done_value(tr)
+        if not chain_active and done in (1, -1):
+            skipped += 1
+            continue
+
+        filtered.append(tr)
+        chain_active = done not in (1, -1)
+
+    if skipped:
+        print(f"Skipped {skipped} terminal transitions without active chain.")
+    return filtered
+
+
+def _state_loss_matches_next_state(state, next_state, loss_key="loss_total"):
+    if not isinstance(state, dict) or not isinstance(next_state, dict):
+        return False
+    if loss_key not in state or loss_key not in next_state:
+        return False
+
+    state_loss = state[loss_key]
+    next_loss = next_state[loss_key]
+    if torch.is_tensor(state_loss) and torch.is_tensor(next_loss):
+        if state_loss.shape != next_loss.shape:
+            return False
+        return bool(torch.allclose(state_loss, next_loss, equal_nan=True))
+
+    try:
+        return float(state_loss) == float(next_loss)
+    except (TypeError, ValueError):
+        return False
+
+
+def _zero_state_like(state):
+    if not isinstance(state, dict) or "loss_total" not in state:
+        return state
+
+    zero = {}
+    for key in ("loss_total", "loss_oper", "loss_bnd"):
+        value = state.get(key)
+        if torch.is_tensor(value):
+            zero[key] = torch.zeros_like(value)
+    return zero
+
+
+def _repair_equal_states_from_previous_next_states(seq, loss_key="loss_total"):
+    repaired = 0
+    for i, tr in enumerate(seq):
+        if _state_loss_matches_next_state(
+            tr.get("state"),
+            tr.get("next_state"),
+            loss_key=loss_key,
+        ):
+            if i == 0:
+                tr["state"] = _zero_state_like(tr.get("next_state"))
+            else:
+                tr["state"] = seq[i - 1]["next_state"]
+            repaired += 1
+    return repaired
+
+
+def repair_equal_states_in_all_entries(entries, loss_key="loss_total"):
+    sequences = []
+    curr_seq = []
+
+    for tr in entries:
+        curr_seq.append(tr)
+        if _done_value(tr) in (1, -1):
+            sequences.append(curr_seq)
+            curr_seq = []
+
+    if curr_seq:
+        sequences.append(curr_seq)
+
+    repaired = 0
+    for seq in sequences:
+        repaired += _repair_equal_states_from_previous_next_states(
+            seq,
+            loss_key=loss_key,
+        )
+
+    if repaired:
+        print(f"Repaired {repaired} transitions where state matched next_state.")
+    return entries
+
+
 def collect_all_comet_transitions(
     replay_buffer=None,
     max_exps_last=10,
@@ -241,7 +344,7 @@ def collect_all_comet_transitions(
         os.makedirs(save_dir, exist_ok=True)
         print(f"Local save enabled: {save_dir}")
 
-    all_transitions = []
+    transition_blocks = []
     worker_count = _resolve_num_workers(num_workers, len(experiments_sorted_tol))
     indexed_experiments = list(enumerate(experiments_sorted_tol, 1))
 
@@ -279,41 +382,68 @@ def collect_all_comet_transitions(
 
     for result in experiment_results:
         if result.error:
-            _log_experiment_result(result, len(all_transitions))
+            _log_experiment_result(
+                result,
+                sum(len(block) for block in transition_blocks),
+            )
             continue
-        all_transitions.extend(result.transitions)
-        _log_experiment_result(result, len(all_transitions))
-
-    if tolerance > 0.0 and prev_tol == 0.0 and new_tol:
-        all_transitions = truncate_failure_chains_by_tol(
-            all_transitions,
-            tol=tolerance,
-            shift_reward=10.0,
-        )
-    elif tolerance > prev_tol and prev_tol != 0.0:
-        all_transitions = truncate_success_chains(
-            all_transitions,
-            current_tol=tolerance,
-            prev_tol=prev_tol,
+        transition_blocks.append(result.transitions)
+        _log_experiment_result(
+            result,
+            sum(len(block) for block in transition_blocks),
         )
 
-    if mark_states:
-        all_transitions = add_proj_mark(all_transitions, proj_name)
+    all_entries = []
+    for block_index, transitions in enumerate(transition_blocks, 1):
+        if not transitions:
+            continue
+
+        block_transitions = _filter_terminal_without_active_chain(transitions)
+
+        if tolerance > 0.0 and prev_tol == 0.0 and new_tol:
+            block_transitions = truncate_failure_chains_by_tol(
+                block_transitions,
+                tol=tolerance,
+                shift_reward=10.0,
+            )
+        elif tolerance > prev_tol and prev_tol != 0.0:
+            block_transitions = truncate_success_chains(
+                block_transitions,
+                current_tol=tolerance,
+                prev_tol=prev_tol,
+            )
+
+        if mark_states:
+            block_transitions = add_proj_mark(block_transitions, proj_name)
 
     # --- Сдвиг наград для успешных переходов ---
-    all_transitions = shift_done_rewards(all_transitions, done=-1, shift_value=-5)
-    all_transitions = all_transitions[:30]
-    print("len of all transitions",len(all_transitions))
+        block_transitions = shift_done_rewards(block_transitions, done=-1, shift_value=-5)
     # --- Добавление delta loss ---
-    if rebuild_states_from_solver_models:
-        all_entries = rebuild_transitions_states_from_solver_models(
-            all_transitions,
-            AE_model_params=AE_model_params,
-            AE_train_params=AE_train_params,
-            loss_surface_params=loss_surface_params,
-        )
-    else:
-        all_entries = add_delta_to_all_entries(all_transitions)
+        if rebuild_states_from_solver_models:
+            block_entries = rebuild_transitions_states_from_solver_models(
+                block_transitions,
+                AE_model_params=AE_model_params,
+                AE_train_params=AE_train_params,
+                loss_surface_params=loss_surface_params,
+            )
+        else:
+            block_entries = repair_equal_states_in_all_entries(block_transitions)
+            block_entries = add_delta_to_all_entries(block_entries)
+
+        all_entries.extend(block_entries)
+
+        chain = []
+        max_chain_len = 0
+        for tr in block_entries:
+            chain.append(tr)
+            max_chain_len = max(max_chain_len, len(chain))
+            if _done_value(tr) in (1, -1):
+                chain = []
+        if max_chain_len > 12:
+            print(
+                f"Warning: experiment block {block_index} has chain length "
+                f"{max_chain_len}; check source transitions."
+            )
 
     if use_log_state and not rebuild_states_from_solver_models:
         apply_log_transform_to_transitions(all_entries)
