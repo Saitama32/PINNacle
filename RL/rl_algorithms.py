@@ -299,6 +299,15 @@ class DQNAgent:
             G_lambda = G_lambda + w_n * Gn[n]
         return G_lambda.detach()
 
+    def _mc_return(self, seq, gamma):
+        ret = torch.zeros((), dtype=torch.float, device=self.device)
+        discount = torch.tensor(1.0, dtype=torch.float, device=self.device)
+        gamma_t = torch.tensor(float(gamma), dtype=torch.float, device=self.device)
+        for tr in seq:
+            ret = ret + discount * torch.tensor(float(tr.reward), dtype=torch.float, device=self.device)
+            discount = discount * gamma_t
+        return ret
+
     
     def optim_(self, iters=1):
         """
@@ -309,6 +318,11 @@ class DQNAgent:
         loss_arr_optim_class, loss_arr_param = [], []
         all_rewards, all_dones = [], []
         model_reward_i_ar = []
+        chain_mc_abs_error_arr = []
+        chain_mc_mse_arr = []
+        chain_mc_return_abs_arr = []
+        chain_mc_error_norm_arr = []
+        chain_mc_q_corr_arr = []
 
         self.transition_counter = 0
 
@@ -471,6 +485,31 @@ class DQNAgent:
 
                 prio_p95 = float(torch.quantile(new_priors.detach().to(self.device).float(), 0.95).item())
 
+                mc_returns = torch.stack([self._mc_return(seq, self.gamma) for seq in seqs])
+                q_sa_detached = q_sa.detach()
+                mc_errors = q_sa_detached - mc_returns
+                chain_mc_abs_error_mean = float(mc_errors.abs().mean().item())
+                chain_mc_mse = float((mc_errors ** 2).mean().item())
+                chain_mc_return_abs_mean = float(mc_returns.abs().mean().item())
+                chain_mc_error_norm = float(
+                    mc_errors.abs().mean().div(mc_returns.abs().mean().clamp_min(1e-8)).item()
+                )
+
+                q_centered = q_sa_detached - q_sa_detached.mean()
+                mc_centered = mc_returns - mc_returns.mean()
+                q_std = q_sa_detached.std(unbiased=False)
+                mc_std = mc_returns.std(unbiased=False)
+                if q_std.item() < 1e-8 or mc_std.item() < 1e-8:
+                    chain_mc_q_corr = 0.0
+                else:
+                    chain_mc_q_corr = float((q_centered * mc_centered).mean().div(q_std * mc_std).item())
+
+                chain_mc_abs_error_arr.append(chain_mc_abs_error_mean)
+                chain_mc_mse_arr.append(chain_mc_mse)
+                chain_mc_return_abs_arr.append(chain_mc_return_abs_mean)
+                chain_mc_error_norm_arr.append(chain_mc_error_norm)
+                chain_mc_q_corr_arr.append(chain_mc_q_corr)
+
 
             print(f"Loss for params: {loss_param}")
             print(f"Loss for optim: {loss_opt}")
@@ -508,6 +547,12 @@ class DQNAgent:
 
             frac_seq_success = count_seq_success / max(count_seq_total, 1)
 
+        chain_mc_abs_error_mean = statistics.mean(chain_mc_abs_error_arr) if chain_mc_abs_error_arr else 0.0
+        chain_mc_mse = statistics.mean(chain_mc_mse_arr) if chain_mc_mse_arr else 0.0
+        chain_mc_return_abs_mean = statistics.mean(chain_mc_return_abs_arr) if chain_mc_return_abs_arr else 0.0
+        chain_mc_error_norm = statistics.mean(chain_mc_error_norm_arr) if chain_mc_error_norm_arr else 0.0
+        chain_mc_q_corr = statistics.mean(chain_mc_q_corr_arr) if chain_mc_q_corr_arr else 0.0
+
         self.exp.log_metrics({
             "mean_abs_delta_norm": mean_abs_delta_norm,
             "sigma_td": sigma_td,
@@ -520,7 +565,12 @@ class DQNAgent:
             "mean_abs_delta": mean_abs_delta,
             "seq_frac_len_gt1": frac_len_gt1,
             "seq_avg_len": avg_len,
-            "seq_frac_success": frac_seq_success
+            "seq_frac_success": frac_seq_success,
+            "chain_mc_abs_error_mean": chain_mc_abs_error_mean,
+            "chain_mc_mse": chain_mc_mse,
+            "chain_mc_return_abs_mean": chain_mc_return_abs_mean,
+            "chain_mc_error_norm": chain_mc_error_norm,
+            "chain_mc_q_corr": chain_mc_q_corr
         }, step=self.steps_done)
 
 
