@@ -325,6 +325,8 @@ def add_loss_reward_to_non_terminal_sequence(seq, loss_key="loss_total"):
 
     for tr in seq:
         if _done_value(tr) in (1, -1):
+            next_loss = _extract_loss_scalar_from_state(tr["next_state"], loss_key=loss_key)
+            tr["reward"] = float(next_loss)
             continue
 
         prev_loss = _extract_loss_scalar_from_state(tr["state"], loss_key=loss_key)
@@ -684,7 +686,7 @@ def truncate_failure_chains_by_tol(transitions, tol=0.0, shift_reward=10.0):
         })
 
         tr["done"] = 1
-        tr["reward_model"] = float(tr["reward_model"]) + shift_reward
+        tr["reward_model"] = shift_reward
         cleaned.extend(chain[:cut_idx + 1])
         truncated_chains += 1
 
