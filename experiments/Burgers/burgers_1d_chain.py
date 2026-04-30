@@ -11,7 +11,7 @@ api_key = os.getenv("COMET_API_KEY")
 
 experiment = start(
     api_key=api_key,
-    project_name="rlpinn_burgers1d_tolerance",
+    project_name="rlpinn_burgers1d_tolerance_corrected",
     workspace="saitama32",
 )
 
@@ -182,7 +182,7 @@ def main():
     rl_agent_params = {
         "n_save_models": args.n_save_models,
         "n_trajectories": args.n_trajectories,
-        "tolerance": 0.040956,
+        "tolerance": 0.0,
         "stuck_threshold": 10,
         "min_loss_change": 1e-7,
         "min_grad_norm": 1e-5,
