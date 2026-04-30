@@ -356,11 +356,11 @@ def train_process_rl(data, save_path, device, seed, rl_agent_params):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     dde.config.set_default_float("float32")
-    dde.config.set_random_seed(seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(seed)
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
+    # dde.config.set_random_seed(seed)
+    # if torch.cuda.is_available():
+    #     torch.cuda.manual_seed_all(seed)
+    # torch.backends.cudnn.deterministic = True
+    # torch.backends.cudnn.benchmark = False
 
     payload = dill.loads(data)
 
