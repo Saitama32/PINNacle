@@ -55,13 +55,14 @@ def set_global_seed(seed: Optional[int]) -> None:
 
 def get_state_shape(loss_surface_params):
     min_x, max_x, xnum = loss_surface_params["x_range"]
-    min_y, max_y = min_x, max_x
     step_size = (max_x - min_x) / xnum
+    latent_dim = int(loss_surface_params.get("latent_dim", 2))
+    if latent_dim < 1:
+        raise ValueError(f"latent_dim must be at least 1, got {latent_dim}.")
 
-    x_coords = torch.arange(min_x, max_x + step_size, step_size)
-    y_coords = torch.arange(min_y, max_y + step_size, step_size)
+    coords = torch.arange(min_x, max_x + step_size, step_size)
 
-    return tuple(torch.meshgrid(x_coords, y_coords)[0].shape)
+    return tuple(torch.meshgrid(*([coords] * latent_dim), indexing="ij")[0].shape)
 
 
 def _build_torch_optimizer(opt_name: str, params, action: Dict[str, Any]):

@@ -7,24 +7,60 @@ from collections import defaultdict
 class ConvEncoder(nn.Module):
     def __init__(self):
         super().__init__()
-        self.backbone = nn.Sequential(
-            nn.Conv2d(4, 32, 3, stride=3, padding=1),
-            nn.Conv2d(32, 64, 3, stride=2, padding=1),
-            nn.Conv2d(64, 64, 3, padding=1),
+        self.backbone_1d = nn.Sequential(
+            nn.Conv1d(4, 32, 3, stride=3, padding=1),
+            nn.ReLU(),
+            nn.Conv1d(32, 64, 3, stride=2, padding=1),
+            nn.ReLU(),
+            nn.Conv1d(64, 64, 3, padding=1),
+            nn.ReLU(),
         )
-        self.gap  = nn.AdaptiveAvgPool2d(1)
+        self.backbone_2d = nn.Sequential(
+            nn.Conv2d(4, 32, 3, stride=3, padding=1),
+            nn.ReLU(),
+            nn.Conv2d(32, 64, 3, stride=2, padding=1),
+            nn.ReLU(),
+            nn.Conv2d(64, 64, 3, padding=1),
+            nn.ReLU(),
+        )
+        self.backbone_3d = nn.Sequential(
+            nn.Conv3d(4, 32, 3, stride=3, padding=1),
+            nn.ReLU(),
+            nn.Conv3d(32, 64, 3, stride=2, padding=1),
+            nn.ReLU(),
+            nn.Conv3d(64, 64, 3, padding=1),
+            nn.ReLU(),
+        )
+        self.gap_1d = nn.AdaptiveAvgPool1d(1)
+        self.gap_2d = nn.AdaptiveAvgPool2d(1)
+        self.gap_3d = nn.AdaptiveAvgPool3d(1)
         self.mlp  = nn.Sequential(
             nn.Flatten(),
             nn.Linear(64, 128), nn.ReLU(),
             nn.Linear(128, 64), nn.ReLU(),
         )
         for m in self.modules():
-            if isinstance(m, nn.Conv2d):
+            if isinstance(m, (nn.Conv1d, nn.Conv2d, nn.Conv3d)):
                 nn.init.kaiming_uniform_(m.weight, nonlinearity='relu')
 
     def forward(self, x):
-        x = self.backbone(x)
-        flat = self.gap(x).view(x.size(0), -1)
+        if x.dim() < 3:
+            raise ValueError(f"Expected state tensor with shape (B, C, *spatial_dims), got {tuple(x.shape)}")
+
+        spatial_ndim = x.dim() - 2
+        if spatial_ndim == 1:
+            x = self.backbone_1d(x)
+            flat = self.gap_1d(x).view(x.size(0), -1)
+        elif spatial_ndim == 2:
+            x = self.backbone_2d(x)
+            flat = self.gap_2d(x).view(x.size(0), -1)
+        elif spatial_ndim == 3:
+            x = self.backbone_3d(x)
+            flat = self.gap_3d(x).view(x.size(0), -1)
+        else:
+            x = x.flatten(start_dim=2)
+            x = self.backbone_1d(x)
+            flat = self.gap_1d(x).view(x.size(0), -1)
         h = self.mlp(flat)              # (B,64)
         return flat, h
 
@@ -86,9 +122,9 @@ class DQN_params(nn.Module):
         x: (B,2,26,26) — если подаёшь «сырые» карты, сначала прогоню через encoder.
         Либо подай уже (B,64) — тогда распознаю и не буду повторно кодировать.
         """
-        if x.dim() == 4:                 # (B,2,26,26)
+        if x.dim() >= 3:
             flat, h = self.encoder(x)
-        else:                            # (B,64)
+        else:
             flat, h = x, x
 
         out = []
