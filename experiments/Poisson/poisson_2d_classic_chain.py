@@ -2,17 +2,21 @@
 import os, sys
 os.environ["DDEBACKEND"] = "pytorch"
 from comet_ml import start
+from dotenv import load_dotenv
 from comet_ml.integration.pytorch import log_model
 
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+load_dotenv(os.path.join(PROJECT_ROOT, ".env"))
+api_key = os.getenv("COMET_API_KEY")
+
 experiment = start(
-  api_key="aP71fQTYPNqfsYWvudPPmoBl5",
-  project_name="rlpinn-poisson-2d-classic-comparison",
+  api_key=api_key,
+  project_name="rlpinn-poisson-2d-classic-loss_reward_comparison",
   workspace="saitama32"
 )
 
 os.environ['KMP_DUPLICATE_LIB_OK'] = 'TRUE'
-project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
-sys.path.append(project_root)
+sys.path.append(PROJECT_ROOT)
 import time
 import argparse
 import dill
@@ -29,7 +33,7 @@ from rl_trainer import train_process_rl
 experiment.log_parameters({
     "param": "v_1",
     "reward_function": "v_2",
-    "description": "comparison_poisson_2d_classic_loaded_dqn_final_eval"
+    "description": "comparison_poisson_2d_classic_loss_reward_loaded_dqn_final_eval"
 })
 
 def str2bool(v):

@@ -57,5 +57,6 @@ setup(
         "autodocsumm",
         "SALib",
         "comet_ml",
+        "python-dotenv",
     ],
 )
