@@ -12,7 +12,7 @@ api_key = os.getenv("COMET_API_KEY")
 
 experiment = start(
   api_key=api_key,
-  project_name="rlpinn_heat2d_multiscale_optimization_2_dim",
+  project_name="rlpinn_heat2d_multiscale_optimization_2_dim_improve_nn",
   workspace="saitama32"
 )
 
