@@ -3,15 +3,18 @@ os.environ["DDEBACKEND"] = "pytorch"
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 import sys
 from comet_ml import start
+from dotenv import load_dotenv
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
+load_dotenv(os.path.join(PROJECT_ROOT, ".env"))
+api_key = os.getenv("COMET_API_KEY")
 
 experiment = start(
-    api_key="aP71fQTYPNqfsYWvudPPmoBl5",
+    api_key=api_key,
     project_name="rlpinn_heat2d_multiscale_3_dim_comparison",
     workspace="saitama32",
 )
 
-project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-sys.path.append(project_root)
+sys.path.append(PROJECT_ROOT)
 import time
 import argparse
 import dill
@@ -134,7 +137,7 @@ def main(seed_override=None):
     }
 
     latent_dim = 3
-    
+
     AE_model_params = {
         "mode": "NN",
         "num_of_layers": 3,
