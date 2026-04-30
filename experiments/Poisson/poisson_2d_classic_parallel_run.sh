@@ -1,7 +1,7 @@
 #!/bin/bash
 # Automatic launch of poisson_2d_classic_comparison_chain.py with GPU distribution
 
-SCRIPT="experiments/Poisson/poisson_2d_classic_comparison_chain.py"
+SCRIPT="experiments/Poisson/poisson_2d_classic_chain.py"
 
 LOG_KEY="true"
 EXP_KEY_1="5708bdeafb0041f683c0f9ec6045033c"
