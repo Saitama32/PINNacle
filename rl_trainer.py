@@ -18,7 +18,6 @@ from RL.rl_environment import EnvRLOptimizer
 from RL.rl_algorithms import DQNAgent
 from src.utils.callbacks import ModelSaverCallback  
 from deepxde.optimizers.config import set_LBFGS_options, set_PSO_options, LBFGS_options, PSO_options
-from RL.rl_utils.load_buffer.load_exps_from_comet import collect_all_comet_transitions
 from RL.rl_utils.load_buffer.load_model_from_comet import load_rl_agent_from_comet
 
 # Enforce single-precision defaults before any model/layer creation.
@@ -64,6 +63,25 @@ def get_state_shape(loss_surface_params):
     return tuple(torch.meshgrid(x_coords, y_coords)[0].shape)
 
 
+def _serialize_solver_models(solver_models):
+    if solver_models is None:
+        return None
+
+    serialized_models = []
+    for solver_model in solver_models:
+        if solver_model is None:
+            serialized_models.append(None)
+            continue
+        serialized_models.append({
+            "class_name": type(solver_model).__name__,
+            "state_dict": {
+                key: value.detach().to("cpu").clone()
+                for key, value in solver_model.state_dict().items()
+            },
+        })
+    return serialized_models
+
+
 def _build_torch_optimizer(opt_name: str, params, action: Dict[str, Any]):
 
     name = (opt_name or "").lower()
@@ -93,6 +111,18 @@ def _build_torch_optimizer(opt_name: str, params, action: Dict[str, Any]):
         return "PSO"  # deepxde/optimizers/pytorch/pso.PSO
 
     raise ValueError(f"Unknown optimizer type: {opt_name}. Expected Adam / LBFGS / PSO.")
+
+
+def _extract_weighted_train_loss(model) -> float:
+    loss_train = getattr(getattr(model, "train_state", None), "loss_train", None)
+    if loss_train is None:
+        return float("nan")
+
+    loss_train = np.asarray(loss_train, dtype=np.float64)
+    loss_value = float(np.sum(loss_train))
+    if not np.isfinite(loss_value) or loss_value < -1.0:
+        return float("nan")
+    return float(np.log1p(loss_value))
 
 
 def run_deepxde_rl_training(
@@ -158,17 +188,6 @@ def run_deepxde_rl_training(
         return {"loss_total": z.clone(), "loss_oper": z.clone(), "loss_bnd": z.clone()}
     
 
-    # proj_dict = {'rlpinn' : 100,
-    #         'rlpinn-poisson-2d-ms-farm-trans': 100,
-    #         'rlpinn-poisson-2d-cg-farm-transitions':100,
-    #         'rlpinn-ks-farm-transitions':100,
-    #         'rlpinn-poisson-2d-classic-farm-transitions':100,
-    #         'rlpinn-burgers-tolerance':100}
-
-    # for proj_name, n_exps in proj_dict.items():
-    #     rl_agent.replay_buffer = collect_all_comet_transitions(rl_agent.replay_buffer, n_exps, proj_name=proj_name, tolerance = rl_agent_params["tolerance"],prev_tol= rl_agent_params["prev_tol"], use_log_state=rl_agent_params["log_key"])
-    
-    # rl_agent.replay_buffer = collect_all_comet_transitions(rl_agent.replay_buffer, max_exps_last=200, tolerance = rl_agent_params["tolerance"],prev_tol= rl_agent_params["prev_tol"], use_log_state=rl_agent_params["log_key"])
     comparison_mode = bool(comparison_params)
     final_eval_mode = comparison_mode
     comparison_total_epochs = None
@@ -270,74 +289,85 @@ def run_deepxde_rl_training(
                     chunk_tester_callback = cb
                     break
             if chunk_tester_callback is None:
-                raise RuntimeError("TesterCallback is required in callbacks for RL metrics/reward calculation.")
+                raise RuntimeError("TesterCallback is required in callbacks for comparison metrics.")
             rmse = chunk_tester_callback.rmse
             b_rmse = chunk_tester_callback.brmse
+            train_loss = _extract_weighted_train_loss(model)
+            transition_ready = False
 
             print(f"Operator RMSE: {rmse}, Boundary RMSE: {b_rmse}")
+            print(f"Weighted train loss: {train_loss}")
 
-            env.solver_models = solver_models
-            env.reward_params = {
-                "operator": {"coeff": train_args['operator_coeff'], "error": rmse},
-                "bconds": {"coeff": train_args['bnd_coeff'], "error": b_rmse},
-            }
-            env.rl_penalty = rl_penalty
+            if np.isfinite(train_loss):
+                env.solver_models = solver_models
+                env.reward_params = {
+                    "loss": train_loss,
+                }
+                env.rl_penalty = rl_penalty
 
-            optimizers_history.append(action["type"])
-            print(f'\nPassed optimizer {action["type"]}.')
+                optimizers_history.append(action["type"])
+                print(f'\nPassed optimizer {action["type"]}.')
 
-
-            env.set_step_context(
-                prev_state=state,
-                step_i=t,
-                same_opt_streak=same_opt_streak,
-                is_model=is_model,
-                rl_opt_step=rl_agent.opt_step,
-                prev_reward_scalar=None if prev_reward == -1 else prev_reward,
-            )
-
-            next_state, reward_shaped, done, info = env.step()
-
-            # prev_reward — теперь просто хранит reward_scalar из info
-            prev_reward = info["reward_scalar"]
-
-            # reward уже финальный (reward_model_i)
-            if not final_eval_mode:
-                rl_agent.push_memory((state, next_state, action_raw, float(reward_shaped.item()),
-                                    done, float(reward_shaped.item()), info["opt_model_i"]))
-
-            # update agent
-            if (not final_eval_mode) and len(rl_agent.replay_buffer) >= rl_agent_params["agent_min_buffer"]:
-                rl_agent.optim_(iters=rl_agent_params["agent_update_iters"])
-
-            total_reward += float(reward_shaped.item())
-
-            try:
-                # Сохраняем entry локально
-                file_path = os.path.join(output_dir, f'transitions_{rl_agent.steps_done}.pt')
-
-                entry = {
-                            'state': state,
-                            'next_state': next_state,
-                            'action': action_raw,
-                            'reward': float(info["reward_scalar"]),
-                            'done': done, 
-                            'reward_model_raw': float(reward_shaped.item()),
-                            'reward_model': float(reward_shaped.item()),
-                            'opt_model_i': info["opt_model_i"]
-                        }
-                torch.save(entry, file_path)
-
-                # Логируем тот же файл в comet
-                rl_agent_params['exp'].log_asset(
-                    file_path,
-                    file_name=f"entry_step_{rl_agent.steps_done}.pt",
-                    step=rl_agent.steps_done,
-                    overwrite=True
+                env.set_step_context(
+                    prev_state=state,
+                    step_i=t,
+                    same_opt_streak=same_opt_streak,
+                    is_model=is_model,
+                    rl_opt_step=rl_agent.opt_step,
+                    prev_reward_scalar=None if prev_reward == -1 else prev_reward,
                 )
 
-            except Exception as e:
-                print(e)
+                next_state, reward_shaped, done, info = env.step()
+                transition_ready = True
+
+                # prev_reward stores the scalar reward used for the next shaped delta.
+                prev_reward = info["reward_scalar"]
+
+                if not final_eval_mode:
+                    rl_agent.push_memory((state, next_state, action_raw, float(reward_shaped.item()),
+                                        done, float(reward_shaped.item()), info["opt_model_i"]))
+
+                if (not final_eval_mode) and len(rl_agent.replay_buffer) >= rl_agent_params["agent_min_buffer"]:
+                    rl_agent.optim_(iters=rl_agent_params["agent_update_iters"])
+
+                total_reward += float(reward_shaped.item())
+            else:
+                done = -1
+                reward_shaped = torch.tensor(-10.0, device=device)
+                info = {
+                    "reward_scalar": 0.0,
+                    "opt_model_i": -1,
+                }
+                print("Weighted train loss is invalid. Stopping trajectory with done = -1.")
+
+            if transition_ready:
+                try:
+                    # Сохраняем entry локально
+                    file_path = os.path.join(output_dir, f'transitions_{rl_agent.steps_done}.pt')
+
+                    entry = {
+                                'state': state,
+                                'next_state': next_state,
+                                'solver_models': _serialize_solver_models(solver_models),
+                                'action': action_raw,
+                                'reward': float(info["reward_scalar"]),
+                                'done': done, 
+                                'reward_model_raw': float(reward_shaped.item()),
+                                'reward_model': float(reward_shaped.item()),
+                                'opt_model_i': info["opt_model_i"]
+                            }
+                    torch.save(entry, file_path)
+
+                    # Логируем тот же файл в comet
+                    rl_agent_params['exp'].log_asset(
+                        file_path,
+                        file_name=f"entry_step_{rl_agent.steps_done}.pt",
+                        step=rl_agent.steps_done,
+                        overwrite=True
+                    )
+
+                except Exception as e:
+                    print(e)
 
             print(f'\nCurrent reward after {action["type"]} optimizer: {info["reward_scalar"]}.\n'
                     f'Reward after taking prev reward and penalty: {reward_shaped}\n'
@@ -345,7 +375,10 @@ def run_deepxde_rl_training(
                     f'{"optimizers" if len(optimizers_history) > 1 else "optimizer"}: {total_reward}.\n'
                     f'\ndone = {done}')
             
-            state = next_state
+            if transition_ready:
+                state = next_state
+            else:
+                break
 
             # callbacks.callbacks[1].save_every = self.t
             # env.render()

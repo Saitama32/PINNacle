@@ -19,14 +19,13 @@ def compute_reward(reward_params, prev_reward, method="diff"):
     Calculates the reward for the agent.
 
     Args:
-        reward_params (dict): dictionary with operator and boundary error value and coefficients.
+        reward_params (dict): dictionary with the scalar weighted loss value.
         prev_reward (float): previous value of reward.
-        method (str): The method for calculating the reward (“diff” or “absolute”).
+        method (str): The method for calculating the reward ("diff" or "absolute").
     Returns:
         float: The value of the reward.
     """
-    current_reward = reward_params["operator"]["coeff"] * reward_params["operator"]["error"] + \
-        reward_params["bconds"]["coeff"] * reward_params["bconds"]["error"]
+    current_reward = reward_params["loss"]
 
     if method == "diff":
         return prev_reward - current_reward
@@ -152,7 +151,8 @@ class EnvRLOptimizer(gym.Env):
         self.reward_history.append(self.current_reward)
         self.reward_history = self.reward_history[-5:]
 
-        success = abs(self.current_reward.item()) < self.tolerance
+        current_reward_value = self.current_reward.item() if hasattr(self.current_reward, "item") else self.current_reward
+        success = abs(current_reward_value) < self.tolerance
         if self.rl_penalty == -1:
             done = -1
         elif success:
