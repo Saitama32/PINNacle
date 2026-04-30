@@ -294,7 +294,7 @@ def repair_equal_states_in_all_entries(entries, loss_key="loss_total"):
 def collect_all_comet_transitions(
     replay_buffer=None,
     max_exps_last=10,
-    duration_grater_hours=1,
+    duration_grater_hours=0,
     save_dir=None,
     tolerance=0.0,
     prev_tol=0.0,
