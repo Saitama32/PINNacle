@@ -91,6 +91,7 @@ class DQNAgent:
         self.warmup_active = warmup_updates > 0
         self.recalc_done = False
         self.recalc_batch_size = recalc_batch_size
+        self.transition_counter = 0
 
 
         self.device = device
@@ -323,8 +324,6 @@ class DQNAgent:
         chain_mc_return_abs_arr = []
         chain_mc_error_norm_arr = []
         chain_mc_q_corr_arr = []
-
-        self.transition_counter = 0
 
         for _ in range(iters):
             if len(self.replay_buffer) < self.batch_size:
