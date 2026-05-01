@@ -91,6 +91,7 @@ class DQNAgent:
         self.warmup_active = warmup_updates > 0
         self.recalc_done = False
         self.recalc_batch_size = recalc_batch_size
+        self.transition_counter = 0
 
 
         self.device = device
@@ -309,8 +310,6 @@ class DQNAgent:
         loss_arr_optim_class, loss_arr_param = [], []
         all_rewards, all_dones = [], []
         model_reward_i_ar = []
-
-        self.transition_counter = 0
 
         for _ in range(iters):
             if len(self.replay_buffer) < self.batch_size:
