@@ -4,8 +4,9 @@
 SCRIPT="experiments/NavierStokes/ns2d_liddriven_chain.py"
 
 LOG_KEY_FOR_NEW_STATE="True"
-EXP_KEY_1="2f735f90be66435f8575bb25d02e658c"
-EXP_KEY_2="04e9152940074aa69a6d0b814447938f"
+EXP_KEY_1="43728c3bf15e44bd99d4d0baf6c1f86f"
+EXP_KEY_2="6689bc43d34b4c2eaffa221fcf67e49e"
+
 
 # Detect available GPUs
 NUM_GPUS=$(nvidia-smi --query-gpu=name --format=csv,noheader | wc -l)
