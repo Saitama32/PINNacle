@@ -68,7 +68,7 @@ class DQNAgent:
         # ---- Trust-region гиперпараметры ----
         self.tr_alpha = 2.0         # ширина «бокса» в σ TD-ошибки (2.0–3.0 ок)
         self.tr_eps   = 1e-6        # численная защита
-        self.tr_mom   = 0.95        # EMA для бегущего std TD-ошибки
+        self.tr_mom   = 0.99        # EMA для бегущего std TD-ошибки
         self.td_running_std = 0.0   # буфер EMA(std(|δ|)) по батчам
 
         # PER
