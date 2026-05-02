@@ -183,12 +183,24 @@ class EnvRLOptimizer(gym.Env):
         rl_opt_step = ctx.get("rl_opt_step", None)
 
         opt_model_i = -1
+
         if prev_reward_scalar is None:
-            reward_model_i = reward_scalar
+            reward_model_i = 0.0
         else:
             if is_model:
                 opt_model_i = int(rl_opt_step) if rl_opt_step is not None else -1
-            reward_model_i = reward_scalar - float(prev_reward_scalar)
+
+            prev_log1p_loss = -float(prev_reward_scalar)
+            curr_log1p_loss = -float(reward_scalar)
+
+            prev_loss = np.expm1(prev_log1p_loss)
+            curr_loss = np.expm1(curr_log1p_loss)
+
+            eps = 1e-12
+            clip = 5.0
+
+            reward_model_i = np.log(prev_loss + eps) - np.log(curr_loss + eps)
+            reward_model_i = float(np.clip(reward_model_i, -clip, clip))
 
         # repeat penalty
         if same_opt_streak > self.repeat_k:
@@ -199,6 +211,8 @@ class EnvRLOptimizer(gym.Env):
 
         # time penalty
         reward_model_i -= self.time_penalty * step_i
+
+        
 
         # done shaping
         if done == 1:

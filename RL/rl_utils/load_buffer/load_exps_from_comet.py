@@ -4,6 +4,7 @@ import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime
+import numpy as np
 
 import torch
 from dotenv import load_dotenv
@@ -331,7 +332,20 @@ def add_loss_reward_to_non_terminal_sequence(seq, loss_key="loss_total"):
 
         prev_loss = _extract_loss_scalar_from_state(tr["state"], loss_key=loss_key)
         next_loss = _extract_loss_scalar_from_state(tr["next_state"], loss_key=loss_key)
-        loss_reward = float(prev_loss - next_loss)
+        eps = 1e-12
+        clip = 5.0
+
+        prev_raw_loss = np.expm1(float(prev_loss))
+        next_raw_loss = np.expm1(float(next_loss))
+
+        if prev_raw_loss < 0 or next_raw_loss < 0:
+            print("====== WARNING, recovered raw loss < 0 =======")
+
+        prev_raw_loss = max(prev_raw_loss, 0.0)
+        next_raw_loss = max(next_raw_loss, 0.0)
+
+        loss_reward = np.log(prev_raw_loss + eps) - np.log(next_raw_loss + eps)
+        loss_reward = float(np.clip(loss_reward, -clip, clip))
 
         if "reward_model_original" not in tr and "reward_model" in tr:
             tr["reward_model_original"] = float(tr["reward_model"])
