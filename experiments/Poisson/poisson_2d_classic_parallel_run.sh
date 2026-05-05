@@ -4,8 +4,9 @@
 SCRIPT="experiments/Poisson/poisson_2d_classic_chain.py"
 
 LOG_KEY="true"
-EXP_KEY_1="2783590efc7d4fc98b68b648e85d9ddf"
-EXP_KEY_2="0342cc4888734afa9297cb06f5c473bd"
+EXP_KEY_1="f0169e5cba2240af919586e1919a3e48"
+EXP_KEY_2="ec48e8892bc54b20bb467373b2ec95de"
+
 
 
 # Detect available GPUs
