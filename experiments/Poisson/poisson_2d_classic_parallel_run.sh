@@ -4,8 +4,9 @@
 SCRIPT="experiments/Poisson/poisson_2d_classic_chain.py"
 
 LOG_KEY="true"
-EXP_KEY_1="f0169e5cba2240af919586e1919a3e48"
-EXP_KEY_2="ec48e8892bc54b20bb467373b2ec95de"
+EXP_KEY_1="df2e296e2db14ecd9ef6ba6d6bfe6b94"
+EXP_KEY_2="047166f076904abda2c299c63dde132b"
+
 
 
 
