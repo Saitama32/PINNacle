@@ -1,4 +1,4 @@
-﻿import os
+import os
 import sys
 import time
 import json
@@ -31,7 +31,6 @@ output_dir = os.path.join('.', 'transitions')
 
 os.makedirs(output_dir, exist_ok=True)
 
-# --- утилита: реинициализация torch модулей (для "новой траектории") ---
 def reinit_torch_weights(module):
     import torch
 
@@ -81,7 +80,7 @@ def _build_torch_optimizer(opt_name: str, params, action: Dict[str, Any]):
         )
 
     if name in ["lbfgs", "l-bfgs", "l_bfgs", "LBFGS"]:
-        # torch LBFGS (для pytorch backend DeepXDE норм)
+        # torch LBFGS (��� pytorch backend DeepXDE ����)
         opt = torch.optim.LBFGS(
             params,
             lr=action["params"]["lr"],
@@ -92,7 +91,6 @@ def _build_torch_optimizer(opt_name: str, params, action: Dict[str, Any]):
         return opt 
 
     if name in ["pso", "PSO", "Pso"]:
-        # Передаём гиперпараметры через глобальные PSO_options
         set_PSO_options(
             lr=float(opt_params.get("lr", 1e-3)),
         )
@@ -114,18 +112,17 @@ def run_deepxde_rl_training(
 
 ):
     """
-    model: deepxde.Model (уже созданный get_model())
-    train_args: то, что раньше шло в model.train(**train_args)
-    env_ctor: класс/фабрика EnvRLOptimizer
-    agent_ctor: класс/фабрика DQNAgent
+    model: deepxde.Model (��� ��������� get_model())
+    train_args: ��, ��� ������ ��� � model.train(**train_args)
+    env_ctor: �����/������� EnvRLOptimizer
+    agent_ctor: �����/������� DQNAgent
     """
 
-    # callbacks базовые (Tester/Loss/Plot и т.п.)
+    # callbacks ������� (Tester/Loss/Plot � �.�.)
     base_callbacks = train_args.get("callbacks", [])
     equation_params = train_args.get("equation_params", [])
     display_every = int(train_args.get("display_every", 100))
 
-    # создаём env/agent (как раньше внутри model.py, только теперь снаружи)
     env = EnvRLOptimizer(optimizers=optimizers_dict,
                                  equation_params=equation_params,
                                  callbacks=None,
@@ -151,7 +148,7 @@ def run_deepxde_rl_training(
                         n_transitions_reinit = rl_agent_params["n_transitions_reinit"],
                         exp = rl_agent_params["exp"])
 
-    # init state (как у тебя в model.py: нулевые карты)
+    # init state (��� � ���� � model.py: ������� �����)
     state_shape = get_state_shape(loss_surface_params)
     def zero_state():
         z = torch.zeros(state_shape, device=device)
@@ -169,11 +166,9 @@ def run_deepxde_rl_training(
     idx_traj = 0
 
     for traj in range(train_args["n_trajectories"]):
-        # реинициализация сети на новую траекторию
         if hasattr(model.net, "apply"):
             model.net.apply(reinit_torch_weights)
 
-        # сброс локальных переменных траектории
         state = zero_state()
         prev_reward = -1.0
         last_opt = None
@@ -189,12 +184,10 @@ def run_deepxde_rl_training(
 
         for t in itertools.count():
 
-            # --- agent action ---
             action, action_raw, is_model = rl_agent.select_action(state)
             action_raw[2]['epochs'] = action_raw[1]
             action_raw = (action_raw[0], action_raw[2])
 
-            # штраф за повтор оптимизатора (как у тебя было)
             if last_opt == action["type"]:
                 same_opt_streak += 1
             else:
@@ -207,7 +200,6 @@ def run_deepxde_rl_training(
                 print("Action by epsilon-greedy")
             print(f"\naction = {action}")
 
-            # --- compile optimizer for this chunk ---
             chunk_iters = int(action["epochs"])
             torch_opt = _build_torch_optimizer(action["type"], model.net.parameters(), action)
 
@@ -268,10 +260,10 @@ def run_deepxde_rl_training(
 
                 next_state, reward_shaped, done, info = env.step()
 
-                # prev_reward — теперь просто хранит reward_scalar из info
+                # prev_reward � ������ ������ ������ reward_scalar �� info
                 prev_reward = info["reward_scalar"]
 
-                # reward уже финальный (reward_model_i)
+                # reward ��� ��������� (reward_model_i)
                 rl_agent.push_memory((state, next_state, action_raw, float(reward_shaped.item()),
                                     done, float(reward_shaped.item()), info["opt_model_i"]))
 
@@ -291,7 +283,6 @@ def run_deepxde_rl_training(
                 print(f"Operator RMSE: {rmse}, Boundary RMSE: {b_rmse}. Stopping trajectory with done = -1.")
 
             try:
-                # Сохраняем entry локально
                 file_path = os.path.join(output_dir, f'transitions_{rl_agent.steps_done}.pt')
 
                 entry = {
@@ -307,7 +298,6 @@ def run_deepxde_rl_training(
                         }
                 torch.save(entry, file_path)
 
-                # Логируем тот же файл в comet
                 rl_agent_params['exp'].log_asset(
                     file_path,
                     file_name=f"entry_step_{rl_agent.steps_done}.pt",
@@ -355,8 +345,6 @@ def train_process_rl(data, save_path, device, seed, rl_agent_params):
 
     payload = dill.loads(data)
 
-    # совместимость: если раньше data был (get_model, train_args)
-    # теперь можно передать (get_model, train_args, rl_payload)
     if len(payload) == 2:
         get_model, train_args = payload
         model = get_model()
@@ -365,7 +353,7 @@ def train_process_rl(data, save_path, device, seed, rl_agent_params):
 
     get_model, train_args, optimizers, AE_model_params, AE_train_params,  loss_surface_params = payload
     model, loss_weights = get_model()
-    # rl_payload структура:
+    # rl_payload ���������:
     # {
     #   "train_args": {...},
     #   "optimizers_dict": {...},

@@ -1,5 +1,4 @@
 #!/bin/bash
-# Automatic launch of poisson_2d_classic_chain.py with GPU distribution
 
 SCRIPT="experiments/optimization_multi_pde/poisson_2d_classic_chain.py"
 SCRIPT_2="$SCRIPT"

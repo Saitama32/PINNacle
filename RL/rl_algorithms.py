@@ -52,24 +52,22 @@ class DQNAgent:
         self.opt_step = 0
 
         # e - greedly 
-        self.slot_bootstrap_steps = 20     # первые N шагов нового запуска делаем повышенное ε
+        self.slot_bootstrap_steps = 20
         self.slot_bootstrap_eps = 0.5
 
         # TD
-        self.lambda_ = 0.9     # λ
+        self.lambda_ = 0.9
         self.kappa  = 0.5      # tolerance κ (0=жёсткий Watkins)
         self.seq_len = 10   
 
-        # --- TD-нормализация для параметров ---
         self.param_td_running_std = {}   # dict: key -> EMA(std)
         self.param_td_mom = 0.99
         self.param_td_eps = 1e-6
 
-        # ---- Trust-region гиперпараметры ----
-        self.tr_alpha = 2.0         # ширина «бокса» в σ TD-ошибки (2.0–3.0 ок)
-        self.tr_eps   = 1e-6        # численная защита
+        self.tr_alpha = 2.0
+        self.tr_eps   = 1e-6
         self.tr_mom   = 0.99        # EMA для бегущего std TD-ошибки
-        self.td_running_std = 0.0   # буфер EMA(std(|δ|)) по батчам
+        self.td_running_std = 0.0
 
         # PER
         self.per_alpha = per_alpha
@@ -77,12 +75,8 @@ class DQNAgent:
         self.per_beta_inc = (1.0 - per_beta0) / 100000.0
         self.replay_buffer = PrioritizedReplayBuffer(memory_size, alpha=per_alpha)
 
-        # --- Success replay (один буфер, логическая подселекция) ---
-        # Доля последовательностей, которые берем из успешных эпизодов
-        self.success_frac = success_frac         # например, 30% батча
-        # Порог по model_reward, > которого done==1 считаем успехом
+        self.success_frac = success_frac
         self.success_reward_threshold = 0.0
-        # прокидываем порог в буфер
         self.replay_buffer.success_threshold = self.success_reward_threshold
 
         #warmup
@@ -202,25 +196,20 @@ class DQNAgent:
         """
         rb = self.replay_buffer
 
-        # --- Warmup: только uniform-выборка ---
         if uniform:
             seqs, idxs, is_w = rb.sample_sequences(batch_size, L, beta=None, uniform=True, device=self.device)
             return seqs, idxs, is_w
 
-        # --- Основной режим: PER + при необходимости success-эпизоды ---
         if self.success_frac <= 0.0 or not rb.success_indexes:
-            # если success-режим выключен или ещё нет успешных эпизодов
             seqs, idxs, is_w = rb.sample_sequences(batch_size, L, beta=beta, uniform=False, device=self.device)
             return seqs, idxs, is_w
 
-        # Сколько последовательностей взять из success-эпизодов
         n_succ = int(batch_size * self.success_frac)
-        n_succ = max(1, n_succ)           # минимум одна
-        n_succ = min(n_succ, batch_size)  # но не больше батча
+        n_succ = max(1, n_succ)
+        n_succ = min(n_succ, batch_size)
 
         n_main = batch_size - n_succ
         if n_main <= 0:
-            # крайний случай: весь батч из success
             n_main = 0
             n_succ = batch_size
 
@@ -250,7 +239,6 @@ class DQNAgent:
         idxs_cat = torch.cat(idxs_all, dim=0)
         isw_cat  = torch.cat(isw_all, dim=0)
 
-        # На всякий случай контролируем длину
         assert len(seqs_all) == batch_size, f"Expected {batch_size} seqs, got {len(seqs_all)}"
 
         return seqs_all, idxs_cat, isw_cat
@@ -271,7 +259,6 @@ class DQNAgent:
         rewards     = torch.tensor([tr.reward   for tr in seq], dtype=torch.float, device=self.device)
         dones       = torch.tensor([(tr.done!=0) for tr in seq], dtype=torch.bool, device=self.device)
 
-        # --- ПРАВИЛЬНОЕ накапливание G^{(n)} ---
         Gn = []
         ret = torch.zeros((), device=self.device)
         pow_ = torch.tensor(1.0, device=self.device)            # = γ^0 на старте
@@ -286,7 +273,7 @@ class DQNAgent:
             else:
                 boot = torch.zeros((), device=self.device)
             Gn.append(ret + (pow_ * gamma) * boot)              # + γ^{n+1} * boot
-            pow_ = pow_ * gamma                                 # γ^{n+1} к следующему шагу
+            pow_ = pow_ * gamma
 
         greedy_mask = self._greedy_mask(states, actions)
         g_vals = torch.where(greedy_mask, torch.ones_like(rewards), torch.full_like(rewards, self.kappa))
@@ -294,7 +281,6 @@ class DQNAgent:
         g_prefix = 1.0
         for n in range(len(seq)):  # n=0..N-1  => (n+1)-step
             if n > 0:
-                # включаем g для шага t+(n-1) — т.е. для промежуточных шагов после текущего
                 g_prefix = g_prefix * g_vals[n-1]
             w_n = (1.0 - self.lambda_) * (self.lambda_ ** n) * g_prefix
             G_lambda = G_lambda + w_n * Gn[n]
@@ -317,7 +303,7 @@ class DQNAgent:
 
             if self.warmup_active:
                 seqs, idxs, is_w = self._sample_sequences(self.batch_size, self.seq_len, uniform=True, beta=None)
-                is_w = is_w.to(self.device)           # единицы
+                is_w = is_w.to(self.device)
             else:
                 seqs, idxs, is_w = self._sample_sequences(self.batch_size, self.seq_len, uniform=False, beta=self.per_beta)
                 self.per_beta = min(1.0, self.per_beta + self.per_beta_inc)
@@ -335,45 +321,37 @@ class DQNAgent:
             state  = torch.stack([self._stack_state(s)  for s in state])      # (B,2,26,26)
             next_state = torch.stack([self._stack_state(s2) for s2 in next_state])
             reward   = torch.tensor(reward, dtype=torch.float, device=self.device)              # (B,)
-            done_raw = torch.tensor(done, dtype=torch.int8, device=self.device)    # сохраняем знак для метрик
+            done_raw = torch.tensor(done, dtype=torch.int8, device=self.device)
             done = (done_raw != 0).float()        
             action_o = torch.tensor([a[0] for a in action], dtype=torch.long, device=self.device)
             model_reward = torch.FloatTensor(model_reward).to(self.device)
             opt_model_i = torch.IntTensor(opt_model_i).to(self.device)
 
-            # --- OPTIMIZER HEAD: текущие Q(s_t,a_t)
             flat, q_opt_cur = self.model_optim(state)
             q_sa = q_opt_cur.gather(1, action_o.view(-1,1)).squeeze(1)
 
-            # --- SOFT/WATKINS G^{λ,κ} на каждый элемент батча из своей последовательности ---
             with torch.no_grad():
                 y_opt_list = [ self._soft_watkins_targets(seq, self.gamma) for seq in seqs ]
             y_opt = torch.stack(y_opt_list, dim=0)   # [B]
 
-            #Функционал trust region 
 
-            # --- TD-ошибка для головы оптимизатора (на λ-таргете) ---
             delta = (y_opt - q_sa).detach()                           # [B]
 
-            # --- оценка σ: берём max(batch_std, running_EMA, eps) ---
             sigma_batch = delta.std().clamp_min(self.tr_eps).item()
             self.td_running_std = self.tr_mom * self.td_running_std + (1.0 - self.tr_mom) * sigma_batch
             sigma = max(sigma_batch, self.td_running_std, self.tr_eps)
             sigma_t = torch.full_like(q_sa, fill_value=sigma)         # [B], на девайсе
 
-            # --- разность между online и target на ТЕКУЩЕМ (s_t, a_t) ---
             with torch.no_grad():
                 _, q_opt_tgt_cur = self.target_model_optim(state)     # [B, A]
             q_tgt_sa = q_opt_tgt_cur.gather(1, action_o.view(-1,1)).squeeze(1)  # [B]
             gap = (q_sa.detach() - q_tgt_sa)                          # [B]
 
-            # --- два условия маски (True => выкинуть из лосса) ---
-            cond1 = gap.abs() > (self.tr_alpha * sigma_t)             # далеко от таргет-значения
-            cond2 = torch.sign(gap) != torch.sign(q_sa.detach() - y_opt.detach())  # шаг уведёт ЕЩЁ дальше
+            cond1 = gap.abs() > (self.tr_alpha * sigma_t)
+            cond2 = torch.sign(gap) != torch.sign(q_sa.detach() - y_opt.detach())
             tr_mask_drop = cond1 & cond2                              # [B] bool
             tr_keep = (~tr_mask_drop).float()                         # [B] 1.0 = учим, 0.0 = выкинуть
 
-            # --- применяем маску к лоссу оптимизаторной головы ---
             per_sample_loss_opt = self.huberloss(input=q_sa, target=y_opt) * is_w
             loss_opt = (per_sample_loss_opt * tr_keep).sum() / tr_keep.sum().clamp_min(1.0)
 
@@ -381,7 +359,6 @@ class DQNAgent:
             td_opt_abs = (q_sa - y_opt).abs().detach()
             td_opt_abs = td_opt_abs * tr_keep + self.tr_eps  
 
-            # --- PARAM HEADS: Double per-parameter ---
             opt_names = [self.i2opt[int(i.item())] for i in action_o]
             q_params_cur = self.model_params(flat, opt_names)
             with torch.no_grad():
@@ -418,7 +395,6 @@ class DQNAgent:
 
             loss_param = torch.stack(loss_param_items).sum() / tr_keep.sum().clamp_min(1.0)
 
-            # --- шаг оптимизации ---
             self.optimizer_opt.zero_grad()
             self.optimizer_params.zero_grad()
             (loss_opt + loss_param).backward()
@@ -427,7 +403,6 @@ class DQNAgent:
             self.optimizer_opt.step()
             self.optimizer_params.step()
 
-            # --- апдейт приоритетов PER ---
             with torch.no_grad():
                 td_param_abs = torch.as_tensor(td_param_items, dtype=torch.float, device=self.device)
                 td_param_abs = td_param_abs * tr_keep + self.tr_eps
@@ -442,12 +417,10 @@ class DQNAgent:
                     self.recalc_done = True
                     self.warmup_active = False
 
-            # --- периодическое обновление таргет-сетей (как у тебя) ---
             print("\nRL optimization is complete!\n")
             self.transition_counter += self.batch_size
             
 
-            # периодическая реинициализация таргет-сетей (как у тебя)
             if self.transition_counter >= self.n_transitions_reinit:
                 print("REINIT TARGET")
                 self.reinit_target()
@@ -494,14 +467,12 @@ class DQNAgent:
 
 
             # seqs: список последовательностей, каждая <= L
-            # Посчитаем, сколько из них заканчиваются success-терминалом
 
             count_seq_success = 0
             count_seq_total   = len(seqs)
 
             for seq in seqs:
                 last = seq[-1]
-                # тот же критерий успеха, что использует буфер
                 if (last.done == 1) and (last.model_reward > self.success_reward_threshold):
                     count_seq_success += 1
 
@@ -528,13 +499,10 @@ class DQNAgent:
         reward_tensor = torch.cat(all_rewards)
         done_tensor = torch.cat(all_dones)
 
-        # Подсчёт: хорошее завершение — done == 1 и reward > 0
         count_good_end = torch.sum((done_tensor == 1) & (reward_tensor > 0)).item()
 
-        # Подсчёт: плохое завершение — done == -1 и reward < 0
         count_bad_end = torch.sum((done_tensor == -1) & (reward_tensor < 0)).item()
 
-        # матрица сопряжённости, чтобы сразу увидеть, почему пересечений нет
         sign_reward = torch.sign(reward_tensor).clamp(min=-1, max=1)  # -1, 0, 1
         for d in (-1, 0, 1):
             row_mask = (done_tensor == d)
@@ -582,14 +550,12 @@ class DQNAgent:
             self.exp.log_metric("bad_action_procent", len(bad_action)/len(model_reward_i_ar), step=self.steps_done)
             self.exp.log_metric("count_good_end", count_good_end, step=self.steps_done)
             self.exp.log_metric("count_bad_end", count_bad_end, step=self.steps_done)
-            # Логируем список приоритетов
 
             log_priority_to_comet(self.exp, self.replay_buffer.prior, step=self.steps_done)
             # self.exp.log_parameter('priority', self.replay_buffer.prior)
 
 
 
-            # Сохраняем модель во временные файлы
             with tempfile.NamedTemporaryFile(delete=False, suffix=".pt") as tmp_optim:
                 torch.save(self.model_optim.state_dict(), tmp_optim.name)
                 optim_path = tmp_optim.name
@@ -598,7 +564,6 @@ class DQNAgent:
                 torch.save(self.model_params.state_dict(), tmp_params.name)
                 params_path = tmp_params.name
 
-            # --- логируем как модельные файлы ---
             self.exp.log_model(
                 name="rl_agent_optim",
                 file_or_folder=optim_path,
@@ -615,7 +580,6 @@ class DQNAgent:
                 metadata={"type": "model_state", "step": self.steps_done}
             )
 
-            # Дополнительно можно залогировать "человеческий" тег версии
             self.exp.log_other("model_snapshot_step", self.steps_done)
 
 
@@ -652,7 +616,6 @@ class DQNAgent:
     # Action function stub
     def select_action(self, state):
 
-        # собрать 4-канальное состояние
         if "delta" not in state:
             delta = torch.zeros_like(state["loss_total"])
         else:
@@ -665,7 +628,6 @@ class DQNAgent:
             delta
         ], dim=0).to(self.device)
 
-        # сделать батч: (1,4,26,26)
         state_tensor = state_tensor.unsqueeze(0)
 
         # eps-greedy
@@ -676,7 +638,6 @@ class DQNAgent:
         if self.steps_done < self.slot_bootstrap_steps:
             eps_threshold = self.slot_bootstrap_eps
 
-        # --- GREEDY ---
         if sample > eps_threshold:
             with torch.no_grad():
                 liner_out, q_opt = self.model_optim(state_tensor)
@@ -693,11 +654,9 @@ class DQNAgent:
                     else:
                         param_class[key] = int(torch.argmax(param_dict[key]).item())
 
-        # --- EPSILON RANDOM ---
         else:
             optim_class, epochs_class, param_class = self.get_random_action()
 
-        # оформить action в формате твоего пайплайна
         action_dict = self.post_proc_model(optim_class, epochs_class, param_class)
 
         return action_dict, (optim_class, epochs_class, param_class), sample > eps_threshold

@@ -19,7 +19,6 @@ PROJECT_NAME = "rlpinn-grayscott-farm-transitions"
 api = get_comet_api()
 
 
-# === Вспомогательные функции ===
 def get_metadata_field(exp, field, default=None):
     try:
         meta = exp.get_metadata()
@@ -156,11 +155,6 @@ def _log_experiment_result(result, running_total):
         print(f"   ERROR loading experiment: {result.error}")
         return
 
-    # if result.loaded_files:
-    #     for filename in result.loaded_files:
-    #         print(f"   loaded {filename}")
-    # else:
-    #     print("   no transition files were loaded")
 
     for skipped in result.skipped_files:
         if skipped == "NO_ENTRY_STEP_ASSETS":
@@ -202,13 +196,11 @@ def collect_all_comet_transitions(
         experiments = list(api.get_experiments(workspace=WORKSPACE, project_name=proj_name))
     else:
         experiments = list(api.get_experiments(workspace=WORKSPACE, project_name=PROJECT_NAME))
-    # valid_experiments = [exp for exp in experiments if not is_crashed(exp)]
     experiments_sorted = sorted(experiments, key=get_end_time, reverse=True)
     experiments_sorted_duration = [
         exp for exp in experiments_sorted
         if get_duration_hours(exp) >= duration_grater_hours
     ]
-    # experiments_sorted = [api.get_experiment(workspace=WORKSPACE, project_name=PROJECT_NAME, experiment='751c7ca595dd4dafb22a0cfe61c26b6f')]
 
     experiments_sorted_duration = experiments_sorted_duration[:max_exps_last]
     if prev_tol > 0.0 and use_tol:
@@ -290,9 +282,7 @@ def collect_all_comet_transitions(
     if mark_states:
         all_transitions = add_proj_mark(all_transitions, proj_name)
 
-    # --- Сдвиг наград для успешных переходов ---
     all_transitions = shift_done_rewards(all_transitions, done=-1, shift_value=-5)
-    # --- Добавление delta loss ---
     all_entries = add_delta_to_all_entries(all_transitions)
 
     if use_log_state:
@@ -339,16 +329,13 @@ def add_delta_to_sequence(seq, eps=1e-6):
     if not seq:
         return
 
-    # --- 0) Проверяем, не всё ли уже размечено delta ---
     already_has_delta_everywhere = all(
         ("delta" in tr.get("state", {}) and "delta" in tr.get("next_state", {}))
         for tr in seq
     )
     if already_has_delta_everywhere:
-        # все состояния уже имеют delta → ничего не трогаем
         return
 
-    # --- 1) Сначала считаем delta_t для каждого перехода и кладём в next_state["delta"] ---
     for tr in seq:
         s = tr["state"]
         ns = tr["next_state"]
@@ -359,12 +346,9 @@ def add_delta_to_sequence(seq, eps=1e-6):
         delta_t = compute_delta_map(total_t, total_t1, eps=eps)
         ns["delta"] = delta_t
 
-    # --- 2) Теперь проставляем delta в state ---
-    # Для самого первого state в эпизоде — delta = 0
     first_state = seq[0]["state"]
     first_state["delta"] = torch.zeros_like(first_state["loss_total"])
 
-    # Для остальных state берём delta из предыдущего next_state
     for i in range(1, len(seq)):
         prev_ns = seq[i - 1]["next_state"]
         curr_s = seq[i]["state"]
@@ -382,20 +366,16 @@ def add_delta_to_all_entries(entries):
     for tr in entries:
         curr_seq.append(tr)
 
-        # конец эпизода: done == 1 или done == -1
         if tr["done"] in (1, -1):
             sequences.append(curr_seq)
             curr_seq = []
 
-    # хвост, если закончился на done == 0 (неполный эпизод)
     if curr_seq:
         sequences.append(curr_seq)
 
-    # Обрабатываем каждую последовательность
     for seq in sequences:
         add_delta_to_sequence(seq)
 
-    # entries модифицированы in-place, можно просто вернуть для удобства
     return entries
 
 
@@ -420,7 +400,6 @@ def shift_done_rewards(transitions, done=1, shift_value=-5):
                     print("⚠️ У перехода нет поля reward_model", tr)
         if done == -1:
              if int(tr.get("done", 0)) == done:
-                # Убедиться, что reward_model существует
                 if "reward_model" in tr:
                     try:
                         tr["reward_model"] =  shift_value
@@ -567,7 +546,6 @@ def truncate_success_chains(transitions, current_tol=0.0608023, prev_tol=0.06077
             flag_is_tail = True
             continue
 
-        # --- Конец эпизода ---
         if done == -1:
             if not flag_is_tail:
                 cleaned.extend(episode)
@@ -576,8 +554,6 @@ def truncate_success_chains(transitions, current_tol=0.0608023, prev_tol=0.06077
                 episode = []
             flag_is_tail = False
 
-    # Если последний эпизод не завершился done=-1 — отбрасываем "хвост"
-    # (позиционные ошибки уровня tolerance точно не должны жить вечно)
     
     return cleaned
 

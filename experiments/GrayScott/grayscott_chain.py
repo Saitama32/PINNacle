@@ -1,4 +1,3 @@
-# run_grayscott_rl.py
 import os, sys
 os.environ["DDEBACKEND"] = "pytorch"
 
@@ -34,9 +33,6 @@ experiment.log_parameters({
 
 
 def build_get_model_grayscott(hidden_layers: str):
-    """
-    """
-
     def get_model():
         pde = GrayScottEquation()
 
@@ -45,7 +41,6 @@ def build_get_model_grayscott(hidden_layers: str):
 
         net = net.float()
 
-        # loss weights
         loss_weights = np.ones(pde.num_loss, dtype=float)
 
         for i, c in enumerate(pde.loss_config):
@@ -68,7 +63,7 @@ def build_get_model_grayscott(hidden_layers: str):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--name", type=str, default="grayscott_rl")
-    parser.add_argument("--device", type=str, default="0")  # "cpu" or cuda index
+    parser.add_argument("--device", type=str, default="0")
     parser.add_argument("--seed", type=int, default=1234)
 
     parser.add_argument("--hidden-layers", type=str, default="100*5")
@@ -76,7 +71,6 @@ def main():
     parser.add_argument("--log-every", type=int, default=100)
     parser.add_argument("--plot-every", type=int, default=2000)
 
-    # RL config
     parser.add_argument("--n-trajectories", type=int, default=100)
     parser.add_argument("--n-steps-max", type=int, default=1000)
     parser.add_argument("--state-h", type=int, default=26)
@@ -218,14 +212,9 @@ def main():
         "log_key": True,
     }
 
-    # backup_params = {
-    #     "experiment_key" : "b0dae86c42924e4484b8bd194e2d58d9",
-    # }
     backup_params = None
 
     experiment.log_parameters(rl_agent_params)
-    # experiment.log_parameters(backup_params)
-    # --- РІС‹Р·РѕРІ train_process_rl ---
 
     data = dill.dumps((get_model, train_args, optimizers, AE_model_params, AE_train_params, loss_surface_params))
     train_process_rl(data=data, save_path=save_path, device=0, seed=args.seed, rl_agent_params=rl_agent_params)

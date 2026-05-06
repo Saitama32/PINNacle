@@ -1,5 +1,4 @@
 #!/bin/bash
-# Automatic launch of kuramoto_sivashinsky_chain.py with GPU distribution
 
 SCRIPT="experiments/optimization_multi_pde/kuramoto_sivashinsky_chain.py"
 SCRIPT_2="$SCRIPT"

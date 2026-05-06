@@ -1,4 +1,3 @@
-# run_burgers1d_rl.py
 import os
 os.environ["DDEBACKEND"] = "pytorch"
 import time
@@ -18,10 +17,6 @@ from rl_trainer import train_process_rl
 
 
 def build_get_model_burgers1d(hidden_layers: str):
-    """
-    Возвращает функцию get_model() как в benchmark_xxx.py, но только для Burgers1D. :contentReference[oaicite:1]{index=1}
-    """
-
     def get_model():
         pde = Burgers1D()
 
@@ -30,7 +25,6 @@ def build_get_model_burgers1d(hidden_layers: str):
 
         net = net.float()
 
-                # loss weights
         loss_weights = np.ones(pde.num_loss, dtype=float)
 
         for i, c in enumerate(pde.loss_config):
@@ -40,15 +34,10 @@ def build_get_model_burgers1d(hidden_layers: str):
             elif t == "pde":
                 loss_weights[i] = 1.0
             else:
-                # на всякий случай: оставляем 1 для прочих типов (например, gepinn/data/regularization)
                 loss_weights[i] = 1.0
 
 
         model = pde.create_model(net)
-        # model.compile(opt, loss_weights=loss_weights)
-
-        # ВАЖНО: ModelSaverCallback здесь нужен именно для RL, чтобы после каждого chunk получать список моделей
-        # RL-тренер добавит свой saver на каждый шаг, но базовый можно оставить для “обычных” логов, если хочешь.
 
         return model, loss_weights
 
@@ -58,41 +47,34 @@ def build_get_model_burgers1d(hidden_layers: str):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--name", type=str, default="burgers1d_rl")
-    parser.add_argument("--device", type=str, default="0")  # "cpu" or cuda index
+    parser.add_argument("--device", type=str, default="0")
     parser.add_argument("--seed", type=int, default=1234)
 
-    # модель/обычный train
     parser.add_argument("--hidden-layers", type=str, default="100*5")
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--log-every", type=int, default=100)
     parser.add_argument("--plot-every", type=int, default=2000)
 
-    # RL config
     parser.add_argument("--n-trajectories", type=int, default=100)
     parser.add_argument("--n-steps-max", type=int, default=1000)
     parser.add_argument("--state-h", type=int, default=26)
     parser.add_argument("--state-w", type=int, default=26)
     parser.add_argument("--n-save-models", type=int, default=10)
 
-    # куда писать
     parser.add_argument("--out", type=str, default="runs_single")
 
     args = parser.parse_args()
 
-    # --- папка эксперимента ---
     date_str = time.strftime("%m.%d-%H.%M.%S", time.localtime())
     save_path = os.path.join(args.out, f"{date_str}-{args.name}")
     os.makedirs(save_path, exist_ok=True)
 
-    # --- get_model / train_args как в benchmark_xxx.py :contentReference[oaicite:5]{index=5} ---
     get_model = build_get_model_burgers1d(args.hidden_layers)
     get_model_rec = build_get_model_burgers1d(args.hidden_layers)
 
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
     train_args = {
-        # В RL-режиме iterations тут не главный (чанки задаёт action["epochs"]),
-        # но display_every/callbacks используются.
         "iterations": 1,
         "display_every": args.log_every,
         "callbacks": [
@@ -107,19 +89,10 @@ def main():
 
     }
     optimizers = {
-        # 'Adam':{
-        #     'lr':[1e-2, 1e-3, 1e-4],
-        #     'epochs':[100, 1000, 2500]
-        #     # 'epochs':[500, 500, 500]
-        # },
         'LBFGS':{
             'lr':[1, 5e-1, 1e-1],
             'epochs':[100, 500, 1500]
         },
-        # 'PSO':{
-        #     'lr':[0.0, 1e-3, 1e-4],
-        #     'epochs':[100, 200, 300]
-        # },
     }
 
     AE_model_params = {
@@ -198,7 +171,7 @@ def main():
         "n_save_models": 10,
         "n_trajectories": 1000,
         "tolerance": 0.040956, 
-        "stuck_threshold": 10,  # Число эпох без значительного изменения прогресса
+        "stuck_threshold": 10,
         "min_loss_change": 1e-7,
         "min_grad_norm": 1e-5,
         "rl_buffer_size": 10000,
@@ -212,8 +185,6 @@ def main():
         "lr": 1e-3,
         "exp": None,
     }
-
-    # --- вызов train_process_rl ---
 
     data = dill.dumps((get_model, train_args, optimizers, AE_model_params, AE_train_params, loss_surface_params))
     train_process_rl(data=data, save_path=save_path, device=args.device, seed=args.seed, rl_agent_params=rl_agent_params)

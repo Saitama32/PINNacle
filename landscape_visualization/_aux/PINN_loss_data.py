@@ -21,7 +21,6 @@ class PINNLossData:
         self._aux = None
 
     def _ensure_points(self):
-        # Важно: для честной поверхности лосса лучше фиксировать точки один раз
         if self._cached and self.cache_points:
             return
 
@@ -43,7 +42,6 @@ class PINNLossData:
         self._ensure_points()
 
         # DeepXDE отдаёт (y_pred, losses_vector) в numpy
-        # См. _outputs_losses в deepxde/model.py: возвращает utils.to_numpy(...) :contentReference[oaicite:1]{index=1}
         _, loss_vec = self.model._outputs_losses(
             True if self.use_train else False,
             self._X,
@@ -52,8 +50,6 @@ class PINNLossData:
         )
         loss_vec = np.asarray(loss_vec, dtype=np.float64)  # shape (num_loss,)
 
-        # --- Разбиение на oper/bnd по PINNacle-логике:
-        # BasePDE.num_pde — количество pde-компонент :contentReference[oaicite:2]{index=2}
         num_pde = getattr(self.model.pde, "num_pde", None)
         if num_pde is None:
             raise AttributeError("dde_model.pde.num_pde not found. Expected PINNacle BasePDE-like object.")
@@ -62,8 +58,6 @@ class PINNLossData:
         loss_bnd = float(np.sum(loss_vec[num_pde:]))
         loss_total = float(np.sum(loss_vec))
 
-        # Нормализованный (как в твоём старом коде) — это “без весов”.
-        # В DeepXDE loss_weights применяются внутри compile() (см _compile_pytorch: losses *= loss_weights) :contentReference[oaicite:3]{index=3}
         lw = getattr(self.model.losshistory, "loss_weights", None)
         if lw is not None:
             lw = np.asarray(lw, dtype=np.float64)
@@ -73,19 +67,16 @@ class PINNLossData:
             loss_normalized = loss_total
 
         # save_graph у тебя раньше использовался чтобы detach и чистить cuda
-        # тут графа нет (DeepXDE уже вернул numpy), так что просто возвращаем torch.Tensor
         return {
             "loss_total": torch.tensor(loss_total, dtype=torch.float32),
             "loss_oper": torch.tensor(loss_oper, dtype=torch.float32),
             "loss_bnd": torch.tensor(loss_bnd, dtype=torch.float32),
             "loss_normalized": torch.tensor(loss_normalized, dtype=torch.float32),
-            # при желании можно вернуть и покомпонентный вектор:
             "loss_vec": torch.tensor(loss_vec, dtype=torch.float32),
         }
     
 
 def extract_layers_from_dde_fnn(net: torch.nn.Module):
-    # часто в DeepXDE pytorch FNN это ModuleList: net.linears (или net.layers)
     linears = None
     if hasattr(net, "linears"):
         linears = getattr(net, "linears")
@@ -100,7 +91,7 @@ def extract_layers_from_dde_fnn(net: torch.nn.Module):
         raise ValueError("Can't find Linear layers inside dde FNN net.")
 
     sizes = [linears[0].in_features] + [l.out_features for l in linears]
-    return sizes  # это и есть [input_dim, h1, h2, ..., output_dim]
+    return sizes
 
 
 def get_PINN(layer_sizes, device):

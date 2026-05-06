@@ -1,4 +1,3 @@
-# run_heat2d_varyingcoef_rl.py
 import os, sys
 os.environ["DDEBACKEND"] = "pytorch"
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
@@ -202,15 +201,9 @@ def main():
         "proj_name": "rlpinn-heat-2d-vc-farm-transitions"
     }
 
-        # backup_params = {
-    #     "experiment_key" : "b0dae86c42924e4484b8bd194e2d58d9",
-    # }
     backup_params = None
 
     experiment.log_parameters(rl_agent_params)
-    # experiment.log_parameters(backup_params)
-    # --- вызов train_process_rl ---
-
     data = dill.dumps((get_model, train_args, optimizers, AE_model_params, AE_train_params, loss_surface_params))
     train_process_rl(data=data, save_path=save_path, device=0, seed=args.seed, rl_agent_params=rl_agent_params)
 

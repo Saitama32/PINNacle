@@ -1,5 +1,4 @@
 #!/bin/bash
-# Auto-run RL chain and distribute jobs across available GPUs.
 
 SCRIPT="experiments/HeatConductivity/heatnd_chain.py"
 

@@ -7,7 +7,6 @@ Transition = namedtuple('Transition',
                         ('state', 'next_state', 'action', 'reward', 'done', 'model_reward', 'opt_model_i'))
     
 
-# ---------- Prioritized Experience Replay (proportional) ----------
 class PrioritizedReplayBuffer:
     def __init__(self, capacity, alpha=0.6, eps=1e-6):
         self.capacity = capacity
@@ -15,10 +14,7 @@ class PrioritizedReplayBuffer:
         self.eps = eps
         self.memory, self.prior, self.pos = [], [], 0
 
-        # --- success replay ---
-        # Порог по model_reward, выше которого терминальный переход считаем "успехом"
         self.success_threshold = 0.0
-        # Набор индексов переходов, которые являются успешными терминалами (done == 1)
         self.success_indexes = set()
 
     def _warn_renorm(self, where: str, reason: str):
@@ -33,7 +29,6 @@ class PrioritizedReplayBuffer:
         """
         tr = Transition(*args)
 
-        # --- базовый приоритет ---
         if priority is None:
             if self.prior:
                 finite_prior = [x for x in self.prior if math.isfinite(x) and x > 0]
@@ -46,7 +41,6 @@ class PrioritizedReplayBuffer:
         if (not math.isfinite(p)) or p <= 0:
             p = self.eps
 
-        # --- индекс, в который пишем ---
         if len(self.memory) < self.capacity:
             idx = len(self.memory)
             self.memory.append(tr)
@@ -57,8 +51,6 @@ class PrioritizedReplayBuffer:
             self.prior[idx] = p
             self.pos = (self.pos + 1) % self.capacity
 
-        # --- обновляем success_indexes для этого индекса ---
-        # считаем успешным терминалом: done == 1 и model_reward > success_threshold
         done = getattr(tr, "done", 0)
         model_reward = float(getattr(tr, "model_reward", 0.0))
 
@@ -67,7 +59,6 @@ class PrioritizedReplayBuffer:
         if is_success:
             self.success_indexes.add(idx)
         else:
-            # если в этом слоте раньше был успех, а теперь нет — убираем
             self.success_indexes.discard(idx)
 
 
@@ -127,7 +118,6 @@ class PrioritizedReplayBuffer:
             tr = self.memory[i]
             seq.append(tr)
             steps += 1
-            # если эпизод закончился — выходим (не включаем следующий)
             if getattr(tr, "done", 0) != 0:
                 break
             i += 1
@@ -148,8 +138,6 @@ class PrioritizedReplayBuffer:
         while i >= 0 and steps < L:
             tr = self.memory[i]
 
-            # если это не самый правый шаг и у него done != 0,
-            # значит мы дошли до конца предыдущего эпизода -> дальше не идём
             if steps > 0 and getattr(tr, "done", 0) != 0:
                 break
 
@@ -168,35 +156,24 @@ class PrioritizedReplayBuffer:
         - idxs: Tensor[B] стартовых индексов (их и обновляем в update_priorities),
         - is_w: Tensor[B] importance-sampling веса.
 
-        ВАЖНО:
-        - стартовые индексы выбираются только среди нетерминальных переходов,
-          у которых есть хотя бы один шаг вперёд (idx < N-1) -> цепочки не единичные.
-        - никаких добиваний батча случайными терминалами.
         """
         N = len(self.memory)
         if N == 0:
             raise RuntimeError("Buffer is empty")
 
-        # --- строим пул валидных стартовых индексов: done == 0 и есть следующий шаг ---
         valid_start_idxs = [
-            i for i, tr in enumerate(self.memory[:-1])  # до N-1 включительно только N-2
+            i for i, tr in enumerate(self.memory[:-1])
             if getattr(tr, "done", 0) == 0
         ]
-        # если вообще нет валидных стартов — fallback: позволяем всё как раньше
         no_valid_starts = (len(valid_start_idxs) == 0)
 
         if uniform:
-            # --- РАВНОМЕРНЫЙ СЭМПЛИНГ ---
             if no_valid_starts:
-                # всё плохо, берём как раньше: любые индексы
                 idxs = torch.randint(0, N, (batch_size,), device=device)
             else:
-                # выбираем только из valid_start_idxs, с повторениями при необходимости
                 if len(valid_start_idxs) >= batch_size:
-                    # без повторов можно, если пул большой
                     chosen = random.sample(valid_start_idxs, batch_size)
                 else:
-                    # пул маленький — разрешаем повторы
                     print("⚠️ PrioritizedReplayBuffer: uniform sampling with repeats due to small valid start pool")
                     chosen = [random.choice(valid_start_idxs) for _ in range(batch_size)]
                 idxs = torch.tensor(chosen, dtype=torch.long, device=device)
@@ -204,24 +181,20 @@ class PrioritizedReplayBuffer:
             is_w = torch.ones(batch_size, dtype=torch.float, device=device)
 
         else:
-            # --- PER СЭМПЛИНГ ПО СТАРТОВЫМ ЭЛЕМЕНТАМ ---
             pr = torch.tensor(self.prior, dtype=torch.float, device=device)
             pr = torch.nan_to_num(pr, nan=self.eps, posinf=1.0, neginf=self.eps).clamp_min(self.eps)
             probs = (pr + self.eps) ** self.alpha
             probs = torch.nan_to_num(probs, nan=0.0, posinf=0.0, neginf=0.0)
 
             if no_valid_starts:
-                # нет нетерминальных стартов -> классический PER по всем
                 if probs.sum() <= 0:
                     self._warn_renorm("sample_sequences/main", "no_valid_starts and probs.sum() <= 0")
                     probs = torch.ones_like(probs)
                 probs = probs / probs.sum()
             else:
-                # обнуляем вероятность для НЕвалидных стартов
                 mask = torch.zeros(N, dtype=torch.float, device=device)
                 mask[valid_start_idxs] = 1.0
                 probs = probs * mask
-                # если вдруг все веса обнулились (на всякий случай) — fallback к исходным
                 if probs.sum() <= 0:
                     self._warn_renorm("sample_sequences/masked", "masked probs sum to zero; fallback to unmasked")
                     probs = (pr + self.eps) ** self.alpha
@@ -246,7 +219,6 @@ class PrioritizedReplayBuffer:
             weights = (N * base_probs[idxs]).pow(-beta)
             is_w = (weights / weights.max()).float()
 
-        # --- сбор последовательностей ---
         seqs = [self._build_sequence_from_start(int(i), L) for i in idxs.tolist()]
 
         return seqs, idxs, is_w
@@ -265,7 +237,6 @@ class PrioritizedReplayBuffer:
           - is_w: Tensor[batch_size] весов (здесь просто 1.0)
         """
         if not self.success_indexes:
-            # если пока нет ни одного успеха — просто fallback на uniform sequences
             seqs, idxs, is_w = self.sample_sequences(batch_size, L, beta=None, uniform=True, device=device)
             return seqs, idxs, is_w
 
@@ -275,7 +246,6 @@ class PrioritizedReplayBuffer:
         seqs = []
         idxs = []
 
-        # чтобы не зависнуть, если данные очень "кривые"
         max_tries_per_seq = 100
 
         for _ in range(batch_size):
@@ -285,7 +255,6 @@ class PrioritizedReplayBuffer:
             for _try in range(max_tries_per_seq):
                 end_idx = success_list[random.randint(0, N_succ - 1)]
 
-                # Строим последовательность, заканчивающуюся этим success
                 candidate = self._build_sequence_ending_at(end_idx, L)
 
                 if len(candidate) <= 1:
@@ -293,15 +262,12 @@ class PrioritizedReplayBuffer:
 
                 seq = candidate
 
-                # индекс первого элемента, зная end_idx и длину
                 start_idx_for_this_seq = end_idx - (len(seq) - 1)
                 start_idx_for_this_seq = max(start_idx_for_this_seq, 0)
 
-                break  # выходим из цикла попыток, последовательность найдена
+                break
 
             if seq is None:
-            # Не смогли найти нормальную success-цепочку.
-            # Крайний случай: добиваем батч обычной последовательностью.
                 fallback_seqs, fallback_idxs, _ = self.sample_sequences(
                     1, L, beta=None, uniform=True, device=device
                 )

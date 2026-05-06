@@ -1,5 +1,4 @@
 #!/bin/bash
-# Automatic launch of wave_1d_chain.py with GPU distribution
 
 SCRIPT="experiments/optimization_multi_pde/wave_1d_chain.py"
 SCRIPT_2="$SCRIPT"

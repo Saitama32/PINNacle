@@ -46,7 +46,6 @@ def recalc_all_priorities_batched(agent, batch_size: int = 32):
         chunk = buf.memory[start:end]
         state, nstate, reward, done, a_optim, opt_names = _stack_batch(chunk)
 
-        # ----- OPTIMIZER HEAD TD -----
         flat, q_opt_cur = agent.model_optim(state)                       # (b,A)
         q_sa = q_opt_cur.gather(1, a_optim.view(-1,1)).squeeze(1)        # (b,)
 
@@ -57,7 +56,6 @@ def recalc_all_priorities_batched(agent, batch_size: int = 32):
         y_opt  = reward + (1.0 - done) * agent.gamma * q_next
         td_opt = (q_sa - y_opt).abs()                                    # (b,)
 
-        # ----- PARAM HEADS TD (сумма по параметрам выбранного оптимизатора) -----
         q_params_cur      = agent.model_params(flat, opt_names)
         q_params_next_on  = agent.model_params(nstate, opt_names)
         q_params_next_tg  = agent.target_model_params(nstate, opt_names)

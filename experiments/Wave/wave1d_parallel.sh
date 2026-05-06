@@ -1,5 +1,4 @@
 #!/bin/bash
-# Auto-run RL chain and distribute jobs across available GPUs.
 
 SCRIPT="experiments/Wave/wave1d_chain.py"
 

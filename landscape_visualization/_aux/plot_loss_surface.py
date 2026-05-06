@@ -192,8 +192,6 @@ class PlotLossSurface:
 
         losses_dict = {loss_type: [] for loss_type in self.loss_types}
 
-        # ВАЖНО: self.dde_model должен быть создан заранее (в __init__) и compile() должен быть сделан.
-        # И точки лучше зафиксировать один раз — поэтому loss_compute создаём вне цикла.
         loss_compute = PINNLossData(self.dde_pde_model, cache_points=True, use_train=True)
 
         for i in range(models.shape[0]):
@@ -206,7 +204,6 @@ class PlotLossSurface:
             ).to(self.device)
 
             # 1) обновляем веса в deepxde net
-            # В PINNacle DDEBACKEND="pytorch", значит dde_model.net — torch.nn.Module, state_dict совместим :contentReference[oaicite:6]{index=6}
             self.dde_pde_model.net.load_state_dict(model_repopulated.state_dict())
 
             # 2) считаем лоссы через DeepXDE
@@ -256,11 +253,9 @@ class PlotLossSurface:
         trajectory_models = torch.cat(trajectory_coordinates_rec, dim=0).cpu()
         original_models = torch.cat(trajectory_dataset_samples, dim=0).cpu()
 
-        # Денормализация данных
         trajectory_models = trajectory_models * self.transform.std.cpu() + self.transform.mean.cpu()
         original_models = original_models * self.transform.std.cpu() + self.transform.mean.cpu()
 
-        # Вычисление ошибки для моделей в траектории
         trajectory_losses = self.compute_losses(trajectory_models)
         original_trajectory_losses = self.compute_losses(original_models)
 
@@ -365,7 +360,7 @@ class PlotLossSurface:
             # def model_hash(model):
             #     state_dict = model.state_dict()
             #     state_bytes = str(state_dict).encode()
-            #     return hashlib.md5(state_bytes).hexdigest()[:8]  # Обрезаем до 8 символов
+            #     return hashlib.md5(state_bytes).hexdigest()[:8]
 
             row = {
                 'index': batch_idx,

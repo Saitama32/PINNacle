@@ -3,7 +3,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 from collections import defaultdict
 
-# ---- общий экстрактор (оставь свой, если отличается) ----
 class ConvEncoder(nn.Module):
     def __init__(self):
         super().__init__()
@@ -28,7 +27,6 @@ class ConvEncoder(nn.Module):
         h = self.mlp(flat)              # (B,64)
         return flat, h
 
-# ---- дуэлинговая голова (скалярные Q) ----
 class DuelingHead(nn.Module):
     def __init__(self, hidden_dim, n_actions):
         super().__init__()
@@ -40,7 +38,6 @@ class DuelingHead(nn.Module):
             nn.Linear(hidden_dim, hidden_dim), nn.ReLU(),
             nn.Linear(hidden_dim, 1),
         )
-        # удобно для твоей старой визуализации «весов класса»
         self.fc_out_adv = self.adv[-1]
 
     def forward(self, h):                # (B,hidden_dim) -> (B,A)
@@ -49,20 +46,18 @@ class DuelingHead(nn.Module):
         q = val + adv - adv.mean(dim=1, keepdim=True)
         return q
 
-# ---- выбор оптимизатора (действие верхнего уровня) ----
 class DQN_optim(nn.Module):
     def __init__(self, optim_n):
         super().__init__()
         self.encoder = ConvEncoder()
         self.head    = DuelingHead(64, optim_n)
-        self.fc_optim_class = self.head.fc_out_adv  # совместимость с твоими графиками
+        self.fc_optim_class = self.head.fc_out_adv
 
     def forward(self, x):
         flat, h = self.encoder(x)
         q = self.head(h)                 # (B, optim_n)
         return flat, q
 
-# ---- выбор параметров по оптимизатору ----
 class DQN_params(nn.Module):
     """
     optimizer_dict = {

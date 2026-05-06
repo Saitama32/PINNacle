@@ -120,7 +120,6 @@ if __name__ == "__main__":
                     elif t == "pde":
                         loss_weights[i] = 1.0
                     else:
-                        # на всякий случай: оставляем 1 для прочих типов (например, gepinn/data/regularization)
                         loss_weights[i] = 1.0
 
             opt = torch.optim.Adam(net.parameters(), command_args.lr)

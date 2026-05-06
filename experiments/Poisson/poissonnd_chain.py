@@ -1,4 +1,3 @@
-# run_ns2d_liddriven_rl.py
 import os, sys
 os.environ["DDEBACKEND"] = "pytorch"
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"

@@ -1,5 +1,4 @@
 #!/bin/bash
-# Automatic launch of burgers_1d_chain.py with GPU distribution
 
 SCRIPT="experiments/optimization_multi_pde/burgers_1d_chain.py"
 SCRIPT_2="$SCRIPT"

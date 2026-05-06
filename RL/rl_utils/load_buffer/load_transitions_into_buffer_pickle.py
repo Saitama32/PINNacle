@@ -9,23 +9,10 @@ import numpy as np
 
 from RL.rl_algorithms import PrioritizedReplayBuffer, Transition
 
-# class ReplayBuffer:
-#     def __init__(self, capacity):
-#         self.memory = deque()
 
-#     def push(self, *args):
-#         self.memory.append(Transition(*args))
 
-#     def sample(self, batch_size):
-#         current_sample = random.sample(self.memory, batch_size)
-#         current_sample_tuples = [tuple(t) for t in current_sample]
-#         return current_sample_tuples
 
-#     def __len__(self):
-#         return len(self.memory)
     
-# Transition = namedtuple('Transition',
-#                         ('state', 'next_state', 'action', 'reward', 'done',  'model_reward', 'opt_model_i'))
 
 rename_map = {
     'action_raw': 'action',
@@ -36,7 +23,6 @@ rename_map = {
 
 def to_cpu(obj):
     if torch.is_tensor(obj):
-        # detach на всякий случай, чтобы оторваться от графа вычисления
         return obj.detach().to('cpu')
     if isinstance(obj, dict):
         return {k: to_cpu(v) for k, v in obj.items()}
@@ -59,25 +45,21 @@ def load_transitions_to_replay_buffer(replay_buffer, source, learn_or_analyze="l
     def process_transition_dict(data, file_label="memory"):
         nonlocal count, count_done_1, count_done_minus_1
 
-        # Переименование ключей
         renamed = {}
         for old_key, value in data.items():
             new_key = rename_map.get(old_key, old_key)
             renamed[new_key] = value
         data = renamed
 
-        # Проверяем обязательные ключи
         required_keys = ['state', 'next_state', 'action', 'reward', 'done', 'reward_model', 'opt_model_i']
         if not all(k in data for k in required_keys):
             print(f"⚠️ Пропуск {file_label}: отсутствуют обязательные ключи {set(required_keys) - set(data.keys())}")
             return
 
-        # Перенос на CPU
         state_cpu      = to_cpu(data['state'])
         next_state_cpu = to_cpu(data['next_state'])
         action_cpu     = to_cpu(data['action'])
 
-        # reward / model_reward — сразу CPU float32
         BLOCKED_ROUNDED = {round(x, 4) for x in [-1.3047, -1.3186, -1.0238]}
         reward_val = float(data['reward'])
         if round(reward_val, 4) in BLOCKED_ROUNDED:
@@ -89,28 +71,7 @@ def load_transitions_to_replay_buffer(replay_buffer, source, learn_or_analyze="l
         reward_t       = torch.tensor(data['reward'], dtype=torch.float32, device='cpu')
         model_reward_t = torch.tensor(data['reward_model'], dtype=torch.float32, device='cpu')
 
-        # --- нормализация флагов done и наград ---
-        # if reward_t < -1.0 and data['done'] == 1:
-        #     data['done'] = -1
-        #     if model_reward_t > 10: 
-        #         model_reward_t = reward_t
-        #     if reward_t < -10:
-        #         reward_t = -10
-        # if data['done'] == 1 and model_reward_t > 50:
-        #     model_reward_t = model_reward_t - 90
-        #     if model_reward_t > 40:
-        #         model_reward_t = model_reward_t - 40
-        # if data['done'] == -1 and model_reward_t < -50:
-        #     if model_reward_t < -120:
-        #         model_reward_t = -10
-        #     else:
-        #         model_reward_t = model_reward_t + 90
-        # if data['done'] == -1 and model_reward_t > 0:
-        #     model_reward_t = -10
-        # if np.isclose(-1.0/reward_t, model_reward_t, atol=1e-4):
-        #     model_reward_t = reward_t
 
-        # --- создаём Transition ---
         transition = Transition(
             state=state_cpu,
             next_state=next_state_cpu,
@@ -128,7 +89,6 @@ def load_transitions_to_replay_buffer(replay_buffer, source, learn_or_analyze="l
         elif data['done'] == -1:
             count_done_minus_1 += 1
 
-    # === 1️⃣ Если передан список структур ===
     if isinstance(source, list):
         print(f"📥 Загружаем из списка структур: {len(source)} элементов")
         for i, item in enumerate(source):
@@ -137,7 +97,6 @@ def load_transitions_to_replay_buffer(replay_buffer, source, learn_or_analyze="l
             else:
                 print(f"⚠️ Пропуск list[{i}] — не dict ({type(item)})")
 
-    # === 2️⃣ Если передан путь к директории ===
     elif isinstance(source, str) and os.path.isdir(source):
         print(f"📁 Загружаем переходы из директории: {source}")
         for root, _, files in os.walk(source):
@@ -235,11 +194,4 @@ def split_buffer(orig_buffer: PrioritizedReplayBuffer, test_ratio: float = 0.2):
     return train_buffer, test_buffer
 
 
-# Пример использования:
-# agent = DQNAgent(...)  # предполагается, что агент уже создан
-# load_transitions_to_replay_buffer(agent.replay_buffer, "/path/to/transitions")
 
-# replay_buffer = ReplayBuffer(10000)
-# path = r"C:\Users\Рустам\Documents\GitHub\torch_DE_solver_local\test\RL_experiments\Article_exp\data\burg_state"
-# load_transitions_to_replay_buffer(replay_buffer, path)
-# print(replay_buffer.__len__())
