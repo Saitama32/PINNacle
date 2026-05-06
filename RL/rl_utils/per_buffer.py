@@ -77,7 +77,7 @@ class PrioritizedReplayBuffer:
             replacement=len(self.memory) < batch_size
         )
 
-        # w_j = (N * P(j))^{-β} / max_i w_i
+        # w_j = (N * P(j))^(-beta) / max_i w_i
         N = len(self.memory)
         weights = (N * probs[idxs]).pow(-beta)
         weights = (weights / weights.max()).float()
@@ -104,7 +104,6 @@ class PrioritizedReplayBuffer:
                 p = self.eps
             self.prior[int(i)] = p
     
-    # per_buffer.py  --- ДОБАВИТЬ внутрь класса PrioritizedReplayBuffer
     def _build_sequence_from_start(self, start_idx: int, L: int):
         """
         Собираем переходы [start_idx .. start_idx+L-1], обрываем на done
@@ -128,7 +127,7 @@ class PrioritizedReplayBuffer:
         Строим последовательность, которая:
         - всегда заканчивается на end_idx (обычно done=1),
         - идёт назад максимум на L-1 шагов,
-        - НИКОГДА не пересекает границу эпизода (т.е. не включает предыдущий done!=0).
+        - не пересекает границу эпизода (т.е. не включает предыдущий done!=0).
         """
         seq_rev = []
         i = end_idx
@@ -174,7 +173,7 @@ class PrioritizedReplayBuffer:
                 if len(valid_start_idxs) >= batch_size:
                     chosen = random.sample(valid_start_idxs, batch_size)
                 else:
-                    print("⚠️ PrioritizedReplayBuffer: uniform sampling with repeats due to small valid start pool")
+                    print("WARNING PrioritizedReplayBuffer: uniform sampling with repeats due to small valid start pool")
                     chosen = [random.choice(valid_start_idxs) for _ in range(batch_size)]
                 idxs = torch.tensor(chosen, dtype=torch.long, device=device)
 
@@ -209,7 +208,7 @@ class PrioritizedReplayBuffer:
             idxs = torch.multinomial(probs, batch_size, replacement=replacement)
 
             assert beta is not None, "beta must be provided for PER sampling"
-            # IS-веса считаем по ИСХОДНЫМ probs (как в классическом PER)
+            # IS weights are computed from the original probabilities.
             base_probs = (pr + self.eps) ** self.alpha
             base_probs = torch.nan_to_num(base_probs, nan=0.0, posinf=0.0, neginf=0.0)
             if base_probs.sum() <= 0:

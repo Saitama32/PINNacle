@@ -283,9 +283,6 @@ class TesterCallback(Callback):
             bc_rmse = np.nan
             bc_l2re = np.nan
 
-
-        # --- Interpolation-based metrics (nearest exact on arbitrary grids) ---
-        # 1) interp MSE on training points (prefer train_x; fallback to train_x_all)
         train_x = getattr(self.model.data, "train_x", None)
         if train_x is None:
             train_x = getattr(self.model.data, "train_x_all", None)
@@ -476,28 +473,21 @@ class ModelSaverCallback(Callback):
         super(ModelSaverCallback, self).__init__()
         self.total_iterations = total_iterations
         self.n_save_models = n_save_models
-        # Вычисляем интервал сохранения (чтобы сохранить ровно n_save_models моделей)
         self.save_every = max(1, total_iterations // n_save_models)
-        self.saved_models = []  # здесь будут храниться копии моделей
-        self.next_save_iter = self.save_every  # первое сохранение после save_every итераций
+        self.saved_models = [] 
+        self.next_save_iter = self.save_every 
 
     def on_epoch_end(self):
-        # Проверяем, что модель скомпилирована и есть доступ к номеру итерации
-        # if not hasattr(self, 'model') or self.model.train_state is None:
-        #     return
         current_iter = self.model.train_state.step
 
-        # Если достигли очередного рубежа сохранения
+
         if current_iter >= self.next_save_iter and len(self.saved_models) < self.n_save_models:
-            # Делаем глубокую копию модели (только сеть, так как весь объект model может быть сложным)
             model_copy = copy.deepcopy(self.model.net)
             self.saved_models.append(model_copy)
             print(f"Model saved at iteration {current_iter} ({len(self.saved_models)}/{self.n_save_models})")
-            # Устанавливаем следующий рубеж
             self.next_save_iter += self.save_every
 
     def on_train_end(self):
-        # Если сохранили меньше, чем планировали (например, обучение рано остановилось), можно добавить последнюю модель
         if len(self.saved_models) < self.n_save_models and hasattr(self, 'model'):
             model_copy = copy.deepcopy(self.model.net)
             self.saved_models.append(model_copy)

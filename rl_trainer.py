@@ -1,4 +1,4 @@
-import os
+п»їimport os
 import sys
 import time
 import json
@@ -80,7 +80,7 @@ def _build_torch_optimizer(opt_name: str, params, action: Dict[str, Any]):
         )
 
     if name in ["lbfgs", "l-bfgs", "l_bfgs", "LBFGS"]:
-        # torch LBFGS (для pytorch backend DeepXDE норм)
+        # torch LBFGS (РґР»СЏ pytorch backend DeepXDE РЅРѕСЂРј)
         opt = torch.optim.LBFGS(
             params,
             lr=action["params"]["lr"],
@@ -112,13 +112,13 @@ def run_deepxde_rl_training(
 
 ):
     """
-    model: deepxde.Model (уже созданный get_model())
-    train_args: то, что раньше шло в model.train(**train_args)
-    env_ctor: класс/фабрика EnvRLOptimizer
-    agent_ctor: класс/фабрика DQNAgent
+    model: deepxde.Model (СѓР¶Рµ СЃРѕР·РґР°РЅРЅС‹Р№ get_model())
+    train_args: С‚Рѕ, С‡С‚Рѕ СЂР°РЅСЊС€Рµ С€Р»Рѕ РІ model.train(**train_args)
+    env_ctor: РєР»Р°СЃСЃ/С„Р°Р±СЂРёРєР° EnvRLOptimizer
+    agent_ctor: РєР»Р°СЃСЃ/С„Р°Р±СЂРёРєР° DQNAgent
     """
 
-    # callbacks базовые (Tester/Loss/Plot и т.п.)
+    # callbacks Р±Р°Р·РѕРІС‹Рµ (Tester/Loss/Plot Рё С‚.Рї.)
     base_callbacks = train_args.get("callbacks", [])
     equation_params = train_args.get("equation_params", [])
     display_every = int(train_args.get("display_every", 100))
@@ -148,7 +148,7 @@ def run_deepxde_rl_training(
                         n_transitions_reinit = rl_agent_params["n_transitions_reinit"],
                         exp = rl_agent_params["exp"])
 
-    # init state (как у тебя в model.py: нулевые карты)
+    # init state (РєР°Рє Сѓ С‚РµР±СЏ РІ model.py: РЅСѓР»РµРІС‹Рµ РєР°СЂС‚С‹)
     state_shape = get_state_shape(loss_surface_params)
     def zero_state():
         z = torch.zeros(state_shape, device=device)
@@ -260,10 +260,8 @@ def run_deepxde_rl_training(
 
                 next_state, reward_shaped, done, info = env.step()
 
-                # prev_reward — теперь просто хранит reward_scalar из info
                 prev_reward = info["reward_scalar"]
 
-                # reward уже финальный (reward_model_i)
                 rl_agent.push_memory((state, next_state, action_raw, float(reward_shaped.item()),
                                     done, float(reward_shaped.item()), info["opt_model_i"]))
 
@@ -353,7 +351,7 @@ def train_process_rl(data, save_path, device, seed, rl_agent_params):
 
     get_model, train_args, optimizers, AE_model_params, AE_train_params,  loss_surface_params = payload
     model, loss_weights = get_model()
-    # rl_payload структура:
+    # rl_payload СЃС‚СЂСѓРєС‚СѓСЂР°:
     # {
     #   "train_args": {...},
     #   "optimizers_dict": {...},
