@@ -2,13 +2,13 @@
 import os, sys
 os.environ["DDEBACKEND"] = "pytorch"
 
-from comet_ml import start
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+sys.path.append(project_root)
+from comet_config import start_comet_experiment
 from comet_ml.integration.pytorch import log_model
 
-experiment = start(
-  api_key="aP71fQTYPNqfsYWvudPPmoBl5",
+experiment = start_comet_experiment(
   project_name="rlpinn_ns2d_liddriven_optimization",
-  workspace="saitama32"
 )
 
 os.environ['KMP_DUPLICATE_LIB_OK'] = 'TRUE'
@@ -212,7 +212,7 @@ def main():
 
     experiment.log_parameters(rl_agent_params)
     # experiment.log_parameters(backup_params)
-    # --- вызов train_process_rl ---
+    # --- РІС‹Р·РѕРІ train_process_rl ---
 
     data = dill.dumps((get_model, train_args, optimizers, AE_model_params, AE_train_params, loss_surface_params))
     train_process_rl(data=data, save_path=save_path, device=args.device, seed=args.seed, rl_agent_params=rl_agent_params)

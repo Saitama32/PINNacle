@@ -1,13 +1,13 @@
-from comet_ml import API
 import torch
 import io
+from comet_config import get_comet_api, get_comet_workspace
 
 # === Настройки ===
-WORKSPACE = "saitama32"
+WORKSPACE = get_comet_workspace()
 PROJECT_NAME = "rlpinn"
 
 
-api = API(api_key="aP71fQTYPNqfsYWvudPPmoBl5")  # или просто API()
+api = get_comet_api()
 # experiment_key = "9da803bf471942d68069d835e2f95651"
 step=None
 

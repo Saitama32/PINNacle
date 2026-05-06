@@ -1,14 +1,14 @@
 # run_burgers1d_rl.py
 import os, sys
 os.environ["DDEBACKEND"] = "pytorch"
-from comet_ml import start
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+sys.path.append(project_root)
+from comet_config import start_comet_experiment
 from comet_ml.integration.pytorch import log_model
 
 proj_name = "rlpinn-poisson-boltzmann-2d-optimization"
-experiment = start(
-  api_key="aP71fQTYPNqfsYWvudPPmoBl5",
+experiment = start_comet_experiment(
   project_name=proj_name,
-  workspace="saitama32"
 )
 
 os.environ['KMP_DUPLICATE_LIB_OK'] = 'TRUE'
@@ -47,7 +47,7 @@ def str2bool(v):
 
 def build_get_model_poisson_boltzmann2d(hidden_layers: str):
     """
-    Возвращает функцию get_model() как в benchmark_xxx.py, но только для Burgers1D. :contentReference[oaicite:1]{index=1}
+    Р’РѕР·РІСЂР°С‰Р°РµС‚ С„СѓРЅРєС†РёСЋ get_model() РєР°Рє РІ benchmark_xxx.py, РЅРѕ С‚РѕР»СЊРєРѕ РґР»СЏ Burgers1D. :contentReference[oaicite:1]{index=1}
     """
 
     def get_model():
@@ -68,15 +68,15 @@ def build_get_model_poisson_boltzmann2d(hidden_layers: str):
             elif t == "pde":
                 loss_weights[i] = 1.0
             else:
-                # на всякий случай: оставляем 1 для прочих типов (например, gepinn/data/regularization)
+                # РЅР° РІСЃСЏРєРёР№ СЃР»СѓС‡Р°Р№: РѕСЃС‚Р°РІР»СЏРµРј 1 РґР»СЏ РїСЂРѕС‡РёС… С‚РёРїРѕРІ (РЅР°РїСЂРёРјРµСЂ, gepinn/data/regularization)
                 loss_weights[i] = 1.0
 
 
         model = pde.create_model(net)
         # model.compile(opt, loss_weights=loss_weights)
 
-        # ВАЖНО: ModelSaverCallback здесь нужен именно для RL, чтобы после каждого chunk получать список моделей
-        # RL-тренер добавит свой saver на каждый шаг, но базовый можно оставить для “обычных” логов, если хочешь.
+        # Р’РђР–РќРћ: ModelSaverCallback Р·РґРµСЃСЊ РЅСѓР¶РµРЅ РёРјРµРЅРЅРѕ РґР»СЏ RL, С‡С‚РѕР±С‹ РїРѕСЃР»Рµ РєР°Р¶РґРѕРіРѕ chunk РїРѕР»СѓС‡Р°С‚СЊ СЃРїРёСЃРѕРє РјРѕРґРµР»РµР№
+        # RL-С‚СЂРµРЅРµСЂ РґРѕР±Р°РІРёС‚ СЃРІРѕР№ saver РЅР° РєР°Р¶РґС‹Р№ С€Р°Рі, РЅРѕ Р±Р°Р·РѕРІС‹Р№ РјРѕР¶РЅРѕ РѕСЃС‚Р°РІРёС‚СЊ РґР»СЏ вЂњРѕР±С‹С‡РЅС‹С…вЂќ Р»РѕРіРѕРІ, РµСЃР»Рё С…РѕС‡РµС€СЊ.
 
         return model, loss_weights
 
@@ -89,7 +89,7 @@ def main():
     parser.add_argument("--device", type=str, default="0")  # "cpu" or cuda index
     parser.add_argument("--seed", type=int, default=1234)
 
-    # модель/обычный train
+    # РјРѕРґРµР»СЊ/РѕР±С‹С‡РЅС‹Р№ train
     parser.add_argument("--hidden-layers", type=str, default="100*5")
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--log-every", type=int, default=100)
@@ -103,25 +103,25 @@ def main():
     parser.add_argument("--n-save-models", type=int, default=10)
     parser.add_argument("--log_key", type=str2bool, nargs="?", const=True, default=False)
 
-    # куда писать
+    # РєСѓРґР° РїРёСЃР°С‚СЊ
     parser.add_argument("--out", type=str, default="runs_single")
 
     args = parser.parse_args()
 
-    # --- папка эксперимента ---
+    # --- РїР°РїРєР° СЌРєСЃРїРµСЂРёРјРµРЅС‚Р° ---
     date_str = time.strftime("%m.%d-%H.%M.%S", time.localtime())
     save_path = os.path.join(args.out, f"{date_str}-{args.name}")
     os.makedirs(save_path, exist_ok=True)
 
-    # --- get_model / train_args как в benchmark_xxx.py :contentReference[oaicite:5]{index=5} ---
+    # --- get_model / train_args РєР°Рє РІ benchmark_xxx.py :contentReference[oaicite:5]{index=5} ---
     get_model = build_get_model_poisson_boltzmann2d(args.hidden_layers)
     get_model_rec = build_get_model_poisson_boltzmann2d(args.hidden_layers)
 
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
     train_args = {
-        # В RL-режиме iterations тут не главный (чанки задаёт action["epochs"]),
-        # но display_every/callbacks используются.
+        # Р’ RL-СЂРµР¶РёРјРµ iterations С‚СѓС‚ РЅРµ РіР»Р°РІРЅС‹Р№ (С‡Р°РЅРєРё Р·Р°РґР°С‘С‚ action["epochs"]),
+        # РЅРѕ display_every/callbacks РёСЃРїРѕР»СЊР·СѓСЋС‚СЃСЏ.
         "iterations": 1,
         "display_every": args.log_every,
         "callbacks": [
@@ -228,7 +228,7 @@ def main():
         "n_trajectories": 1000,
         "tolerance": 0.0002, 
         "prev_tol": 0,
-        "stuck_threshold": 10,  # Число эпох без значительного изменения прогресса
+        "stuck_threshold": 10,  # Р§РёСЃР»Рѕ СЌРїРѕС… Р±РµР· Р·РЅР°С‡РёС‚РµР»СЊРЅРѕРіРѕ РёР·РјРµРЅРµРЅРёСЏ РїСЂРѕРіСЂРµСЃСЃР°
         "min_loss_change": 1e-7,
         "min_grad_norm": 1e-5,
         "rl_buffer_size": 10000,
@@ -253,9 +253,9 @@ def main():
 
     experiment.log_parameters(rl_agent_params)
     # experiment.log_parameters(backup_params)
-    # --- вызов train_process_rl ---
+    # --- РІС‹Р·РѕРІ train_process_rl ---
 
-    # --- вызов train_process_rl ---
+    # --- РІС‹Р·РѕРІ train_process_rl ---
 
     data = dill.dumps((get_model, train_args, optimizers, AE_model_params, AE_train_params, loss_surface_params))
     train_process_rl(data=data, save_path=save_path, device=0, seed=args.seed, rl_agent_params=rl_agent_params)
