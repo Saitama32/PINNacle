@@ -7,12 +7,19 @@ import itertools
 import copy
 from deepxde.geometry import Hypercube, Interval
 from deepxde.callbacks import Callback
-from deepxde.utils.internal import list_to_str
 from src.utils import plot
 import scipy.interpolate
 import deepxde as dde
 
 logger = logging.getLogger(__name__)
+
+
+def _float_to_str(value):
+    return f"{float(value):.10e}"
+
+
+def _array_to_str(values):
+    return "[" + ", ".join(_float_to_str(value) for value in np.ravel(values)) + "]"
 
 
 class PlotCallback(Callback):
@@ -83,9 +90,9 @@ class LossCallback(Callback):
             loss_train = self.model.losshistory.loss_train[-1] / loss_weight
             loss_test = self.model.losshistory.loss_test[-1] / loss_weight
             print('Unweighted Loss: {}  {} Weights: {}'.format(
-                list_to_str(loss_train),
-                list_to_str(loss_test),
-                list_to_str(loss_weight),
+                _array_to_str(loss_train),
+                _array_to_str(loss_test),
+                _array_to_str(loss_weight),
             ))
 
     def on_train_end(self):
@@ -334,10 +341,10 @@ class TesterCallback(Callback):
 
         if self.verbose:
             if np.isnan(frmse[0]):
-                print('Validation: epoch {} MSE {:.5f} MAE {:.5f} MXE {:.5f} BMSE {:.5f} ICMSE {:.5f} L1RE {:.5f} L2RE {:.5f} CRMSE {:.5f}'.\
+                print('Validation: epoch {} MSE {:.10e} MAE {:.10e} MXE {:.10e} BMSE {:.10e} ICMSE {:.10e} L1RE {:.10e} L2RE {:.10e} CRMSE {:.10e}'.\
                        format(self.valid_epoch, mse, mae, mxe, bc_mse, ic_mse, l1re, l2re, crmse))
             else:
-                print('Validation: epoch {} MSE {:.5f} MAE {:.5f} MXE {:.5f} BMSE {:.5f} ICMSE {:.5f} L1RE {:.5f} L2RE {:.5f} CRMSE {:.5f} FRMSE ({:.5f}, {:.5f}, {:.5f})'.\
+                print('Validation: epoch {} MSE {:.10e} MAE {:.10e} MXE {:.10e} BMSE {:.10e} ICMSE {:.10e} L1RE {:.10e} L2RE {:.10e} CRMSE {:.10e} FRMSE ({:.10e}, {:.10e}, {:.10e})'.\
                        format(self.valid_epoch, mse, mae, mxe, bc_mse, ic_mse, l1re, l2re, crmse, frmse[0], frmse[1], frmse[2]))
 
     def on_train_end(self):
