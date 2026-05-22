@@ -2,17 +2,12 @@ import os
 import sys
 os.environ["DDEBACKEND"] = "pytorch"
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
-from dotenv import load_dotenv
-from comet_ml import start
-from dotenv import load_dotenv
-PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-load_dotenv(os.path.join(PROJECT_ROOT, ".env"))
-api_key = os.getenv("COMET_API_KEY")
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+sys.path.append(project_root)
+from comet_config import start_comet_experiment
 
-experiment = start(
-    api_key=api_key,
+experiment = start_comet_experiment(
     project_name="rlpinn_wave1d_loss_ratio_reward_tolerance",
-    workspace="saitama32",
 )
 
 

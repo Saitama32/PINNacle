@@ -5,16 +5,14 @@ os.environ["DDEBACKEND"] = "pytorch"
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
-from comet_ml import start
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
+sys.path.append(project_root)
+from comet_config import start_comet_experiment
 
-COMET_API_KEY = "aP71fQTYPNqfsYWvudPPmoBl5"
-COMET_WORKSPACE = "saitama32"
 COMET_TARGET_PROJECT = "rlpinn-heat-pde-agent-opt-without-heat2d-cg"
 
-experiment = start(
-    api_key=COMET_API_KEY,
+experiment = start_comet_experiment(
     project_name=COMET_TARGET_PROJECT,
-    workspace=COMET_WORKSPACE,
 )
 
 import argparse

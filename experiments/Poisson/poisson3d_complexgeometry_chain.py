@@ -2,20 +2,18 @@ import os
 os.environ["DDEBACKEND"] = "pytorch"
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 
-from comet_ml import start
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+sys.path.append(project_root)
+from comet_config import start_comet_experiment
 
-experiment = start(
-    api_key="aP71fQTYPNqfsYWvudPPmoBl5",
+experiment = start_comet_experiment(
     project_name="rlpinn_poisson3d_complexgeometry_loss_ratio_reward_tolerance",
-    workspace="saitama32",
 )
 
 
 
 import sys
 
-project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-sys.path.append(project_root)
 
 import time
 import argparse

@@ -1,20 +1,18 @@
 # run_burgers1d_rl.py
 import os, sys
 os.environ["DDEBACKEND"] = "pytorch"
-from comet_ml import start
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+sys.path.append(project_root)
+from comet_config import start_comet_experiment
 from comet_ml.integration.pytorch import log_model
 
 
 proj_name = "rlpinn-poisson-2d-manyarea-optimization"
-experiment = start(
-  api_key="aP71fQTYPNqfsYWvudPPmoBl5",
-  project_name=proj_name,
-  workspace="saitama32"
+experiment = start_comet_experiment(
+    project_name=proj_name,
 )
 
 os.environ['KMP_DUPLICATE_LIB_OK'] = 'TRUE'
-project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
-sys.path.append(project_root)
 import time
 import argparse
 import dill
