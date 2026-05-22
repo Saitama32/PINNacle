@@ -7,7 +7,7 @@ from comet_ml.integration.pytorch import log_model
 
 experiment = start(
   api_key="aP71fQTYPNqfsYWvudPPmoBl5",
-  project_name="rlpinn-grayscott-optimization",
+  project_name="rlpinn-grayscott-loss_ratio_reward_tolerance",
   workspace="saitama32"
 )
 

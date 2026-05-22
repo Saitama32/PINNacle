@@ -11,7 +11,7 @@ api_key = os.getenv("COMET_API_KEY")
 
 experiment = start(
     api_key=api_key,
-    project_name="rlpinn_wave1d_optimization",
+    project_name="rlpinn_wave1d_loss_ratio_reward_tolerance",
     workspace="saitama32",
 )
 

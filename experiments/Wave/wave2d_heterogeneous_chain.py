@@ -6,7 +6,7 @@ os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 from comet_ml import start
 experiment = start(
     api_key="aP71fQTYPNqfsYWvudPPmoBl5",
-    project_name="rlpinn_wave2d_heterogeneous_optimization",
+    project_name="rlpinn_wave2d_heterogeneous_loss_ratio_reward_tolerance",
     workspace="saitama32",
 )
 

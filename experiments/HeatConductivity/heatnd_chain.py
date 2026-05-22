@@ -7,7 +7,7 @@ from comet_ml import start
 
 experiment = start(
     api_key="aP71fQTYPNqfsYWvudPPmoBl5",
-    project_name="rlpinn_heatnd_optimization",
+    project_name="rlpinn_heatnd_loss_ratio_reward_tolerance",
     workspace="saitama32",
 )
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
