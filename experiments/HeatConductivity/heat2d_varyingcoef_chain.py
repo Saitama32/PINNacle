@@ -1,18 +1,16 @@
 # run_heat2d_varyingcoef_rl.py
 import os, sys
 os.environ["DDEBACKEND"] = "pytorch"
-from comet_ml import start
-from comet_ml.integration.pytorch import log_model
-
-experiment = start(
-  api_key="aP71fQTYPNqfsYWvudPPmoBl5",
-  project_name="rlpinn_heat_2d_vc_optimization",
-  workspace="saitama32"
-)
-
-os.environ['KMP_DUPLICATE_LIB_OK'] = 'TRUE'
+os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
 sys.path.append(project_root)
+from comet_config import start_comet_experiment
+from comet_ml.integration.pytorch import log_model
+
+experiment = start_comet_experiment(
+  project_name="rlpinn_heat_2d_vc_optimization",
+)
+
 import time
 import argparse
 import dill

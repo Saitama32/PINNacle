@@ -1,16 +1,14 @@
 import os
 import sys
 os.environ["DDEBACKEND"] = "pytorch"
-from comet_ml import start
-experiment = start(
-    api_key="aP71fQTYPNqfsYWvudPPmoBl5",
-    project_name="rlpinn_poissoninv_optimization",
-    workspace="saitama32",
-)
-
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 sys.path.append(project_root)
+from comet_config import start_comet_experiment
+experiment = start_comet_experiment(
+    project_name="rlpinn_poissoninv_optimization",
+)
+
 import time
 import argparse
 import dill
