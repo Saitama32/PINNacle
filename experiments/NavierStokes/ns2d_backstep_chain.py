@@ -177,7 +177,7 @@ def main():
     rl_agent_params = {
         "n_save_models": args.n_save_models,
         "n_trajectories": args.n_trajectories,
-        "tolerance": 0.0568775981664657,
+        "tolerance": 0.0,
         "use_tol": False,
         "new_tol": True,
         "prev_tol": 0.0,
@@ -195,8 +195,6 @@ def main():
         "agent_update_iters": 5,
         "lr": 1e-3,
         "exp": experiment,
-        "log_key": True,
-        "proj_name": "rlpinn-ns2d-backstep-tolerance"
     }
 
     experiment.log_parameters(rl_agent_params)

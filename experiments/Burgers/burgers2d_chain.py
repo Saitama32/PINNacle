@@ -188,7 +188,7 @@ def main():
     rl_agent_params = {
         "n_save_models": args.n_save_models,
         "n_trajectories": args.n_trajectories,
-        "tolerance": 0.799297723448543,
+        "tolerance": 0.0,
         "use_tol": False,
         "new_tol": True,
         "prev_tol": 0.0,
@@ -206,8 +206,6 @@ def main():
         "agent_update_iters": 5,
         "lr": 1e-3,
         "exp": experiment,
-        "log_key": False,
-        "proj_name": "rlpinn-burgers2d-tolerance"
     }
 
     experiment.log_parameters(rl_agent_params)

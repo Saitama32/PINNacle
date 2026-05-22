@@ -183,7 +183,7 @@ def main():
     rl_agent_params = {
         "n_save_models": args.n_save_models,
         "n_trajectories": args.n_trajectories,
-        "tolerance": 0.00898298574611544,
+        "tolerance": 0.0,
         "use_tol": True,
         "new_tol": False,
         "prev_tol": 0.0,
@@ -201,8 +201,6 @@ def main():
         "agent_update_iters": 5,
         "lr": 1e-3,
         "exp": experiment,
-        "log_key": False,
-        "proj_name": "rlpinn-ns2d-liddriven-farm-transitions"
     }
     
     # backup_params = {

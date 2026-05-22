@@ -181,7 +181,7 @@ def main():
     rl_agent_params = {
         "n_save_models": args.n_save_models,
         "n_trajectories": args.n_trajectories,
-        "tolerance": 0.0585015359142309,
+        "tolerance": 0.0,
         "use_tol": True,
         "prev_tol": 0.0,
         "stuck_threshold": 10,
@@ -198,8 +198,6 @@ def main():
         "agent_update_iters": 5,
         "lr": 1e-3,
         "exp": experiment,
-        "log_key": True,
-        "proj_name": "rlpinn-heat-2d-vc-farm-transitions"
     }
 
         # backup_params = {
