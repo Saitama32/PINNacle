@@ -108,9 +108,9 @@ def _extract_weighted_train_loss(model) -> float:
 
     loss_train = np.asarray(loss_train, dtype=np.float64)
     loss_value = float(np.sum(loss_train))
-    if not np.isfinite(loss_value) or loss_value < -1.0:
+    if not np.isfinite(loss_value) or loss_value < 0.0:
         return float("nan")
-    return float(np.log1p(loss_value))
+    return loss_value
 
 
 def run_deepxde_rl_training(
@@ -139,13 +139,13 @@ def run_deepxde_rl_training(
 
     # создаём env/agent (как раньше внутри model.py, только теперь снаружи)
     env = EnvRLOptimizer(optimizers=optimizers_dict,
-                                 equation_params=equation_params,
-                                 callbacks=None,
-                                 AE_model_params=AE_model_params,
-                                 AE_train_params=AE_train_params,
-                                 loss_surface_params=loss_surface_params,
-                                 n_save_models=rl_agent_params['n_save_models'],
-                                 tolerance=rl_agent_params["tolerance"])
+                         equation_params=equation_params,
+                         callbacks=None,
+                         AE_model_params=AE_model_params,
+                         AE_train_params=AE_train_params,
+                         loss_surface_params=loss_surface_params,
+                         n_save_models=rl_agent_params['n_save_models'],
+                         tolerance=rl_agent_params["tolerance"])
 
     # These objects must be created after the first optimizer is started
     n_observation = env.observation_space
@@ -169,11 +169,11 @@ def run_deepxde_rl_training(
         z = torch.zeros(state_shape, device=device)
         return {"loss_total": z.clone(), "loss_oper": z.clone(), "loss_bnd": z.clone()}
     
-    rl_agent.replay_buffer = collect_all_comet_transitions(rl_agent.replay_buffer, max_exps_last=500, tolerance = rl_agent_params["tolerance"],
-                                                           prev_tol= rl_agent_params["prev_tol"], use_tol = rl_agent_params["use_tol"], new_tol = rl_agent_params["new_tol"],
-                                                           use_log_state=rl_agent_params["log_key"], 
-                                                           proj_name=rl_agent_params["proj_name"],
-                                                           reset_success_done_to_failure=rl_agent_params.get("reset_success_done_to_failure", False))
+    # rl_agent.replay_buffer = collect_all_comet_transitions(rl_agent.replay_buffer, max_exps_last=500, tolerance = rl_agent_params["tolerance"],
+    #                                                        prev_tol= rl_agent_params["prev_tol"], use_tol = rl_agent_params["use_tol"], new_tol = rl_agent_params["new_tol"],
+    #                                                        use_log_state=rl_agent_params["log_key"], 
+    #                                                        proj_name=rl_agent_params["proj_name"],
+    #                                                        reset_success_done_to_failure=rl_agent_params.get("reset_success_done_to_failure", False))
     # if backup_params is not None:
     #     optim_state, params_state = load_rl_agent_from_comet(backup_params["experiment_key"], map_location=device_type())
     #     rl_agent.model_optim.load_state_dict(optim_state)
@@ -310,6 +310,7 @@ def run_deepxde_rl_training(
                             'solver_models': _serialize_solver_models(solver_models),
                             'action': action_raw,
                             'reward': float(info["reward_scalar"]),
+                            'current_loss': train_loss,
                             'done': done, 
                             'reward_model_raw': float(reward_shaped.item()),
                             'reward_model': float(reward_shaped.item()),

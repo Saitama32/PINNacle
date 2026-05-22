@@ -192,7 +192,6 @@ def main():
         "rl_batch_size": 32,
         "n_transitions_reinit": 2000,
         "gamma": 0.9,
-        "rl_reward_method": "absolute",
         "reward_operator_coeff": 1,
         "reward_boundary_coeff": 1,
         "agent_min_buffer": 32,

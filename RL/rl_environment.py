@@ -14,29 +14,14 @@ from landscape_visualization._aux.early_stopping_plot import EarlyStopping
 from deepxde.callbacks import CallbackList
 
 
-def compute_reward(reward_params, prev_reward, method="diff"):
-    """
-    Calculates the reward for the agent.
+def compute_loss_ratio_reward(prev_loss, curr_loss, eps=1e-12, clip=5.0):
+    if prev_loss is None:
+        return 0.0
 
-    Args:
-        reward_params (dict): dictionary with loss value, or operator and boundary error value and coefficients.
-        prev_reward (float): previous value of reward.
-        method (str): The method for calculating the reward (“diff” or “absolute”).
-    Returns:
-        float: The value of the reward.
-    """
-    if "loss" in reward_params:
-        current_reward = reward_params["loss"]
-    else:
-        current_reward = reward_params["operator"]["coeff"] * reward_params["operator"]["error"] + \
-            reward_params["bconds"]["coeff"] * reward_params["bconds"]["error"]
-
-    if method == "diff":
-        return prev_reward - current_reward
-    elif method == "absolute":
-        return -current_reward
-    else:
-        raise ValueError("Invalid reward method. Use 'diff' or 'absolute'.")
+    prev_loss = float(prev_loss)
+    curr_loss = float(curr_loss)
+    reward = np.log(prev_loss + eps) - np.log(curr_loss + eps)
+    return float(np.clip(reward, -clip, clip))
 
 
 class EnvRLOptimizer(gym.Env):
@@ -46,7 +31,6 @@ class EnvRLOptimizer(gym.Env):
                  loss_surface_params: dict = None,
                  AE_model_params: dict = None,
                  AE_train_params: dict = None,
-                 reward_method: str = "absolute",
                  callbacks: Union[CallbackList, List, None] = None,
                  n_save_models: int = None,
                  tolerance: float = 1e-2):
@@ -62,15 +46,13 @@ class EnvRLOptimizer(gym.Env):
         self.AE_train_params = AE_train_params
         self.loss_surface_params = loss_surface_params
         self.equation_params = equation_params
-        self.reward_method = reward_method
         self.callbacks = callbacks
 
         self.visualization_model = VisualizationModel(**self.AE_model_params)
         self.plot_loss_surface = None
 
-        # Размерность нужно вытягивать из кода loss landscape, она будет постоянной,
-        # т.к. action_dim - список оптимизаторов, он не меняется
-        # state_dim - размерность поверхности, мы используем латентное 2D пространство, для генерации поверхности
+        # Action dimension is fixed by the optimizer dictionary.
+        # State dimension comes from the latent loss surface representation.
 
         # Action - selecting an optimizer with its parameters
         # self.action_space = spaces.Discrete(len(self.optimizer_configs))
@@ -82,38 +64,35 @@ class EnvRLOptimizer(gym.Env):
         # observation_space = 3
         self.observation_space = self.visualization_model.latent_dim + 1
 
-        self.current_reward = None
-        self.reward_history = []
         self.tolerance = tolerance
         self.counter = 1
         self.n_save_models = n_save_models
 
-        # reward shaping config (можешь вынести наружу)
+        # Reward shaping config.
         self.repeat_k = 3
         self.repeat_penalty = 0.5
         self.time_penalty = 0.05
         self.done_bonus = 10.0
         self.fail_penalty = -5.0
 
-        # step context (будем заполнять из training loop)
+        # Step context filled by the training loop.
         self._ctx = {}
         self._prev_state = None
 
     
     def set_step_context(self, *, prev_state, step_i, same_opt_streak,
                          is_model, rl_opt_step=None, prev_reward_scalar=None):
-            self._prev_state = prev_state
-            self._ctx = dict(
-                step_i=step_i,
-                same_opt_streak=same_opt_streak,
-                is_model=is_model,
-                rl_opt_step=rl_opt_step,
-                prev_reward_scalar=prev_reward_scalar,
-            )
+        self._prev_state = prev_state
+        self._ctx = dict(
+            step_i=step_i,
+            same_opt_streak=same_opt_streak,
+            is_model=is_model,
+            rl_opt_step=rl_opt_step,
+            prev_reward_scalar=prev_reward_scalar,
+        )
 
     def reset(self):
         """Reset environment - load error surface, reset history to zero, select starting point."""
-        self.current_reward = self.reward_history[-1]
         self.counter += 1
 
     def step(self):
@@ -145,18 +124,18 @@ class EnvRLOptimizer(gym.Env):
         self.plot_loss_surface = PlotLossSurface(**self.loss_surface_params)
         self.plot_loss_surface.counter = self.counter
 
-        # 1) next_state + базовый reward (как было)
+        # 1) next_state and current raw loss.
         self.raw_states_dict = self.plot_loss_surface.save_equation_loss_surface(log_key=self.AE_train_params['log_key'])
 
-        prev_reward_env = 0 if len(self.reward_history) == 0 else self.reward_history[-1]
-        base_reward = compute_reward(self.reward_params, prev_reward_env, method=self.reward_method) + self.rl_penalty
+        if "loss" in self.reward_params:
+            reward_scalar = float(self.reward_params["loss"])
+        else:
+            reward_scalar = float(
+                self.reward_params["operator"]["coeff"] * self.reward_params["operator"]["error"] +
+                self.reward_params["bconds"]["coeff"] * self.reward_params["bconds"]["error"]
+            )
 
-        self.current_reward = base_reward
-        self.reward_history.append(self.current_reward)
-        self.reward_history = self.reward_history[-5:]
-
-        current_reward_value = self.current_reward.item() if hasattr(self.current_reward, "item") else self.current_reward
-        success = abs(current_reward_value) < self.tolerance
+        success = abs(reward_scalar) < self.tolerance
         if self.rl_penalty == -1:
             done = -1
         elif success:
@@ -164,7 +143,7 @@ class EnvRLOptimizer(gym.Env):
         else:
             done = 0
 
-        # 2) delta (как у тебя снаружи)
+        # 2) delta.
         if self._prev_state is not None and "loss_total" in self.raw_states_dict and "loss_total" in self._prev_state:
             raw_delta = self.raw_states_dict["loss_total"] - self._prev_state["loss_total"]
             delta = torch.sign(raw_delta) * torch.log1p(torch.abs(raw_delta))
@@ -172,9 +151,8 @@ class EnvRLOptimizer(gym.Env):
             delta = delta.clamp(-1, 1)
             self.raw_states_dict["delta"] = delta
 
-        # 3) reward_model_i (полная твоя логика)
+        # 3) loss-ratio reward.
         ctx = self._ctx
-        reward_scalar = float(base_reward.item()) if hasattr(base_reward, "item") else float(base_reward)
 
         prev_reward_scalar = ctx.get("prev_reward_scalar", None)
         is_model = bool(ctx.get("is_model", False))
@@ -184,23 +162,13 @@ class EnvRLOptimizer(gym.Env):
 
         opt_model_i = -1
 
-        if prev_reward_scalar is None:
-            reward_model_i = 0.0
-        else:
-            if is_model:
-                opt_model_i = int(rl_opt_step) if rl_opt_step is not None else -1
+        if prev_reward_scalar is not None and is_model:
+            opt_model_i = int(rl_opt_step) if rl_opt_step is not None else -1
 
-            prev_log1p_loss = -float(prev_reward_scalar)
-            curr_log1p_loss = -float(reward_scalar)
-
-            prev_loss = np.expm1(prev_log1p_loss)
-            curr_loss = np.expm1(curr_log1p_loss)
-
-            eps = 1e-12
-            clip = 5.0
-
-            reward_model_i = np.log(prev_loss + eps) - np.log(curr_loss + eps)
-            reward_model_i = float(np.clip(reward_model_i, -clip, clip))
+        reward_model_i = compute_loss_ratio_reward(
+            prev_loss=prev_reward_scalar,
+            curr_loss=reward_scalar,
+        )
 
         # repeat penalty
         if same_opt_streak > self.repeat_k:
@@ -211,8 +179,6 @@ class EnvRLOptimizer(gym.Env):
 
         # time penalty
         reward_model_i -= self.time_penalty * step_i
-
-        
 
         # done shaping
         if done == 1:
@@ -227,7 +193,7 @@ class EnvRLOptimizer(gym.Env):
             "opt_model_i": int(opt_model_i),
         }
 
-        # Возвращаем сразу shaped reward (как тебе нужно для replay buffer)
+        # Return shaped reward for the replay buffer.
         return self.raw_states_dict, torch.tensor(reward_model_i), done, info
 
     def render(self):
