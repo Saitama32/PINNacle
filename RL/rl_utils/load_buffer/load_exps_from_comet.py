@@ -300,7 +300,7 @@ def _process_loaded_transition_block(
     if use_log_state:
         apply_log_transform_to_transitions(entries)
 
-    entries = add_loss_reward_to_non_terminal_transitions(entries, loss_key=loss_key)
+    # entries = add_loss_reward_to_non_terminal_transitions(entries, loss_key=loss_key)
     if tolerance > 0.0 and prev_tol == 0.0 and new_tol:
         entries = truncate_failure_chains_by_tol(
             entries,
