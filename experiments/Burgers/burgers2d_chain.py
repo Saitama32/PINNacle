@@ -8,7 +8,7 @@ from comet_config import start_comet_experiment
 
 
 experiment = start_comet_experiment(
-    project_name="rlpinn_burgers2d_loss_ratio_reward_tolerance",
+    project_name="rlpinn_burgers2d_loss_ratio_reward_optimization",
 )
 
 

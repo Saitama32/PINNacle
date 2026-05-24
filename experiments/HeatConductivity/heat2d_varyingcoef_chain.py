@@ -8,7 +8,7 @@ from comet_config import start_comet_experiment
 from comet_ml.integration.pytorch import log_model
 
 experiment = start_comet_experiment(
-  project_name="rlpinn_heat_2d_vc_loss_ratio_reward_tolerance",
+  project_name="rlpinn_heat_2d_vc_loss_ratio_reward_optimization",
 )
 
 import time
