@@ -8,7 +8,7 @@ from comet_config import start_comet_experiment
 from comet_ml.integration.pytorch import log_model
 
 experiment = start_comet_experiment(
-    project_name="rlpinn_ns2d_liddriven_loss_ratio_reward_tolerance",
+    project_name="rlpinn_ns2d_liddriven_loss_ratio_reward_farm_trans",
 )
 
 os.environ['KMP_DUPLICATE_LIB_OK'] = 'TRUE'
@@ -181,7 +181,7 @@ def main():
     rl_agent_params = {
         "n_save_models": args.n_save_models,
         "n_trajectories": args.n_trajectories,
-        "tolerance": 0.0,
+        "tolerance": 0.000294613090606077,
         "use_tol": True,
         "new_tol": False,
         "prev_tol": 0.0,

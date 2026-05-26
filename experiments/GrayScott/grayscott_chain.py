@@ -8,7 +8,7 @@ from comet_config import start_comet_experiment
 from comet_ml.integration.pytorch import log_model
 
 experiment = start_comet_experiment(
-    project_name="rlpinn-grayscott-loss_ratio_reward_tolerance",
+    project_name="rlpinn-grayscott-loss_ratio_reward_farm_trans",
 )
 
 os.environ['KMP_DUPLICATE_LIB_OK'] = 'TRUE'

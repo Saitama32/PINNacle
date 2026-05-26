@@ -7,7 +7,7 @@ sys.path.append(project_root)
 from comet_config import start_comet_experiment
 
 experiment = start_comet_experiment(
-    project_name="rlpinn_heat2d_multiscale_loss_ratio_reward_tolerance",
+    project_name="rlpinn_heat2d_multiscale_loss_ratio_reward_farm_trans",
 )
 
 import time
