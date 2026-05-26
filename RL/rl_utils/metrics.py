@@ -44,10 +44,8 @@ def collect_policy_metrics_from_q(agent, q_opt, prefix):
         count = counts.get(optim_name, 0)
         frac = count / total if total > 0 else 0.0
 
-        metrics[f"{prefix}/count/{optim_name}"] = count
         metrics[f"{prefix}/frac/{optim_name}"] = frac
 
-    metrics[f"{prefix}/total"] = total
     metrics[f"{prefix}/entropy"] = policy_entropy_from_counts(counts)
 
     return metrics
