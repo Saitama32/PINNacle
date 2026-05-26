@@ -21,7 +21,6 @@ from RL.rl_utils.logger import log_priority_to_comet
 import tempfile
 
 
-GAMMA = 0.95
 EPS_START = 0.95
 EPS_END = 0.05
 EPS_DECAY = 1000
@@ -55,8 +54,8 @@ class DQNAgent:
         self.slot_bootstrap_eps = 0.5
 
         # TD
-        self.lambda_ = 0.9     # λ
-        self.kappa  = 0.5      # tolerance κ (0=жёсткий Watkins)
+        self.lambda_ = 0.95     # λ
+        self.kappa  = 0.9      # tolerance κ (0=жёсткий Watkins)
         self.seq_len = 10   
 
         # --- TD-нормализация для параметров ---
