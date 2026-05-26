@@ -21,7 +21,6 @@ from RL.rl_utils.logger import log_priority_to_comet
 import tempfile
 
 
-GAMMA = 0.95
 EPS_START = 0.5
 EPS_END = 0.05
 EPS_DECAY = 50
@@ -29,7 +28,7 @@ TAU = 0.01
 
 
 class DQNAgent:
-    def __init__(self, n_observation=None, n_action=None, optimizer_dict=None, lr=1e-3, gamma=0.95, epsilon=1.0,
+    def __init__(self, n_observation=None, n_action=None, optimizer_dict=None, lr=1e-3, gamma=0.99, epsilon=1.0,
                  epsilon_decay=0.995, epsilon_min=0.01, memory_size=50000, batch_size=128, n_transitions_reinit = 2000, per_alpha =  0.6, per_beta0 = 0.4, device='cpu', exp=None,
                  warmup_updates: int = 50, recalc_batch_size: int = 32, success_frac = 0.2):
         self.n_observation = n_observation
@@ -56,8 +55,8 @@ class DQNAgent:
         self.slot_bootstrap_eps = 0.5
 
         # TD
-        self.lambda_ = 0.9     # λ
-        self.kappa  = 0.5      # tolerance κ (0=жёсткий Watkins)
+        self.lambda_ = 1.     # λ
+        self.kappa  = 1.0      # tolerance κ (0=жёсткий Watkins)
         self.seq_len = 10   
 
         # --- TD-нормализация для параметров ---
