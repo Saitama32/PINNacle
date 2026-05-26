@@ -1,4 +1,4 @@
-import gym
+﻿import gym
 import numpy as np
 import matplotlib.pyplot as plt
 import torch
@@ -75,11 +75,99 @@ class EnvRLOptimizer(gym.Env):
         self.done_bonus = 10.0
         self.fail_penalty = -5.0
 
+        # Chain reward config.
+        self.chain_reward_alpha = 0.2
+        self.chain_reward_dense_clip = 5.0
+        self.chain_success_bonus = 5.0
+        self.chain_fail_penalty = -5.0
+
         # Step context filled by the training loop.
         self._ctx = {}
         self._prev_state = None
 
-    
+    def configure_chain_reward(
+        self,
+        *,
+        alpha=None,
+        dense_clip=None,
+        success_bonus=None,
+        fail_penalty=None,
+    ):
+        if alpha is not None:
+            self.chain_reward_alpha = float(alpha)
+        if dense_clip is not None:
+            self.chain_reward_dense_clip = float(dense_clip)
+        if success_bonus is not None:
+            self.chain_success_bonus = float(success_bonus)
+        if fail_penalty is not None:
+            self.chain_fail_penalty = float(fail_penalty)
+
+    def compute_chain_rewards(
+        self,
+        losses,
+        done=0,
+        eps=1e-12,
+        alpha=None,
+        dense_clip=None,
+        success_bonus=None,
+        fail_penalty=None,
+    ):
+        """
+        Computes trajectory-level rewards from the full loss chain.
+
+        The final loss score is distributed uniformly over all transitions.
+        A weak dense shaping term rewards local loss improvements.
+        Terminal success/failure is applied to the trajectory-level final score,
+        not only to the last transition.
+        """
+        losses = np.asarray(losses, dtype=np.float64)
+        T = len(losses)
+
+        if T == 0:
+            return []
+
+        alpha = self.chain_reward_alpha if alpha is None else float(alpha)
+        dense_clip = self.chain_reward_dense_clip if dense_clip is None else float(dense_clip)
+        success_bonus = self.chain_success_bonus if success_bonus is None else float(success_bonus)
+        fail_penalty = self.chain_fail_penalty if fail_penalty is None else float(fail_penalty)
+
+        final_score = -np.log(losses[-1] + eps)
+
+        if done == 1:
+            final_score = success_bonus
+        elif done == -1:
+            final_score = fail_penalty
+
+        weights = np.ones(T, dtype=np.float64)
+        weights = weights / weights.sum()
+        terminal_rewards = final_score * weights
+
+        dense_rewards = np.zeros(T, dtype=np.float64)
+        for t in range(1, T):
+            dense = np.log(losses[t - 1] + eps) - np.log(losses[t] + eps)
+            dense_rewards[t] = np.clip(dense, -dense_clip, dense_clip)
+
+        rewards = terminal_rewards + alpha * dense_rewards
+        return rewards.tolist()
+
+    def compute_trajectory_rewards(self, transitions, losses):
+        """
+        transitions: list of dicts collected by rl_trainer.
+        losses: list of scalar train losses for the same transitions.
+
+        Returns:
+            list[float]: reward for each transition.
+        """
+        if len(transitions) == 0:
+            return []
+
+        final_done = int(transitions[-1].get("done", 0))
+
+        return self.compute_chain_rewards(
+            losses=losses,
+            done=final_done,
+        )
+
     def set_step_context(self, *, prev_state, step_i, same_opt_streak,
                          is_model, rl_opt_step=None, prev_reward_scalar=None):
         self._prev_state = prev_state

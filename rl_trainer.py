@@ -146,6 +146,12 @@ def run_deepxde_rl_training(
                          loss_surface_params=loss_surface_params,
                          n_save_models=rl_agent_params['n_save_models'],
                          tolerance=rl_agent_params["tolerance"])
+    env.configure_chain_reward(
+        alpha=rl_agent_params.get("chain_reward_alpha", 0.2),
+        dense_clip=rl_agent_params.get("chain_reward_dense_clip", 2.0),
+        success_bonus=rl_agent_params.get("chain_success_bonus", 10.0),
+        fail_penalty=rl_agent_params.get("chain_fail_penalty", -10.0),
+    )
 
     # These objects must be created after the first optimizer is started
     n_observation = env.observation_space
@@ -194,6 +200,8 @@ def run_deepxde_rl_training(
         optimizers_history = []
         rl_penalty = 0
         total_reward = 0.0
+        trajectory_transitions = []
+        trajectory_losses = []
 
         print('\n############################################################################' +
         f'\nStarting trajectory {idx_traj + 1}/{rl_agent_params["n_trajectories"]} ' +
@@ -204,6 +212,7 @@ def run_deepxde_rl_training(
 
             # --- agent action ---
             action, action_raw, is_model = rl_agent.select_action(state)
+            agent_step = rl_agent.steps_done
             action_raw[2]['epochs'] = action_raw[1]
             action_raw = (action_raw[0], action_raw[2])
 
@@ -280,13 +289,19 @@ def run_deepxde_rl_training(
                 # prev_reward — теперь просто хранит reward_scalar из info
                 prev_reward = info["reward_scalar"]
 
-                # reward уже финальный (reward_model_i)
-                rl_agent.push_memory((state, next_state, action_raw, float(reward_shaped.item()),
-                                    done, float(reward_shaped.item()), info["opt_model_i"]))
-
-                # update agent
-                if len(rl_agent.replay_buffer) >= rl_agent_params["agent_min_buffer"]:
-                    rl_agent.optim_(iters=rl_agent_params["agent_update_iters"])
+                trajectory_transitions.append({
+                    "state": state,
+                    "next_state": next_state,
+                    "solver_models": _serialize_solver_models(solver_models),
+                    "action_raw": action_raw,
+                    "agent_step": agent_step,
+                    "done": done,
+                    "opt_model_i": info["opt_model_i"],
+                    "reward_scalar": float(info["reward_scalar"]),
+                    "old_reward_model": float(reward_shaped.item()),
+                    "current_loss": float(train_loss),
+                })
+                trajectory_losses.append(float(train_loss))
 
                 total_reward += float(reward_shaped.item())
             else:
@@ -298,36 +313,6 @@ def run_deepxde_rl_training(
                 }
                 print(f"Operator RMSE: {rmse}, Boundary RMSE: {b_rmse}. Stopping trajectory with done = -1.")
                 print(f"Weighted train loss: {train_loss}. Stopping trajectory with done = -1.")
-
-            if transition_ready:
-                try:
-                    # Сохраняем entry локально
-                    file_path = os.path.join(output_dir, f'transitions_{rl_agent.steps_done}.pt')
-
-                    entry = {
-                            'state': state,
-                            'next_state': next_state,
-                            'solver_models': _serialize_solver_models(solver_models),
-                            'action': action_raw,
-                            'reward': float(info["reward_scalar"]),
-                            'current_loss': train_loss,
-                            'done': done, 
-                            'reward_model_raw': float(reward_shaped.item()),
-                            'reward_model': float(reward_shaped.item()),
-                            'opt_model_i': info["opt_model_i"]
-                        }
-                    torch.save(entry, file_path)
-
-                    # Логируем тот же файл в comet
-                    rl_agent_params['exp'].log_asset(
-                        file_path,
-                        file_name=f"entry_step_{rl_agent.steps_done}.pt",
-                        step=rl_agent.steps_done,
-                        overwrite=True
-                    )
-
-                except Exception as e:
-                    print(e)
 
             print(f'\nCurrent reward after {action["type"]} optimizer: {info["reward_scalar"]}.\n'
                     f'Reward after taking prev reward and penalty: {reward_shaped}\n'
@@ -347,6 +332,75 @@ def run_deepxde_rl_training(
             elif done == -1:
                 rl_penalty = 0
                 break
+
+        if len(trajectory_transitions) > 0:
+            trajectory_rewards = env.compute_trajectory_rewards(
+                transitions=trajectory_transitions,
+                losses=trajectory_losses,
+            )
+
+            assert len(trajectory_rewards) == len(trajectory_transitions), (
+                f"len(trajectory_rewards)={len(trajectory_rewards)} != "
+                f"len(trajectory_transitions)={len(trajectory_transitions)}"
+            )
+
+            chain_total_reward = 0.0
+
+            for tr, chain_reward in zip(trajectory_transitions, trajectory_rewards):
+                chain_reward = float(chain_reward)
+                chain_total_reward += chain_reward
+
+                rl_agent.push_memory((
+                    tr["state"],
+                    tr["next_state"],
+                    tr["action_raw"],
+                    chain_reward,
+                    tr["done"],
+                    chain_reward,
+                    tr["opt_model_i"],
+                ))
+
+                step_done = tr["agent_step"]
+
+                try:
+                    file_path = os.path.join(output_dir, f'transitions_{step_done}.pt')
+
+                    entry = {
+                        'state': tr["state"],
+                        'next_state': tr["next_state"],
+                        'solver_models': tr["solver_models"],
+                        'action': tr["action_raw"],
+                        'reward': tr["reward_scalar"],
+                        'current_loss': tr["current_loss"],
+                        'done': tr["done"],
+                        'reward_model_raw': chain_reward,
+                        'reward_model': chain_reward,
+                        'reward_scheme': "env_chain_reward",
+                        'old_reward_model': tr["old_reward_model"],
+                        'opt_model_i': tr["opt_model_i"],
+                    }
+                    torch.save(entry, file_path)
+
+                    rl_agent_params['exp'].log_asset(
+                        file_path,
+                        file_name=f"entry_step_{step_done}.pt",
+                        step=step_done,
+                        overwrite=True
+                    )
+
+                except Exception as e:
+                    print(e)
+
+            print(
+                f"\nPushed trajectory with env chain rewards. "
+                f"steps={len(trajectory_transitions)}, "
+                f"final_loss={trajectory_losses[-1]}, "
+                f"final_done={trajectory_transitions[-1]['done']}, "
+                f"chain_total_reward={chain_total_reward}\n"
+            )
+
+            if len(rl_agent.replay_buffer) >= rl_agent_params["agent_min_buffer"]:
+                rl_agent.optim_(iters=rl_agent_params["agent_update_iters"])
 
         if done == 1:
             idx_traj += 1
