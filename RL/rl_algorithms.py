@@ -16,6 +16,7 @@ from comet_ml.integration.pytorch import watch
 from RL.rl_utils.per_buffer import PrioritizedReplayBuffer, Transition
 from RL.rl_utils.per_offline import recalc_all_priorities_batched
 from RL.rl_utils.logger import log_priority_to_comet
+from RL.rl_utils.metrics import collect_policy_metrics_by_seq_position
 
 
 import tempfile
@@ -322,6 +323,8 @@ class DQNAgent:
                 self.per_beta = min(1.0, self.per_beta + self.per_beta_inc)
                 is_w = is_w.to(self.device)
 
+            policy_position_metrics = collect_policy_metrics_by_seq_position(self, seqs)    
+
             first_trs = [seq[0] for seq in seqs]
 
             state, next_state, action, reward, done, model_reward, opt_model_i = zip(*[
@@ -506,21 +509,24 @@ class DQNAgent:
 
             frac_seq_success = count_seq_success / max(count_seq_total, 1)
 
-        self.exp.log_metrics({
+
+        metrics_to_log = {
             "mean_abs_delta_norm": mean_abs_delta_norm,
             "sigma_td": sigma_td,
             "q_abs_mean": q_abs_mean,
             "y_opt_mean": y_opt_mean,
             "tr_drop_frac": drop_frac,
-            "seq_avg_len": avg_len,
             "prio_p95": prio_p95,
-            "tr_drop_frac": drop_frac,
             "mean_abs_delta": mean_abs_delta,
             "seq_frac_len_gt1": frac_len_gt1,
             "seq_avg_len": avg_len,
-            "seq_frac_success": frac_seq_success
-        }, step=self.steps_done)
+            "seq_frac_success": frac_seq_success,
+        }
 
+        metrics_to_log.update(policy_position_metrics)
+
+        if self.exp is not None:
+            self.exp.log_metrics(metrics_to_log, step=self.steps_done)
 
         self.opt_step += 1
 
