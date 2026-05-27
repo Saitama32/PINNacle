@@ -181,9 +181,9 @@ def main():
     rl_agent_params = {
         "n_save_models": args.n_save_models,
         "n_trajectories": args.n_trajectories,
-        "tolerance": 0.000242655453200235,
-        "use_tol": False,
-        "new_tol": True,
+        "tolerance": 0.000294613090606077,
+        "use_tol": True,
+        "new_tol": False,
         "prev_tol": 0.0,
         "stuck_threshold": 10,
         "min_loss_change": 1e-7,
@@ -200,7 +200,7 @@ def main():
         "lr": 1e-3,
         "exp": experiment,
         "log_key": False,
-        "proj_name": "rlpinn-ns2d-liddriven-loss-ratio-reward-tolerance"
+        "proj_name": "rlpinn-ns2d-liddriven-loss-ratio-reward-farm-trans"
     }
     
     # backup_params = {
