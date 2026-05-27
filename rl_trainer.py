@@ -202,6 +202,7 @@ def run_deepxde_rl_training(
         total_reward = 0.0
         trajectory_transitions = []
         trajectory_losses = []
+        final_done = 0
 
         print('\n############################################################################' +
         f'\nStarting trajectory {idx_traj + 1}/{rl_agent_params["n_trajectories"]} ' +
@@ -284,6 +285,7 @@ def run_deepxde_rl_training(
                 )
 
                 next_state, reward_shaped, done, info = env.step()
+                final_done = done
                 transition_ready = True
 
                 # prev_reward — теперь просто хранит reward_scalar из info
@@ -306,6 +308,7 @@ def run_deepxde_rl_training(
                 total_reward += float(reward_shaped.item())
             else:
                 done = -1
+                final_done = -1
                 reward_shaped = torch.tensor(-10.0, device=device)
                 info = {
                     "reward_scalar": 0.0,
@@ -320,8 +323,8 @@ def run_deepxde_rl_training(
                     f'{"optimizers" if len(optimizers_history) > 1 else "optimizer"}: {total_reward}.\n'
                     f'\ndone = {done}')
             
-            # if len(rl_agent.replay_buffer) >= rl_agent_params["agent_min_buffer"]:
-            #     rl_agent.optim_(iters=rl_agent_params["agent_update_iters"])
+            if len(rl_agent.replay_buffer) >= rl_agent_params["agent_min_buffer"]:
+                rl_agent.optim_(iters=1)
 
             # callbacks.callbacks[1].save_every = self.t
             # env.render()
@@ -337,9 +340,12 @@ def run_deepxde_rl_training(
                 break
 
         if len(trajectory_transitions) > 0:
-            trajectory_rewards = env.compute_trajectory_rewards(
-                transitions=trajectory_transitions,
+            if final_done == -1:
+                trajectory_transitions[-1]["done"] = -1
+
+            trajectory_rewards = env.compute_chain_rewards(
                 losses=trajectory_losses,
+                done=final_done,
             )
 
             assert len(trajectory_rewards) == len(trajectory_transitions), (
@@ -394,16 +400,16 @@ def run_deepxde_rl_training(
                 except Exception as e:
                     print(e)
 
-                if len(rl_agent.replay_buffer) >= rl_agent_params["agent_min_buffer"]:
-                    rl_agent.optim_(iters=rl_agent_params["agent_update_iters"])
-
             print(
                 f"\nPushed trajectory with env chain rewards. "
                 f"steps={len(trajectory_transitions)}, "
                 f"final_loss={trajectory_losses[-1]}, "
-                f"final_done={trajectory_transitions[-1]['done']}, "
+                f"final_done={final_done}, "
                 f"chain_total_reward={chain_total_reward}\n"
             )
+
+            if len(rl_agent.replay_buffer) >= rl_agent_params["agent_min_buffer"]:
+                rl_agent.optim_(iters=rl_agent_params["agent_update_iters"])
 
 
         if done == 1:

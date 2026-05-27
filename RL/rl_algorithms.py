@@ -480,7 +480,8 @@ class DQNAgent:
             all_rewards.append(reward.detach().cpu())
             all_dones.append(done_raw.detach().cpu())
 
-            model_reward_i_ar += model_reward[(opt_model_i == self.opt_step).nonzero()].reshape(-1).tolist()
+            agent_action_mask = opt_model_i >= 0
+            model_reward_i_ar += model_reward[agent_action_mask].reshape(-1).tolist()
 
 
             dropped  = int(tr_mask_drop.sum().item())
@@ -565,7 +566,7 @@ class DQNAgent:
         #     for el in loss_arr_param:
         #         mean_batch_loss_param += el
         #     mean_batch_loss_param = mean_batch_loss_param / len(loss_arr_param)
-        if model_reward_i_ar == []: model_reward_i_ar = [0]
+        agent_reward_count = len(model_reward_i_ar)
         bad_action = [el for el in model_reward_i_ar if el <= 0]
 
         optim_batch_loss_mean = statistics.mean(loss_arr_optim_class)
@@ -582,9 +583,11 @@ class DQNAgent:
             self.exp.log_metric("param_batch_loss_median", statistics.median(loss_arr_param), step=self.steps_done)
             self.exp.log_metric("steps_done", self.steps_done, step=self.steps_done)
             self.exp.log_metric("all_rewards_mean", statistics.mean(reward_tensor.tolist()), step=self.steps_done)
-            self.exp.log_metric("agent_reward_mean", statistics.mean(model_reward_i_ar), step=self.steps_done)
-            self.exp.log_metric("agent_reward_median", statistics.median(model_reward_i_ar), step=self.steps_done)
-            self.exp.log_metric("bad_action_procent", len(bad_action)/len(model_reward_i_ar), step=self.steps_done)
+            self.exp.log_metric("agent_reward_count", agent_reward_count, step=self.steps_done)
+            if agent_reward_count > 0:
+                self.exp.log_metric("agent_reward_mean", statistics.mean(model_reward_i_ar), step=self.steps_done)
+                self.exp.log_metric("agent_reward_median", statistics.median(model_reward_i_ar), step=self.steps_done)
+                self.exp.log_metric("bad_action_procent", len(bad_action)/agent_reward_count, step=self.steps_done)
             self.exp.log_metric("count_good_end", count_good_end, step=self.steps_done)
             self.exp.log_metric("count_bad_end", count_bad_end, step=self.steps_done)
             # Логируем список приоритетов
