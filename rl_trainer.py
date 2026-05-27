@@ -320,8 +320,8 @@ def run_deepxde_rl_training(
                     f'{"optimizers" if len(optimizers_history) > 1 else "optimizer"}: {total_reward}.\n'
                     f'\ndone = {done}')
             
-            if len(rl_agent.replay_buffer) >= rl_agent_params["agent_min_buffer"]:
-                rl_agent.optim_(iters=rl_agent_params["agent_update_iters"])
+            # if len(rl_agent.replay_buffer) >= rl_agent_params["agent_min_buffer"]:
+            #     rl_agent.optim_(iters=rl_agent_params["agent_update_iters"])
 
             # callbacks.callbacks[1].save_every = self.t
             # env.render()
@@ -394,6 +394,9 @@ def run_deepxde_rl_training(
                 except Exception as e:
                     print(e)
 
+                if len(rl_agent.replay_buffer) >= rl_agent_params["agent_min_buffer"]:
+                    rl_agent.optim_(iters=rl_agent_params["agent_update_iters"])
+
             print(
                 f"\nPushed trajectory with env chain rewards. "
                 f"steps={len(trajectory_transitions)}, "
@@ -402,8 +405,6 @@ def run_deepxde_rl_training(
                 f"chain_total_reward={chain_total_reward}\n"
             )
 
-            if len(rl_agent.replay_buffer) >= rl_agent_params["agent_min_buffer"]:
-                rl_agent.optim_(iters=rl_agent_params["agent_update_iters"])
 
         if done == 1:
             idx_traj += 1
