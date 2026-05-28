@@ -277,7 +277,7 @@ def recompute_chain_rewards_for_terminal_chains(
     chain_reward_alpha=0.2,
     chain_reward_dense_clip=10.0,
     chain_success_bonus=5.0,
-    chain_fail_penalty=-5.0,
+    chain_fail_penalty=-10.0,
     state_loss_is_log=False,
 ):
     updated_chains = 0
