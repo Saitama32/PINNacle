@@ -149,8 +149,8 @@ def run_deepxde_rl_training(
     env.configure_chain_reward(
         alpha=rl_agent_params.get("chain_reward_alpha", 0.2),
         dense_clip=rl_agent_params.get("chain_reward_dense_clip", 10.0),
-        success_bonus=rl_agent_params.get("chain_success_bonus", 10.0),
-        fail_penalty=rl_agent_params.get("chain_fail_penalty", -15.0),
+        success_bonus=rl_agent_params.get("chain_success_bonus", 5.0),
+        fail_penalty=rl_agent_params.get("chain_fail_penalty", -5.0),
     )
 
     # These objects must be created after the first optimizer is started

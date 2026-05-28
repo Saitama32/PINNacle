@@ -249,7 +249,7 @@ def _reset_success_done_to_failure(transitions):
     return transitions
 
 
-def _transition_loss_value(tr, loss_key="loss_total"):
+def _transition_loss_value(tr, loss_key="loss_total", state_loss_is_log=False):
     if "current_loss" in tr:
         value = tr.get("current_loss")
         if torch.is_tensor(value):
@@ -262,7 +262,12 @@ def _transition_loss_value(tr, loss_key="loss_total"):
             return None
         return value if np.isfinite(value) else None
 
-    return _extract_loss_scalar_from_state(tr.get("next_state"), loss_key=loss_key)
+    value = _extract_loss_scalar_from_state(tr.get("next_state"), loss_key=loss_key)
+    if value is None:
+        return None
+    if state_loss_is_log:
+        value = np.expm1(value)
+    return value if np.isfinite(value) else None
 
 
 def recompute_chain_rewards_for_terminal_chains(
@@ -271,8 +276,9 @@ def recompute_chain_rewards_for_terminal_chains(
     eps=1e-12,
     chain_reward_alpha=0.2,
     chain_reward_dense_clip=10.0,
-    chain_success_bonus=10.0,
-    chain_fail_penalty=-15.0,
+    chain_success_bonus=5.0,
+    chain_fail_penalty=-5.0,
+    state_loss_is_log=False,
 ):
     updated_chains = 0
     updated_transitions = 0
@@ -288,7 +294,14 @@ def recompute_chain_rewards_for_terminal_chains(
         if final_done not in (1, -1):
             return
 
-        losses = [_transition_loss_value(tr, loss_key=loss_key) for tr in chain]
+        losses = [
+            _transition_loss_value(
+                tr,
+                loss_key=loss_key,
+                state_loss_is_log=state_loss_is_log,
+            )
+            for tr in chain
+        ]
         if any(loss is None or loss < 0 for loss in losses):
             skipped_chains += 1
             return
@@ -590,7 +603,10 @@ def collect_all_comet_transitions(
             reset_success_done_to_failure=reset_success_done_to_failure,
         )
         if recompute_chain_rewards:
-            block_entries = recompute_chain_rewards_for_terminal_chains(block_entries)
+            block_entries = recompute_chain_rewards_for_terminal_chains(
+                block_entries,
+                state_loss_is_log=True,
+            )
         all_entries.extend(block_entries)
 
         chain = []
