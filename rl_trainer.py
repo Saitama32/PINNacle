@@ -148,8 +148,8 @@ def run_deepxde_rl_training(
                          tolerance=rl_agent_params["tolerance"])
     env.configure_chain_reward(
         alpha=rl_agent_params.get("chain_reward_alpha", 0.2),
-        dense_clip=rl_agent_params.get("chain_reward_dense_clip", 10.0),
-        success_bonus=rl_agent_params.get("chain_success_bonus", 5.0),
+        dense_clip=rl_agent_params.get("chain_reward_dense_clip", 5.0),
+        success_bonus=rl_agent_params.get("chain_success_bonus", 10.0),
         fail_penalty=rl_agent_params.get("chain_fail_penalty", -5.0),
     )
 
