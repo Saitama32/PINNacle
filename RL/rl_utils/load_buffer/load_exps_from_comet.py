@@ -293,7 +293,7 @@ def _process_loaded_transition_block(
     if reset_success_done_to_failure:
         transitions = _reset_success_done_to_failure(transitions)
 
-    transitions = shift_done_rewards(transitions, done=-1, shift_value=-5)
+    # transitions = shift_done_rewards(transitions, done=-1, shift_value=-5)
     entries = repair_equal_states_in_all_entries(transitions, loss_key=loss_key)
     entries = add_delta_to_all_entries(entries)
 

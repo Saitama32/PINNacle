@@ -58,7 +58,7 @@ class DQNAgent:
         # TD
         self.lambda_ = 0.95     # λ
         self.kappa  = 0.9      # tolerance κ (0=жёсткий Watkins)
-        self.seq_len = 10   
+        self.seq_len = 12   
 
         # --- TD-нормализация для параметров ---
         self.param_td_running_std = {}   # dict: key -> EMA(std)

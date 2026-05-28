@@ -134,9 +134,9 @@ class EnvRLOptimizer(gym.Env):
         final_score = -np.log(losses[-1] + eps)
 
         if done == 1:
-            final_score = success_bonus
+            final_score += success_bonus
         elif done == -1:
-            final_score = fail_penalty
+            final_score += fail_penalty
 
         weights = np.ones(T, dtype=np.float64)
         weights = weights / weights.sum()
@@ -224,10 +224,11 @@ class EnvRLOptimizer(gym.Env):
             )
 
         success = abs(reward_scalar) < self.tolerance
-        if self.rl_penalty == -1:
-            done = -1
-        elif success:
+
+        if success:
             done = 1
+        elif self.rl_penalty == -1:
+            done = -1
         else:
             done = 0
 
