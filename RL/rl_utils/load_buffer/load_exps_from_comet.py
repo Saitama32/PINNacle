@@ -249,6 +249,93 @@ def _reset_success_done_to_failure(transitions):
     return transitions
 
 
+def _transition_loss_value(tr, loss_key="loss_total"):
+    if "current_loss" in tr:
+        value = tr.get("current_loss")
+        if torch.is_tensor(value):
+            if value.numel() != 1:
+                return None
+            value = value.detach().cpu().item()
+        try:
+            value = float(value)
+        except (TypeError, ValueError):
+            return None
+        return value if np.isfinite(value) else None
+
+    return _extract_loss_scalar_from_state(tr.get("next_state"), loss_key=loss_key)
+
+
+def recompute_chain_rewards_for_terminal_chains(
+    transitions,
+    loss_key="loss_total",
+    eps=1e-12,
+    chain_reward_alpha=0.2,
+    chain_reward_dense_clip=10.0,
+    chain_success_bonus=10.0,
+    chain_fail_penalty=-7.0,
+):
+    updated_chains = 0
+    updated_transitions = 0
+    skipped_chains = 0
+    current_chain = []
+
+    def flush_chain(chain):
+        nonlocal updated_chains, updated_transitions, skipped_chains
+        if not chain:
+            return
+
+        final_done = _done_value(chain[-1])
+        if final_done not in (1, -1):
+            return
+
+        losses = [_transition_loss_value(tr, loss_key=loss_key) for tr in chain]
+        if any(loss is None or loss < 0 for loss in losses):
+            skipped_chains += 1
+            return
+
+        losses = np.asarray(losses, dtype=np.float64)
+        final_score = -np.log(losses[-1] + eps)
+        if final_done == 1:
+            final_score += chain_success_bonus
+        elif final_done == -1:
+            final_score += chain_fail_penalty
+
+        rewards = np.full(len(chain), final_score / len(chain), dtype=np.float64)
+        for idx in range(1, len(chain)):
+            dense = np.log(losses[idx - 1] + eps) - np.log(losses[idx] + eps)
+            dense = np.clip(dense, -chain_reward_dense_clip, chain_reward_dense_clip)
+            rewards[idx] += chain_reward_alpha * dense
+
+        for tr, reward in zip(chain, rewards):
+            reward = float(reward)
+            if "reward_model_original" not in tr and "reward_model" in tr:
+                tr["reward_model_original"] = tr["reward_model"]
+            if "reward_model_raw_original" not in tr and "reward_model_raw" in tr:
+                tr["reward_model_raw_original"] = tr["reward_model_raw"]
+
+            tr["reward_model"] = reward
+            if "reward_model_raw" in tr:
+                tr["reward_model_raw"] = reward
+            tr["reward_scheme"] = "offline_chain_reward"
+
+        updated_chains += 1
+        updated_transitions += len(chain)
+
+    for tr in transitions:
+        current_chain.append(tr)
+        if _done_value(tr) in (1, -1):
+            flush_chain(current_chain)
+            current_chain = []
+
+    if skipped_chains:
+        print(f"Skipped {skipped_chains} terminal chains with invalid losses.")
+    print(
+        "Recomputed offline chain rewards for "
+        f"{updated_transitions} transitions in {updated_chains} terminal chains."
+    )
+    return transitions
+
+
 def repair_equal_states_in_all_entries(entries, loss_key="loss_total"):
     sequences = []
     curr_seq = []
@@ -401,6 +488,7 @@ def collect_all_comet_transitions(
     mark_states=None,
     num_workers=None,
     reset_success_done_to_failure=False,
+    recompute_chain_rewards=False,
 ) -> PrioritizedReplayBuffer:
     """Собирает все переходы из не-crashed экспериментов проекта и возвращает заполненный PrioritizedReplayBuffer."""
     print("🔍 Получаем эксперименты из Comet...")
@@ -501,6 +589,8 @@ def collect_all_comet_transitions(
             proj_name=proj_name,
             reset_success_done_to_failure=reset_success_done_to_failure,
         )
+        if recompute_chain_rewards:
+            block_entries = recompute_chain_rewards_for_terminal_chains(block_entries)
         all_entries.extend(block_entries)
 
         chain = []
