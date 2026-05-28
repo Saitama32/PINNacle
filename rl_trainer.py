@@ -325,7 +325,7 @@ def run_deepxde_rl_training(
                     f'\ndone = {done}')
             
             if len(rl_agent.replay_buffer) >= rl_agent_params["agent_min_buffer"]:
-                rl_agent.optim_(iters=1)
+                rl_agent.optim_(iters=rl_agent_params["agent_update_iters"])
 
             # callbacks.callbacks[1].save_every = self.t
             # env.render()
