@@ -54,15 +54,16 @@ def collect_policy_metrics_from_q(agent, q_opt, prefix):
 def collect_policy_metrics_by_seq_position(agent, seqs):
     """
     Evaluates what the current greedy policy would choose
-    for replay states from sampled sequences.
+    for replay states from successful sampled sequences.
 
     Buckets:
         - early
         - middle
         - late
 
-    This is policy evaluation on replay states, not logging actions
-    that were actually taken in the environment.
+    A successful sequence is defined only by its last transition:
+    last.done == 1. This is policy evaluation on replay states, not
+    logging actions that were actually taken in the environment.
     """
     buckets = {
         "early": [],
@@ -70,7 +71,30 @@ def collect_policy_metrics_by_seq_position(agent, seqs):
         "late": [],
     }
 
-    for seq in seqs:
+    def is_success_seq(seq):
+        if len(seq) == 0:
+            return False
+        done = seq[-1].done
+        if torch.is_tensor(done):
+            done = done.item()
+        return done == 1
+
+    seq_count = len(seqs)
+    good_seqs = [seq for seq in seqs if is_success_seq(seq)]
+    good_seq_count = len(good_seqs)
+
+    metrics = {
+        "policy_eval/seq_count": good_seq_count,
+        "policy_eval/seq_frac": good_seq_count / seq_count if seq_count > 0 else 0.0,
+        "policy_eval/state_count/early": 0,
+        "policy_eval/state_count/middle": 0,
+        "policy_eval/state_count/late": 0,
+    }
+
+    if good_seq_count == 0:
+        return metrics
+
+    for seq in good_seqs:
         T = len(seq)
         if T == 0:
             continue
@@ -87,9 +111,8 @@ def collect_policy_metrics_by_seq_position(agent, seqs):
 
             buckets[bucket].append(tr.state)
 
-    metrics = {}
-
     for bucket_name, states_list in buckets.items():
+        metrics[f"policy_eval/state_count/{bucket_name}"] = len(states_list)
         if len(states_list) == 0:
             continue
 
