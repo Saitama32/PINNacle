@@ -275,6 +275,7 @@ class DQNAgent:
         Gn = []
         ret = torch.zeros((), device=self.device)
         pow_ = torch.tensor(1.0, device=self.device)            # = γ^0 на старте
+        sum_w = torch.zeros((), device=self.device)
         for n in range(len(seq)):                               # n=0..N-1  => (n+1)-step
             ret = ret + pow_ * rewards[n]                       # += γ^n * r_{t+1+n}
             if not dones[n]:
@@ -291,14 +292,17 @@ class DQNAgent:
         greedy_mask = self._greedy_mask(states, actions)
         g_vals = torch.where(greedy_mask, torch.ones_like(rewards), torch.full_like(rewards, self.kappa))
         G_lambda = torch.zeros((), device=self.device)
-        g_prefix = 1.0
+        g_prefix = torch.tensor(1.0, device=self.device)
         for n in range(len(seq)):  # n=0..N-1  => (n+1)-step
             if n > 0:
                 # включаем g для шага t+(n-1) — т.е. для промежуточных шагов после текущего
                 g_prefix = g_prefix * g_vals[n-1]
             w_n = (1.0 - self.lambda_) * (self.lambda_ ** n) * g_prefix
             G_lambda = G_lambda + w_n * Gn[n]
-        return G_lambda.detach()
+            sum_w = sum_w + w_n
+
+        G_lambda = G_lambda / sum_w.clamp_min(1e-3)
+        return G_lambda.detach(), sum_w.detach()
 
     
     def optim_(self, iters=1):
@@ -349,8 +353,10 @@ class DQNAgent:
 
             # --- SOFT/WATKINS G^{λ,κ} на каждый элемент батча из своей последовательности ---
             with torch.no_grad():
-                y_opt_list = [ self._soft_watkins_targets(seq, self.gamma) for seq in seqs ]
+                soft_watkins_targets = [ self._soft_watkins_targets(seq, self.gamma) for seq in seqs ]
+                y_opt_list, lambda_weight_list = zip(*soft_watkins_targets)
             y_opt = torch.stack(y_opt_list, dim=0)   # [B]
+            lambda_weight = torch.stack(lambda_weight_list, dim=0)   # [B]
 
             #Функционал trust region 
 
@@ -466,6 +472,9 @@ class DQNAgent:
                 sigma_td = float(sigma)
                 q_abs_mean = float(q_sa.abs().mean().item())
                 y_opt_mean = float(y_opt.abs().mean().item())
+                lambda_weight_mean = float(lambda_weight.mean().item())
+                lambda_weight_min = float(lambda_weight.min().item())
+                lambda_weight_max = float(lambda_weight.max().item())
 
                 # tr_drop_frac у тебя уже есть как drop_frac
                 # seq_avg_len у тебя уже есть как avg_len
@@ -522,6 +531,9 @@ class DQNAgent:
             "seq_frac_len_gt1": frac_len_gt1,
             "seq_avg_len": avg_len,
             "seq_frac_success": frac_seq_success,
+            "lambda_weight_mean": lambda_weight_mean,
+            "lambda_weight_min": lambda_weight_min,
+            "lambda_weight_max": lambda_weight_max,
         }
 
         metrics_to_log.update(policy_position_metrics)
