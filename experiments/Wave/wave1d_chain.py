@@ -10,9 +10,6 @@ experiment = start_comet_experiment(
     project_name="rlpinn_wave1d_loss_ratio_reward_optimization",
 )
 
-
-sys.path.append(PROJECT_ROOT)
-
 import time
 import argparse
 import dill
@@ -179,7 +176,7 @@ def main():
     rl_agent_params = {
         "n_save_models": args.n_save_models,
         "n_trajectories": args.n_trajectories,
-        "tolerance": 0.0,
+        "tolerance": 0.012694936,
         "use_tol": False,
         "new_tol": True,
         "prev_tol": 0.0,
@@ -197,6 +194,8 @@ def main():
         "agent_update_iters": 5,
         "lr": 1e-3,
         "exp": experiment,
+        "log_key": False,
+        "proj_name": "rlpinn-wave1d-tolerance"
     }
 
     experiment.log_parameters(rl_agent_params)
