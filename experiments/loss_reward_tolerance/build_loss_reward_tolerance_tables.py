@@ -18,6 +18,7 @@ from RL.rl_utils.load_buffer.load_exps_from_comet import WORKSPACE
 PROJECT_NAME = "rlpinn_loss_reward_tolerances"
 PROJECT_NAMES = [
     # "rlpinn-burgers1d-tolerance",
+    "rlpinn-burgers1d-tolerance-corrected",
     # "rlpinn-burgers2d-tolerance",
     # "rlpinn-poisson2d-classic-tolerance",
     # "rlpinn-poisson-boltzmann2d-tolerance",
@@ -30,14 +31,14 @@ PROJECT_NAMES = [
     # "rlpinn-ns2d-backstep-tolerance",
     # "rlpinn-ns2d-liddriven-tolerance",
     # "rlpinn-ns2d-longtime-tolerance",
-    "rlpinn-wave1d-tolerance",
-    "rlpinn-wave2d-heterogeneous-tolerance",
-    "rlpinn-grayscott-tolerance",
-    "rlpinn-kuramoto-sivashinsky-tolerance",
-    "rlpinn-poissonnd-tolerance",
-    "rlpinn-heatnd-tolerance",
-    "rlpinn-poissoninv-tolerance",
-    "rlpinn-heatinv-tolerance",
+    # "rlpinn-wave1d-tolerance",
+    # "rlpinn-wave2d-heterogeneous-tolerance",
+    # "rlpinn-grayscott-tolerance",
+    # "rlpinn-kuramoto-sivashinsky-tolerance",
+    # "rlpinn-poissonnd-tolerance",
+    # "rlpinn-heatnd-tolerance",
+    # "rlpinn-poissoninv-tolerance",
+    # "rlpinn-heatinv-tolerance",
 ]
 
 
