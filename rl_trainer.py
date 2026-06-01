@@ -180,7 +180,8 @@ def run_deepxde_rl_training(
                                                            use_log_state=rl_agent_params["log_key"], 
                                                            proj_name=rl_agent_params["proj_name"],
                                                            reset_success_done_to_failure=rl_agent_params.get("reset_success_done_to_failure", False),
-                                                           recompute_chain_rewards=rl_agent_params.get("recompute_chain_rewards", True))
+                                                           recompute_chain_rewards=rl_agent_params.get("recompute_chain_rewards", True),
+                                                        set_reward_from_next_loss=rl_agent_params.get("set_reward_from_next_loss", True))
     # if backup_params is not None:
     #     optim_state, params_state = load_rl_agent_from_comet(backup_params["experiment_key"], map_location=device_type())
     #     rl_agent.model_optim.load_state_dict(optim_state)

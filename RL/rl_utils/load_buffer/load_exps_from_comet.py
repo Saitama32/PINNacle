@@ -538,6 +538,7 @@ def collect_all_comet_transitions(
     num_workers=None,
     reset_success_done_to_failure=False,
     recompute_chain_rewards=False,
+    set_reward_from_next_loss=False
 ) -> PrioritizedReplayBuffer:
     """Собирает все переходы из не-crashed экспериментов проекта и возвращает заполненный PrioritizedReplayBuffer."""
     print("🔍 Получаем эксперименты из Comet...")
@@ -637,7 +638,7 @@ def collect_all_comet_transitions(
             mark_states=mark_states,
             proj_name=proj_name,
             reset_success_done_to_failure=reset_success_done_to_failure,
-            set_reward_from_next_loss=recompute_chain_rewards,
+            set_reward_from_next_loss=set_reward_from_next_loss,
         )
         if recompute_chain_rewards:
             block_entries = recompute_chain_rewards_for_terminal_chains(
