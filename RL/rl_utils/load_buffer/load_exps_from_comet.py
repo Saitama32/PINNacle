@@ -182,7 +182,7 @@ def _resolve_num_workers(num_workers, total_experiments):
     if total_experiments <= 0:
         return 1
     if num_workers is None:
-        return min(8, total_experiments)
+        return min(5, total_experiments)
     return max(1, min(int(num_workers), total_experiments))
 
 
