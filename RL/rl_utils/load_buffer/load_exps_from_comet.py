@@ -430,7 +430,7 @@ def _process_loaded_transition_block(
         entries = set_transition_rewards_from_next_loss(
             entries,
             loss_key=loss_key,
-            state_loss_is_log=False,
+            state_loss_is_log=True,
         )
 
     if use_log_state:
