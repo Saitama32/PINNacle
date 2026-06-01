@@ -270,6 +270,33 @@ def _transition_loss_value(tr, loss_key="loss_total", state_loss_is_log=False):
     return value if np.isfinite(value) else None
 
 
+def set_transition_rewards_from_next_loss(
+    transitions,
+    loss_key="loss_total",
+    state_loss_is_log=False,
+):
+    updated = 0
+    skipped = 0
+
+    for tr in transitions:
+        loss = _transition_loss_value(
+            tr,
+            loss_key=loss_key,
+            state_loss_is_log=state_loss_is_log,
+        )
+        if loss is None:
+            skipped += 1
+            continue
+
+        tr["reward"] = float(loss)
+        updated += 1
+
+    if skipped:
+        print(f"Skipped {skipped} transitions without valid next loss reward.")
+    print(f"Set reward=next_loss for {updated} transitions.")
+    return transitions
+
+
 def recompute_chain_rewards_for_terminal_chains(
     transitions,
     loss_key="loss_total",
@@ -319,7 +346,8 @@ def recompute_chain_rewards_for_terminal_chains(
             dense = np.clip(dense, -chain_reward_dense_clip, chain_reward_dense_clip)
             rewards[idx] += chain_reward_alpha * dense
 
-        for tr, reward in zip(chain, rewards):
+        for tr, reward, loss in zip(chain, rewards, losses):
+            tr["reward"] = float(loss)
             reward = float(reward)
             if "reward_model_original" not in tr and "reward_model" in tr:
                 tr["reward_model_original"] = tr["reward_model"]
@@ -384,6 +412,7 @@ def _process_loaded_transition_block(
     proj_name=None,
     loss_key="loss_total",
     reset_success_done_to_failure=False,
+    set_reward_from_next_loss=False,
 ):
     transitions = _filter_terminal_without_active_chain(transitions)
 
@@ -396,6 +425,13 @@ def _process_loaded_transition_block(
     # transitions = shift_done_rewards(transitions, done=-1, shift_value=-5)
     entries = repair_equal_states_in_all_entries(transitions, loss_key=loss_key)
     entries = add_delta_to_all_entries(entries)
+
+    if set_reward_from_next_loss:
+        entries = set_transition_rewards_from_next_loss(
+            entries,
+            loss_key=loss_key,
+            state_loss_is_log=False,
+        )
 
     if use_log_state:
         apply_log_transform_to_transitions(entries)
@@ -601,6 +637,7 @@ def collect_all_comet_transitions(
             mark_states=mark_states,
             proj_name=proj_name,
             reset_success_done_to_failure=reset_success_done_to_failure,
+            set_reward_from_next_loss=recompute_chain_rewards,
         )
         if recompute_chain_rewards:
             block_entries = recompute_chain_rewards_for_terminal_chains(
