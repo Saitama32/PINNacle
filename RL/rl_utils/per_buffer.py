@@ -133,12 +133,14 @@ class PrioritizedReplayBuffer:
             i += 1
         return seq
     
-    def _build_sequence_ending_at(self, end_idx: int, L: int):
+    def _build_sequence_ending_at(self, end_idx: int, L: int, random_start: bool = False):
         """
         Строим последовательность, которая:
-        - всегда заканчивается на end_idx (обычно done=1),
-        - идёт назад максимум на L-1 шагов,
-        - НИКОГДА не пересекает границу эпизода (т.е. не включает предыдущий done!=0).
+        - заканчивается на end_idx, обычно done=1;
+        - идет назад максимум на L-1 шагов;
+        - не пересекает границу эпизода;
+        - если random_start=True, выбирает случайный старт внутри найденной цепочки,
+        чтобы success replay обучал не только первый переход успешной цепочки.
         """
         seq_rev = []
         i = end_idx
@@ -148,8 +150,8 @@ class PrioritizedReplayBuffer:
         while i >= 0 and steps < L:
             tr = self.memory[i]
 
-            # если это не самый правый шаг и у него done != 0,
-            # значит мы дошли до конца предыдущего эпизода -> дальше не идём
+            # Если это не самый правый шаг и у него done != 0,
+            # значит мы дошли до конца предыдущего эпизода.
             if steps > 0 and getattr(tr, "done", 0) != 0:
                 break
 
@@ -158,8 +160,22 @@ class PrioritizedReplayBuffer:
             i -= 1
 
         seq_rev.reverse()
-        return seq_rev
-    
+        seq = seq_rev
+
+        if not random_start:
+            return seq
+
+        # Нельзя брать только terminal transition:
+        # sequence длиной 1 почти бесполезна для multi-step target.
+        if len(seq) <= 2:
+            return seq
+
+        # Берем старт не с последнего элемента, чтобы seq имела хотя бы 2 transition-а.
+        max_start = len(seq) - 2
+        start_pos = random.randint(0, max_start)
+
+        return seq[start_pos:]
+        
 
     def sample_sequences(self, batch_size: int, L: int, beta=None, uniform=False, device='cpu'):
         """
@@ -286,7 +302,7 @@ class PrioritizedReplayBuffer:
                 end_idx = success_list[random.randint(0, N_succ - 1)]
 
                 # Строим последовательность, заканчивающуюся этим success
-                candidate = self._build_sequence_ending_at(end_idx, L)
+                candidate = self._build_sequence_ending_at(end_idx, L, random_start=True)
 
                 if len(candidate) <= 1:
                     continue
