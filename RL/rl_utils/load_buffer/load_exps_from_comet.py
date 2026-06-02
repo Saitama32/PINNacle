@@ -305,6 +305,8 @@ def recompute_chain_rewards_for_terminal_chains(
     chain_reward_dense_clip=5.0,
     chain_success_bonus=10.0,
     chain_fail_penalty=-5.0,
+    chain_repeat_k=2,
+    chain_repeat_penalty=0.5,
     state_loss_is_log=False,
 ):
     updated_chains = 0
@@ -345,6 +347,30 @@ def recompute_chain_rewards_for_terminal_chains(
             dense = np.log(losses[idx - 1] + eps) - np.log(losses[idx] + eps)
             dense = np.clip(dense, -chain_reward_dense_clip, chain_reward_dense_clip)
             rewards[idx] += chain_reward_alpha * dense
+
+        if chain_repeat_penalty > 0:
+            last_opt = None
+            streak = 0
+
+            for idx, tr in enumerate(chain):
+                action = tr.get("action", None)
+
+                if isinstance(action, (tuple, list)):
+                    opt_idx = int(action[0])
+                elif isinstance(action, dict):
+                    opt_idx = action.get("type", None)
+                else:
+                    opt_idx = action
+
+                if opt_idx == last_opt:
+                    streak += 1
+                else:
+                    streak = 1
+                    last_opt = opt_idx
+
+                if streak > chain_repeat_k:
+                    over = streak - chain_repeat_k
+                    rewards[idx] -= chain_repeat_penalty * over
 
         for tr, reward, loss in zip(chain, rewards, losses):
             tr["reward"] = float(loss)
