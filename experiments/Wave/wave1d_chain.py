@@ -11,7 +11,6 @@ experiment = start_comet_experiment(
 )
 
 
-sys.path.append(PROJECT_ROOT)
 
 import time
 import argparse
