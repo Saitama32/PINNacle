@@ -4,10 +4,10 @@
 SCRIPT="experiments/NavierStokes/ns2d_liddriven_chain.py"
 
 LOG_KEY_FOR_NEW_STATE="True"
-EXP_KEY_1="3225231f06a942079227763b3c7887bd"
-STEP_1=481
-EXP_KEY_2="5f5b118c2c0f49479103d5f11fa8607e"
-STEP_2=444
+EXP_KEY_1="23c2729cdddf4303ba0525603cfeffaf"
+STEP_1=399
+EXP_KEY_2="5b648bebee5f438ab247876530ca04a4"
+STEP_2=299
 
 
 # Detect available GPUs
