@@ -11,7 +11,7 @@ api_key = os.getenv("COMET_API_KEY")
 
 experiment = start(
   api_key=api_key,
-  project_name="rlpinn-pde-wave-1d-comparison",
+  project_name="rlpinn-pde-wave-1d-loss_reward_comparison",
   workspace="saitama32"
 )
 
@@ -104,8 +104,9 @@ def main(seed_override=None):
     parser.add_argument("--state-h", type=int, default=26)
     parser.add_argument("--state-w", type=int, default=26)
     parser.add_argument("--n-save-models", type=int, default=10)
-    parser.add_argument("--log_key", type=str2bool, nargs="?", const=True, default=False)
+    parser.add_argument("--log_key_for_new_state", type=str2bool, nargs="?", const=True, default=False)
     parser.add_argument("--exp_key", type=str, default="7f7a91cef55d4aeba0e509024977456b")
+    parser.add_argument("--model_step", type=int, default=None)
 
     # куда писать
     parser.add_argument("--out", type=str, default="runs_single")
@@ -149,7 +150,7 @@ def main(seed_override=None):
         },
         'LBFGS':{
             'lr':[1, 5e-1, 1e-1],
-            'epochs':[100, 500, 1500]
+            'epochs':[100, 500, 1000]
         },
         'PSO':{
             'lr':[0.0, 1e-3, 1e-4],
@@ -197,7 +198,7 @@ def main(seed_override=None):
         "learning_rate": 5e-4,
         "resume": True,
         "finetune_AE_model": False,
-        "log_key": args.log_key
+        "log_key": args.log_key_for_new_state,
     }
 
     loss_surface_params = {
@@ -248,13 +249,14 @@ def main(seed_override=None):
         "agent_update_iters": 5,
         "lr": 1e-3,
         "exp": experiment,
-        "log_key": args.log_key
+        "log_key": False
     }
     comparison_params = {
         "seed": args.seed,
         "total_epochs": 7000,
         "experiment_key": args.exp_key,
         "multi_pde_comparison": True,
+        "agent_model_step": args.model_step,
     }
 
     experiment.log_parameters(rl_agent_params)
