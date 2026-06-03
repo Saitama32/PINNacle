@@ -196,7 +196,12 @@ def run_deepxde_rl_training(
     if comparison_params is not None:
         if comparison_params.get("total_epochs") is not None:
             comparison_total_epochs = int(comparison_params["total_epochs"])
-        optim_state, params_state = load_rl_agent_from_comet(comparison_params["experiment_key"], map_location=device)
+        model_step = comparison_params.get("agent_model_step")
+        optim_state, params_state = load_rl_agent_from_comet(
+            comparison_params["experiment_key"],
+            step=model_step,
+            map_location=device,
+        )
         rl_agent.model_optim.load_state_dict(optim_state)
         rl_agent.model_params.load_state_dict(params_state)
         rl_agent.reinit_target()

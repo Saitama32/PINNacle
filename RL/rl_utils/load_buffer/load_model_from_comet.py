@@ -3,6 +3,8 @@ import torch
 import io
 from dotenv import load_dotenv
 import os
+import re
+from typing import Optional
 # === Настройки ===
 WORKSPACE = "saitama32"
 PROJECT_NAME = "rlpinn"
@@ -14,9 +16,22 @@ api_key = os.getenv("COMET_API_KEY")
 
 api = API(api_key=api_key)  # или просто API()
 # experiment_key = "9da803bf471942d68069d835e2f95651"
-step=None
+def _asset_step(asset) -> int:
+    step = asset.get("step")
+    if step is None:
+        step = asset.get("metadata", {}).get("step")
+    if step is None:
+        match = re.search(r"_step_(\d+)", asset.get("fileName", ""))
+        if match:
+            step = match.group(1)
+    return int(step or 0)
 
-def load_rl_agent_from_comet(experiment_key, map_location: str = "cpu"):
+
+def load_rl_agent_from_comet(
+    experiment_key,
+    step: Optional[int] = None,
+    map_location: str = "cpu",
+):
     """
     Загружает веса RL-агента (model_optim и model_params) из эксперимента Comet ML.
     
@@ -38,20 +53,20 @@ def load_rl_agent_from_comet(experiment_key, map_location: str = "cpu"):
         raise ValueError("❌ В эксперименте нет моделей rl_agent_optim или rl_agent_params")
 
     # --- сортируем по step ---
-    optim_assets.sort(key=lambda a: a.get("step", 0))
-    params_assets.sort(key=lambda a: a.get("step", 0))
+    optim_assets.sort(key=_asset_step)
+    params_assets.sort(key=_asset_step)
 
     # --- выбираем нужный шаг ---
     if step is None:
         optim_asset = optim_assets[-1]
         params_asset = params_assets[-1]
-        print(f"⬇️ Загружаем последние версии моделей {experiment_key}: step={optim_asset['step']}/{params_asset['step']}")
+        print(f"⬇️ Загружаем последние версии моделей {experiment_key}: step={_asset_step(optim_asset)}/{_asset_step(params_asset)}")
     else:
         # ищем ближайшие по step
-        optim_asset = min(optim_assets, key=lambda a: abs(a.get("step", 0) - step))
-        params_asset = min(params_assets, key=lambda a: abs(a.get("step", 0) - step))
+        optim_asset = min(optim_assets, key=lambda a: abs(_asset_step(a) - step))
+        params_asset = min(params_assets, key=lambda a: abs(_asset_step(a) - step))
         print(f"⬇️ Загружаем модели для шага, ближайшего к {step}: "
-              f"optim_step={optim_asset['step']}, params_step={params_asset['step']}")
+              f"optim_step={_asset_step(optim_asset)}, params_step={_asset_step(params_asset)}")
 
     # === загрузка model_optim ===
     print(f"📦 Загрузка {optim_asset['fileName']} ...")
