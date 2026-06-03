@@ -4,8 +4,8 @@
 SCRIPT="experiments/Burgers/burgers_1d_chain.py"
 
 LOG_KEY="true"
-EXP_KEY_1="0ebb0d5ccc61475e8a2f31ca73b14055"
-EXP_KEY_2="8cca370b94ee43359d9b68bd231b1d9f"
+EXP_KEY_1="1d57099b83ce4af3bde5557cda4ca772"
+EXP_KEY_2="fca2746123a54a2e87a7b3ae2a9c1356"
 
 # Detect available GPUs
 NUM_GPUS=$(nvidia-smi --query-gpu=name --format=csv,noheader | wc -l)
