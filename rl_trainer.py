@@ -167,7 +167,8 @@ def run_deepxde_rl_training(
                         device=device,
                         batch_size=rl_agent_params["rl_batch_size"],
                         n_transitions_reinit = rl_agent_params["n_transitions_reinit"],
-                        exp = rl_agent_params["exp"])
+                        exp = rl_agent_params["exp"],
+                        model_snapshot_dir=f"{save_path}/rl_model_snapshots")
 
     # init state (как у тебя в model.py: нулевые карты)
     state_shape = get_state_shape(loss_surface_params)

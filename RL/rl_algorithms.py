@@ -11,15 +11,13 @@ import matplotlib.pyplot as plt
 from collections import defaultdict
 from math import ceil
 import statistics
+from pathlib import Path
 from RL.rl_utils.DQN_classes import DQN_optim, DQN_params
 from comet_ml.integration.pytorch import watch
 from RL.rl_utils.per_buffer import PrioritizedReplayBuffer, Transition
 from RL.rl_utils.per_offline import recalc_all_priorities_batched
 from RL.rl_utils.logger import log_priority_to_comet
 from RL.rl_utils.metrics import collect_policy_metrics_by_seq_position
-
-
-import tempfile
 
 
 EPS_START = 0.5
@@ -31,7 +29,8 @@ TAU = 0.01
 class DQNAgent:
     def __init__(self, n_observation=None, n_action=None, optimizer_dict=None, lr=1e-3, gamma=0.98, epsilon=1.0,
                  epsilon_decay=0.995, epsilon_min=0.01, memory_size=50000, batch_size=128, n_transitions_reinit = 2000, per_alpha =  0.6, per_beta0 = 0.4, device='cpu', exp=None,
-                 warmup_updates: int = 50, recalc_batch_size: int = 32, success_frac = 0.2):
+                 warmup_updates: int = 50, recalc_batch_size: int = 32, success_frac = 0.2,
+                 model_snapshot_dir="rl_model_snapshots"):
         self.n_observation = n_observation
         self.n_action = n_action
         self.gamma = gamma
@@ -96,6 +95,7 @@ class DQNAgent:
 
         self.device = device
         self.exp = exp
+        self.model_snapshot_dir = Path(model_snapshot_dir)
         epsilon_and_warmap_params = {
             "slot_bootstrap_steps": self.slot_bootstrap_steps,
             "slot_bootstrap_eps": self.slot_bootstrap_eps,
@@ -609,34 +609,13 @@ class DQNAgent:
 
 
 
-            # Сохраняем модель во временные файлы
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".pt") as tmp_optim:
-                torch.save(self.model_optim.state_dict(), tmp_optim.name)
-                optim_path = tmp_optim.name
+            # Save model snapshots locally only.
+            self.model_snapshot_dir.mkdir(parents=True, exist_ok=True)
+            optim_path = self.model_snapshot_dir / f"model_optim_step_{self.steps_done}.pt"
+            params_path = self.model_snapshot_dir / f"model_params_step_{self.steps_done}.pt"
 
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".pt") as tmp_params:
-                torch.save(self.model_params.state_dict(), tmp_params.name)
-                params_path = tmp_params.name
-
-            # --- логируем как модельные файлы ---
-            self.exp.log_model(
-                name="rl_agent_optim",
-                file_or_folder=optim_path,
-                file_name=f"model_optim_step_{self.steps_done}.pt",
-                overwrite=True,
-                metadata={"type": "optimizer_state", "step": self.steps_done}
-            )
-
-            self.exp.log_model(
-                name="rl_agent_params",
-                file_or_folder=params_path,
-                file_name=f"model_params_step_{self.steps_done}.pt",
-                overwrite=True,
-                metadata={"type": "model_state", "step": self.steps_done}
-            )
-
-            # Дополнительно можно залогировать "человеческий" тег версии
-            self.exp.log_other("model_snapshot_step", self.steps_done)
+            torch.save(self.model_optim.state_dict(), optim_path)
+            torch.save(self.model_params.state_dict(), params_path)
 
 
         return loss_arr_optim_class, loss_arr_param
