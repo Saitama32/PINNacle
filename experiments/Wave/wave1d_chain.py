@@ -195,7 +195,7 @@ def main():
         "lr": 1e-3,
         "exp": experiment,
         "log_key": False,
-        "proj_name": "rlpinn-wave1d-tolerance"
+        "proj_name": "rlpinn-wave1d-loss-chain-reward-tolerance"
     }
 
     experiment.log_parameters(rl_agent_params)
