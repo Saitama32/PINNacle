@@ -609,13 +609,29 @@ class DQNAgent:
 
 
 
-            # Save model snapshots locally only.
+            # Save model snapshots locally and, optionally, log them to Comet as assets.
+            # We use log_asset instead of log_model to avoid the Comet model-element limit.
             self.model_snapshot_dir.mkdir(parents=True, exist_ok=True)
             optim_path = self.model_snapshot_dir / f"model_optim_step_{self.steps_done}.pt"
             params_path = self.model_snapshot_dir / f"model_params_step_{self.steps_done}.pt"
 
             torch.save(self.model_optim.state_dict(), optim_path)
             torch.save(self.model_params.state_dict(), params_path)
+
+            self.exp.log_asset(
+                str(optim_path),
+                file_name=f"rl_model_snapshots/model_optim_step_{self.steps_done}.pt",
+                step=self.steps_done,
+                overwrite=True,
+            )
+            self.exp.log_asset(
+                str(params_path),
+                file_name=f"rl_model_snapshots/model_params_step_{self.steps_done}.pt",
+                step=self.steps_done,
+                overwrite=True,
+            )
+            self.exp.log_other("model_snapshot_step", self.steps_done)
+            self.exp.log_other("model_snapshot_local_dir", str(self.model_snapshot_dir))
 
 
         return loss_arr_optim_class, loss_arr_param
