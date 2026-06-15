@@ -46,11 +46,33 @@ def load_rl_agent_from_comet(
     assets = exp.get_asset_list()
 
     # --- фильтруем по подпапкам ---
+    # --- старая структура ---
     optim_assets = [a for a in assets if a.get("dir") == "models/rl_agent_optim"]
     params_assets = [a for a in assets if a.get("dir") == "models/rl_agent_params"]
 
+    # --- новая структура ---
     if not optim_assets or not params_assets:
-        raise ValueError("❌ В эксперименте нет моделей rl_agent_optim или rl_agent_params")
+        snapshot_assets = [
+            a for a in assets
+            if a.get("dir") == "others/rl_model_snapshots"
+        ]
+
+        optim_assets = [
+            a for a in snapshot_assets
+            if "optim" in a.get("fileName", "").lower()
+        ]
+
+        params_assets = [
+            a for a in snapshot_assets
+            if "params" in a.get("fileName", "").lower()
+        ]
+
+    if not optim_assets or not params_assets:
+        raise ValueError(
+            "❌ Не найдены модели ни в старой структуре "
+            "(models/rl_agent_optim, models/rl_agent_params), "
+            "ни в новой (others/rl_model_snapshots)"
+        )
 
     # --- сортируем по step ---
     optim_assets.sort(key=_asset_step)
