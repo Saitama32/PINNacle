@@ -5,7 +5,9 @@ SCRIPT="experiments/Poisson/poisson_2d_classic_chain.py"
 
 LOG_KEY="true"
 EXP_KEY_1="df2e296e2db14ecd9ef6ba6d6bfe6b94"
+STEP_1=1999
 EXP_KEY_2="047166f076904abda2c299c63dde132b"
+STEP_2=1999
 
 
 
@@ -24,12 +26,12 @@ fi
 
 if [ "$NUM_GPUS" -eq 1 ]; then
     echo "Launching 2 processes on a single GPU..."
-    CUDA_VISIBLE_DEVICES=0 python "$SCRIPT" --log_key "$LOG_KEY" --exp_key "$EXP_KEY_1" &
-    CUDA_VISIBLE_DEVICES=0 python "$SCRIPT" --log_key "$LOG_KEY" --exp_key "$EXP_KEY_2" &
+    CUDA_VISIBLE_DEVICES=0 python "$SCRIPT" --log_key "$LOG_KEY" --exp_key "$EXP_KEY_1" --model_step "$STEP_1" &
+    CUDA_VISIBLE_DEVICES=0 python "$SCRIPT" --log_key "$LOG_KEY" --exp_key "$EXP_KEY_2" --model_step "$STEP_2" &
 else
     echo "Launching one process per GPU on first two GPUs..."
-    CUDA_VISIBLE_DEVICES=0 python "$SCRIPT" --log_key "$LOG_KEY" --exp_key "$EXP_KEY_1" &
-    CUDA_VISIBLE_DEVICES=1 python "$SCRIPT" --log_key "$LOG_KEY" --exp_key "$EXP_KEY_2" &
+    CUDA_VISIBLE_DEVICES=0 python "$SCRIPT" --log_key "$LOG_KEY" --exp_key "$EXP_KEY_1" --model_step "$STEP_1" &
+    CUDA_VISIBLE_DEVICES=1 python "$SCRIPT" --log_key "$LOG_KEY" --exp_key "$EXP_KEY_2" --model_step "$STEP_2" &
 fi
 
 wait

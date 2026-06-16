@@ -92,6 +92,7 @@ def main(seed_override=None):
     parser.add_argument("--n-save-models", type=int, default=10)
     parser.add_argument("--log_key_for_new_state", type=str2bool, nargs="?", const=True, default=False)
     parser.add_argument("--exp_key", type=str, default="7f7a91cef55d4aeba0e509024977456b")
+    parser.add_argument("--model_step", type=int, default=None)
     parser.add_argument("--out", type=str, default="runs_single")
 
     parser.add_argument("--pde-coef-x", type=float, default=1 / (500 * np.pi) ** 2, help="PDE coefficient for x diffusion")
@@ -225,6 +226,7 @@ def main(seed_override=None):
         "seed": args.seed,
         "total_epochs": 7000,
         "experiment_key": args.exp_key,
+        "agent_model_step": args.model_step,
     }
 
 
