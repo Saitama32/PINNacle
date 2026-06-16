@@ -4,10 +4,10 @@
 SCRIPT="experiments/Poisson/poisson_2d_classic_chain.py"
 
 LOG_KEY="true"
-EXP_KEY_1="df2e296e2db14ecd9ef6ba6d6bfe6b94"
-STEP_1=1999
-EXP_KEY_2="047166f076904abda2c299c63dde132b"
-STEP_2=1999
+EXP_KEY_1="88a05788e04e476c9d235767fc924def"
+STEP_1=1660
+EXP_KEY_2="88a05788e04e476c9d235767fc924def"
+STEP_2=2000
 
 
 
