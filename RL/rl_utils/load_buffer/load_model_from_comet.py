@@ -17,6 +17,8 @@ api_key = os.getenv("COMET_API_KEY")
 api = API(api_key=api_key)  # или просто API()
 # experiment_key = "9da803bf471942d68069d835e2f95651"
 DEFAULT_MODEL_ASSET_DIR = "others/rl_model_snapshots"
+FALLBACK_OPTIM_ASSET_DIR = "models/rl_agent_optim"
+FALLBACK_PARAMS_ASSET_DIR = "models/rl_agent_params"
 
 
 def _asset_step(asset) -> int:
@@ -34,8 +36,51 @@ def _normalize_asset_dir(asset_dir: Optional[str]) -> str:
     return (asset_dir or "").replace("\\", "/").strip("/")
 
 
+def _asset_dir_variants(target_dir: str) -> set[str]:
+    normalized = _normalize_asset_dir(target_dir)
+    variants = {normalized}
+    if normalized.startswith("others/"):
+        variants.add(normalized.removeprefix("others/"))
+    return variants
+
+
+def _asset_path(asset) -> str:
+    asset_dir = _normalize_asset_dir(asset.get("dir"))
+    file_name = _normalize_asset_dir(asset.get("fileName"))
+    if asset_dir and file_name:
+        return f"{asset_dir}/{file_name}"
+    return asset_dir or file_name
+
+
 def _asset_in_dir(asset, target_dir: str) -> bool:
-    return _normalize_asset_dir(asset.get("dir")) == _normalize_asset_dir(target_dir)
+    asset_dir = _normalize_asset_dir(asset.get("dir"))
+    asset_path = _asset_path(asset)
+    for candidate_dir in _asset_dir_variants(target_dir):
+        if asset_dir == candidate_dir:
+            return True
+        if asset_path.startswith(f"{candidate_dir}/"):
+            return True
+    return False
+
+
+def _format_asset_location(asset) -> str:
+    return f"dir='{asset.get('dir')}', fileName='{asset.get('fileName')}'"
+
+
+def _find_model_assets(assets, optim_dir: str, params_dir: str):
+    optim_assets = [
+        a for a in assets
+        if _asset_in_dir(a, optim_dir)
+        and "model_optim_step_" in a.get("fileName", "")
+    ]
+
+    params_assets = [
+        a for a in assets
+        if _asset_in_dir(a, params_dir)
+        and "model_params_step_" in a.get("fileName", "")
+    ]
+
+    return optim_assets, params_assets
 
 
 def load_rl_agent_from_comet(
@@ -65,26 +110,36 @@ def load_rl_agent_from_comet(
 
     # новая схема
     # if not optim_assets or not params_assets:
-    optim_assets = [
-        a for a in assets
-        if _asset_in_dir(a, asset_dir)
-        and "model_optim_step_" in a.get("fileName", "")
-    ]
-
-    params_assets = [
-        a for a in assets
-        if _asset_in_dir(a, asset_dir)
-        and "model_params_step_" in a.get("fileName", "")
-    ]
+    optim_assets, params_assets = _find_model_assets(assets, asset_dir, asset_dir)
+    selected_asset_dirs = asset_dir
 
     if not optim_assets or not params_assets:
+        optim_assets, params_assets = _find_model_assets(
+            assets,
+            FALLBACK_OPTIM_ASSET_DIR,
+            FALLBACK_PARAMS_ASSET_DIR,
+        )
+        selected_asset_dirs = f"{FALLBACK_OPTIM_ASSET_DIR}, {FALLBACK_PARAMS_ASSET_DIR}"
+
+    if not optim_assets or not params_assets:
+        model_assets = [
+            _format_asset_location(a)
+            for a in assets
+            if "model_optim_step_" in a.get("fileName", "")
+            or "model_params_step_" in a.get("fileName", "")
+        ][:10]
+        sample = "; ".join(model_assets) if model_assets else "no model snapshot assets found"
         raise ValueError(
-            f"RL model snapshots were not found in Comet asset dir '{asset_dir}'. "
+            "RL model snapshots were not found in Comet asset dirs "
+            f"'{asset_dir}' or "
+            f"'{FALLBACK_OPTIM_ASSET_DIR}'/'{FALLBACK_PARAMS_ASSET_DIR}'. "
             "Expected files named model_optim_step_<step>.pt and "
-            "model_params_step_<step>.pt."
+            "model_params_step_<step>.pt. "
+            f"Sample matching assets: {sample}"
         )
 
     # --- сортируем по step ---
+    print(f"Using Comet model assets from: {selected_asset_dirs}")
     optim_assets.sort(key=_asset_step)
     params_assets.sort(key=_asset_step)
 
