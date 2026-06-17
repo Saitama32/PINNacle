@@ -17,8 +17,6 @@ api_key = os.getenv("COMET_API_KEY")
 api = API(api_key=api_key)  # или просто API()
 # experiment_key = "9da803bf471942d68069d835e2f95651"
 DEFAULT_MODEL_ASSET_DIR = "others/rl_model_snapshots"
-FALLBACK_OPTIM_ASSET_DIR = "models/rl_agent_optim"
-FALLBACK_PARAMS_ASSET_DIR = "models/rl_agent_params"
 
 
 def _asset_step(asset) -> int:
@@ -38,22 +36,6 @@ def _normalize_asset_dir(asset_dir: Optional[str]) -> str:
 
 def _asset_in_dir(asset, target_dir: str) -> bool:
     return _normalize_asset_dir(asset.get("dir")) == _normalize_asset_dir(target_dir)
-
-
-def _find_model_assets(assets, optim_dir: str, params_dir: str):
-    optim_assets = [
-        a for a in assets
-        if _asset_in_dir(a, optim_dir)
-        and "model_optim_step_" in a.get("fileName", "")
-    ]
-
-    params_assets = [
-        a for a in assets
-        if _asset_in_dir(a, params_dir)
-        and "model_params_step_" in a.get("fileName", "")
-    ]
-
-    return optim_assets, params_assets
 
 
 def load_rl_agent_from_comet(
@@ -83,26 +65,24 @@ def load_rl_agent_from_comet(
 
     # новая схема
     # if not optim_assets or not params_assets:
-    optim_assets, params_assets = _find_model_assets(assets, asset_dir, asset_dir)
-    selected_asset_dirs = f"{asset_dir}"
+    optim_assets = [
+        a for a in assets
+        if _asset_in_dir(a, asset_dir)
+        and "model_optim_step_" in a.get("fileName", "")
+    ]
 
-    if not optim_assets or not params_assets:
-        optim_assets, params_assets = _find_model_assets(
-            assets,
-            FALLBACK_OPTIM_ASSET_DIR,
-            FALLBACK_PARAMS_ASSET_DIR,
-        )
-        selected_asset_dirs = f"{FALLBACK_OPTIM_ASSET_DIR}, {FALLBACK_PARAMS_ASSET_DIR}"
+    params_assets = [
+        a for a in assets
+        if _asset_in_dir(a, asset_dir)
+        and "model_params_step_" in a.get("fileName", "")
+    ]
 
     if not optim_assets or not params_assets:
         raise ValueError(
-            "RL model snapshots were not found in Comet asset dirs "
-            f"'{asset_dir}' or "
-            f"'{FALLBACK_OPTIM_ASSET_DIR}'/'{FALLBACK_PARAMS_ASSET_DIR}'. "
+            f"RL model snapshots were not found in Comet asset dir '{asset_dir}'. "
             "Expected files named model_optim_step_<step>.pt and "
             "model_params_step_<step>.pt."
         )
-    print(f"Using Comet model assets from: {selected_asset_dirs}")
 
     # --- сортируем по step ---
     optim_assets.sort(key=_asset_step)
