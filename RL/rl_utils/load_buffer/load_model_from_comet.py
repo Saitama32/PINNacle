@@ -47,28 +47,28 @@ def load_rl_agent_from_comet(
 
     # --- фильтруем по подпапкам ---
     # --- старая структура ---
-    optim_assets = [a for a in assets if a.get("dir") == "models/rl_agent_optim"]
-    params_assets = [a for a in assets if a.get("dir") == "models/rl_agent_params"]
+    # optim_assets = [a for a in assets if a.get("dir") == "models/rl_agent_optim"]
+    # params_assets = [a for a in assets if a.get("dir") == "models/rl_agent_params"]
 
 
     # новая схема
+    # if not optim_assets or not params_assets:
+    optim_assets = [
+        a for a in assets
+        if "model_optim_step_" in a.get("fileName", "")
+    ]
+
+    params_assets = [
+        a for a in assets
+        if "model_params_step_" in a.get("fileName", "")
+    ]
+
     if not optim_assets or not params_assets:
-        optim_assets = [
-            a for a in assets
-            if "model_optim_step_" in a.get("fileName", "")
-        ]
-
-        params_assets = [
-            a for a in assets
-            if "model_params_step_" in a.get("fileName", "")
-        ]
-
-        if not optim_assets or not params_assets:
-            raise ValueError(
-                "❌ Не найдены модели ни в старой структуре "
-                "(models/rl_agent_optim, models/rl_agent_params), "
-                "ни в новой (others/rl_model_snapshots)"
-            )
+        raise ValueError(
+            "❌ Не найдены модели ни в старой структуре "
+            "(models/rl_agent_optim, models/rl_agent_params), "
+            "ни в новой (others/rl_model_snapshots)"
+        )
 
     # --- сортируем по step ---
     optim_assets.sort(key=_asset_step)
