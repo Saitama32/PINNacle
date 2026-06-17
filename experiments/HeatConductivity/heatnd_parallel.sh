@@ -4,10 +4,10 @@
 SCRIPT="experiments/HeatConductivity/heatnd_chain.py"
 
 LOG_KEY_FOR_NEW_STATE="true"
-EXP_KEY_1="17c10318c0e14938b7cdd48c38c5ea99"
-STEP_1=1999
-EXP_KEY_2="a57b4324a5fc44cd89502c268cc24429"
-STEP_2=1999
+EXP_KEY_1="88a05788e04e476c9d235767fc924def"
+STEP_1=1660
+EXP_KEY_2="88a05788e04e476c9d235767fc924def"
+STEP_2=2000
 
 # Detect available GPUs
 NUM_GPUS=$(nvidia-smi --query-gpu=name --format=csv,noheader | wc -l)
