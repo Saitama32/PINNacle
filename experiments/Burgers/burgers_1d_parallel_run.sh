@@ -4,9 +4,9 @@
 SCRIPT="experiments/Burgers/burgers_1d_chain.py"
 
 LOG_KEY="true"
-EXP_KEY_1="8c8e5afec6ae4156a0ac0b3063c228ca"
+EXP_KEY_1="b6802ed390384457a09656f4c6ba40cd"
 STEP_1=2500
-EXP_KEY_2="74531fd50cab417e899abb79e3e083fc"
+EXP_KEY_2="922975c772cc436385d2fac4ab5c249b"
 STEP_2=2500
 
 # Detect available GPUs
