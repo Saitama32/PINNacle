@@ -4,9 +4,9 @@
 SCRIPT="experiments/NavierStokes/ns2d_liddriven_chain.py"
 
 LOG_KEY_FOR_NEW_STATE="True"
-EXP_KEY_1="8c8e5afec6ae4156a0ac0b3063c228ca"
+EXP_KEY_1="a32d8440fed44ee28ba7c1d21d1bd12f"
 STEP_1=2500
-EXP_KEY_2="74531fd50cab417e899abb79e3e083fc"
+EXP_KEY_2="c559d9d8b9b145caaf973b3c76b1ce13"
 STEP_2=2500
 
 
