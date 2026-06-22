@@ -5,9 +5,9 @@ SCRIPT="experiments/NavierStokes/ns2d_liddriven_chain.py"
 
 LOG_KEY_FOR_NEW_STATE="True"
 EXP_KEY_1="7cb70254b82349c48ee19af951694f3d"
-STEP_1=2000
+STEP_1=2002
 EXP_KEY_2="bc6c3529542b415c885b06c2265ff1ea"
-STEP_2=2000
+STEP_2=2002
 
 
 
