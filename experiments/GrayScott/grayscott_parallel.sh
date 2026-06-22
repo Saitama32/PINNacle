@@ -4,10 +4,11 @@
 SCRIPT="experiments/GrayScott/grayscott_chain.py"
 LOG_KEY="true"
 # Replace these with experiment keys of the trained Gray-Scott RL agent you want to compare.
-EXP_KEY_1="17c10318c0e14938b7cdd48c38c5ea99"
-STEP_1=1999
-EXP_KEY_2="a57b4324a5fc44cd89502c268cc24429"
-STEP_2=1999
+EXP_KEY_1="7cb70254b82349c48ee19af951694f3d"
+STEP_1=2002
+EXP_KEY_2="88a05788e04e476c9d235767fc924def"
+STEP_2=2000
+
 
 NUM_GPUS=$(nvidia-smi --query-gpu=name --format=csv,noheader | wc -l)
 
