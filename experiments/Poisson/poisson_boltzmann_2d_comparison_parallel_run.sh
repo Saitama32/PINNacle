@@ -4,10 +4,11 @@
 SCRIPT="experiments/Poisson/poisson_boltzmann_2d_comparison_chain.py"
 
 LOG_KEY="true"
-EXP_KEY_1="af06991c91e84eaba00cb0b73cae1ce7"
-STEP_1=1999
-EXP_KEY_2="eed0be64561b454589b14dff9c4e773c"
-STEP_2=1999
+EXP_KEY_1="7cb70254b82349c48ee19af951694f3d"
+STEP_1=2002
+EXP_KEY_2="88a05788e04e476c9d235767fc924def"
+STEP_2=2000
+
 
 # Detect available GPUs
 NUM_GPUS=$(nvidia-smi --query-gpu=name --format=csv,noheader | wc -l)
