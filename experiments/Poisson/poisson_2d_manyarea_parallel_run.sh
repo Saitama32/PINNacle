@@ -5,10 +5,10 @@ SCRIPT="experiments/Poisson/poisson_2d_manyarea_chain.py"
 
 LOG_KEY_1="true"
 LOG_KEY_2="true"
-EXP_KEY_1="17c10318c0e14938b7cdd48c38c5ea99"
-STEP_1=1999
-EXP_KEY_2="4ebd70b7eddd49c1a864a2ad7374d46c"
-STEP_2=1999
+EXP_KEY_1="7cb70254b82349c48ee19af951694f3d"
+STEP_1=2002
+EXP_KEY_2="88a05788e04e476c9d235767fc924def"
+STEP_2=2000
 
 # Detect available GPUs
 NUM_GPUS=$(nvidia-smi --query-gpu=name --format=csv,noheader | wc -l)
