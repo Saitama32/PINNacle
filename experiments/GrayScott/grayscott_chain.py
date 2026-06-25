@@ -251,7 +251,7 @@ def main(seed_override=None):
 
 if __name__ == "__main__":
     # seeds = [123, 234, 345, 456, 567, 678, 789, 890, 901, 1012]
-    seeds = [567, 678]
+    seeds = [789, 890]
     # seeds = [890, 901, 1012]
 
     for seed in seeds:
