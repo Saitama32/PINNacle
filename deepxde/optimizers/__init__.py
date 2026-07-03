@@ -9,6 +9,8 @@ from .config import (
     set_NNCG_options,
     PSO_options,
     set_PSO_options,
+    CAUSAL_options,
+    set_CAUSAL_options,
 )
 from ..backend import backend_name
 

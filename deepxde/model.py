@@ -335,15 +335,41 @@ class Model:
         def train_step(inputs, targets):
             # NOTE: edited
             def closure(*, skip_backward=False):
-                losses = outputs_losses_train(inputs, targets)[1]
-                self.opt.losses = losses
-                total_loss = torch.sum(losses)
-                if not skip_backward:
-                    self.opt.zero_grad()
-                    total_loss.backward()
-                return total_loss
+                if hasattr(self.opt, "causal_context"):
+                    context = self.opt.causal_context(inputs, targets, self.data)
+                else:
+                    context = None
+
+                if context is None:
+                    active_inputs, active_targets = inputs, targets
+                    losses = outputs_losses_train(active_inputs, active_targets)[1]
+                    if hasattr(self.opt, "window_ic_loss"):
+                        ic_loss = self.opt.window_ic_loss()
+                        if ic_loss is not None:
+                            losses = torch.cat([losses, ic_loss.reshape(1)])
+                    self.opt.losses = losses
+                    total_loss = torch.sum(losses)
+                    if not skip_backward:
+                        self.opt.zero_grad()
+                        total_loss.backward()
+                    return total_loss
+
+                with context as (active_inputs, active_targets):
+                    losses = outputs_losses_train(active_inputs, active_targets)[1]
+                    if hasattr(self.opt, "window_ic_loss"):
+                        ic_loss = self.opt.window_ic_loss()
+                        if ic_loss is not None:
+                            losses = torch.cat([losses, ic_loss.reshape(1)])
+                    self.opt.losses = losses
+                    total_loss = torch.sum(losses)
+                    if not skip_backward:
+                        self.opt.zero_grad()
+                        total_loss.backward()
+                    return total_loss
 
             loss = self.opt.step(closure)
+            if hasattr(self.opt, "after_train_step"):
+                self.opt.after_train_step()
             # NOTE: edited
             if self.lr_scheduler is not None:
                 if decay.__class__.__name__ == "ReduceLROnPlateau":
@@ -367,15 +393,33 @@ class Model:
             def closure():
                 loss_list = []
                 grad_list = []
-                for i in range(self.opt.pop_size):
-                    vector_to_parameters(self.opt.swarm[i], params)
-                    losses = outputs_losses_train(inputs, targets)[1]
-                    total_loss = torch.sum(losses)
-                    grads = torch.autograd.grad(total_loss, params)
-                    grad_vec = parameters_to_vector(grads)
-                    loss_list.append(total_loss)
-                    grad_list.append(grad_vec)
-                return torch.stack(loss_list), torch.stack(grad_list)
+                if hasattr(self.opt, "causal_context"):
+                    context = self.opt.causal_context(inputs, targets, self.data)
+                else:
+                    context = None
+
+                if context is None:
+                    active_inputs, active_targets = inputs, targets
+                    for i in range(self.opt.pop_size):
+                        vector_to_parameters(self.opt.swarm[i], params)
+                        losses = outputs_losses_train(active_inputs, active_targets)[1]
+                        total_loss = torch.sum(losses)
+                        grads = torch.autograd.grad(total_loss, params)
+                        grad_vec = parameters_to_vector(grads)
+                        loss_list.append(total_loss)
+                        grad_list.append(grad_vec)
+                    return torch.stack(loss_list), torch.stack(grad_list)
+
+                with context as (active_inputs, active_targets):
+                    for i in range(self.opt.pop_size):
+                        vector_to_parameters(self.opt.swarm[i], params)
+                        losses = outputs_losses_train(active_inputs, active_targets)[1]
+                        total_loss = torch.sum(losses)
+                        grads = torch.autograd.grad(total_loss, params)
+                        grad_vec = parameters_to_vector(grads)
+                        loss_list.append(total_loss)
+                        grad_list.append(grad_vec)
+                    return torch.stack(loss_list), torch.stack(grad_list)
 
             self.opt.step(closure)
             if self.lr_scheduler is not None:
@@ -385,12 +429,15 @@ class Model:
         self.outputs = outputs
         self.outputs_losses_train = outputs_losses_train
         self.outputs_losses_test = outputs_losses_test
-        if self.opt_name == "NNCG":
+        base_opt_name = getattr(self.opt, "base_optimizer_name", None)
+        if self.opt_name == "NNCG" or base_opt_name == "NNCG":
             self.train_step = train_step_nncg
-        elif self.opt_name == "PSO":
+        elif self.opt_name == "PSO" or base_opt_name == "PSO":
             self.train_step = train_step_pso
         else:
             self.train_step = train_step
+        if hasattr(self.opt, "attach_model"):
+            self.opt.attach_model(self)
 
     def _compile_jax(self, lr, loss_fn, decay, loss_weights):
         """jax"""

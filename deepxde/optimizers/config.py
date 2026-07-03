@@ -1,4 +1,10 @@
-__all__ = ["set_LBFGS_options", "set_NNCG_options", "set_PSO_options", "set_hvd_opt_options"]
+__all__ = [
+    "set_LBFGS_options",
+    "set_NNCG_options",
+    "set_PSO_options",
+    "set_CAUSAL_options",
+    "set_hvd_opt_options",
+]
 
 from ..backend import backend_name
 # from ..config import hvd
@@ -6,6 +12,7 @@ from ..backend import backend_name
 LBFGS_options = {}
 NNCG_options = {}
 PSO_options = {}
+CAUSAL_options = {}
 hvd = None
 if hvd is not None:
     hvd_opt_options = {}
@@ -160,6 +167,62 @@ def set_PSO_options(
     PSO_options["n_iter"] = n_iter
 
 
+def set_CAUSAL_options(
+    base_optimizer="adam",
+    n_time_bins=20,
+    start_bins=1,
+    time_index=-1,
+    unlock_every=1000,
+    unlock_tol=None,
+    min_steps_per_bin=200,
+    bc_mode="causal",
+    min_points_per_bc=1,
+    causal_strategy="prefix",
+    steps_per_window=200,
+    state_alpha=0.8,
+    x_state=None,
+    window_ic_weight=100.0,
+    verbose=False,
+):
+    """Sets the hyperparameters of causal optimizer wrapper.
+
+    Args:
+        base_optimizer: One of "adam", "L-BFGS", "L-BFGS-B", "PSO".
+        n_time_bins: Number of temporal bins.
+        start_bins: Number of initially active temporal bins.
+        time_index: Column index of time in train_x. Usually -1.
+        unlock_every: Open one more bin every N optimizer steps.
+        unlock_tol: If not None, open next bin when active loss <= unlock_tol.
+        min_steps_per_bin: Minimum steps before tolerance-based unlock.
+        bc_mode: "all" keeps IC/BC full and PDE causal; "causal" keeps
+            IC full and makes BC/PDE causal.
+        min_points_per_bc: If bc_mode="causal" and a BC block becomes empty,
+            keep this many earliest points from that BC block.
+        causal_strategy: "prefix" for growing causal prefix or "cyclic_windows"
+            for rolling windows.
+        steps_per_window: Number of optimizer steps per cyclic window.
+        state_alpha: Smoothing factor for stored cyclic window states.
+        x_state: Spatial coordinates used for cyclic pseudo-IC states.
+        window_ic_weight: Weight of pseudo-IC loss for cyclic windows.
+        verbose: Print unlock logs.
+    """
+    CAUSAL_options["base_optimizer"] = base_optimizer
+    CAUSAL_options["n_time_bins"] = n_time_bins
+    CAUSAL_options["start_bins"] = start_bins
+    CAUSAL_options["time_index"] = time_index
+    CAUSAL_options["unlock_every"] = unlock_every
+    CAUSAL_options["unlock_tol"] = unlock_tol
+    CAUSAL_options["min_steps_per_bin"] = min_steps_per_bin
+    CAUSAL_options["bc_mode"] = bc_mode
+    CAUSAL_options["min_points_per_bc"] = min_points_per_bc
+    CAUSAL_options["causal_strategy"] = causal_strategy
+    CAUSAL_options["steps_per_window"] = steps_per_window
+    CAUSAL_options["state_alpha"] = state_alpha
+    CAUSAL_options["x_state"] = x_state
+    CAUSAL_options["window_ic_weight"] = window_ic_weight
+    CAUSAL_options["verbose"] = verbose
+
+
 def set_hvd_opt_options(
     compression=None,
     op=None,
@@ -193,6 +256,7 @@ def set_hvd_opt_options(
 set_LBFGS_options()
 set_NNCG_options()
 set_PSO_options()
+set_CAUSAL_options()
 if hvd is not None:
     set_hvd_opt_options()
 
