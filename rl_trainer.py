@@ -17,6 +17,7 @@ from RL.rl_environment import EnvRLOptimizer
 from RL.rl_algorithms import DQNAgent
 from src.utils.callbacks import ModelSaverCallback  
 from deepxde.optimizers.config import set_LBFGS_options, set_PSO_options, LBFGS_options, PSO_options
+from deepxde.optimizers.pytorch.soap import SOAP
 from typing import Any, Dict
 from RL.rl_utils.load_buffer.load_exps_from_comet import collect_all_comet_transitions
 
@@ -80,6 +81,13 @@ def _build_torch_optimizer(opt_name: str, params, action: Dict[str, Any]):
             params, lr=lr,
         )
 
+    if name == "soap":
+        lr = float(opt_params.get("lr", 3e-4))
+        return SOAP(
+            params,
+            lr=lr,
+        )
+
     if name in ["lbfgs", "l-bfgs", "l_bfgs", "LBFGS"]:
         # torch LBFGS (для pytorch backend DeepXDE норм)
         opt = torch.optim.LBFGS(
@@ -98,7 +106,7 @@ def _build_torch_optimizer(opt_name: str, params, action: Dict[str, Any]):
         )
         return "PSO"  # deepxde/optimizers/pytorch/pso.PSO
 
-    raise ValueError(f"Unknown optimizer type: {opt_name}. Expected Adam / LBFGS / PSO.")
+    raise ValueError(f"Unknown optimizer type: {opt_name}. Expected Adam / SOAP / LBFGS / PSO.")
 
 
 def _extract_weighted_train_loss(model) -> float:
@@ -176,13 +184,13 @@ def run_deepxde_rl_training(
         z = torch.zeros(state_shape, device=device)
         return {"loss_total": z.clone(), "loss_oper": z.clone(), "loss_bnd": z.clone()}
     
-    rl_agent.replay_buffer = collect_all_comet_transitions(rl_agent.replay_buffer, max_exps_last=500, tolerance = rl_agent_params["tolerance"],
-                                                           prev_tol= rl_agent_params["prev_tol"], use_tol = rl_agent_params["use_tol"], new_tol = rl_agent_params["new_tol"],
-                                                           use_log_state=rl_agent_params["log_key"], 
-                                                           proj_name=rl_agent_params["proj_name"],
-                                                           reset_success_done_to_failure=rl_agent_params.get("reset_success_done_to_failure", False),
-                                                           recompute_chain_rewards=rl_agent_params.get("recompute_chain_rewards", True),
-                                                        set_reward_from_next_loss=rl_agent_params.get("set_reward_from_next_loss", True))
+    # rl_agent.replay_buffer = collect_all_comet_transitions(rl_agent.replay_buffer, max_exps_last=500, tolerance = rl_agent_params["tolerance"],
+    #                                                        prev_tol= rl_agent_params["prev_tol"], use_tol = rl_agent_params["use_tol"], new_tol = rl_agent_params["new_tol"],
+    #                                                        use_log_state=rl_agent_params["log_key"], 
+    #                                                        proj_name=rl_agent_params["proj_name"],
+    #                                                        reset_success_done_to_failure=rl_agent_params.get("reset_success_done_to_failure", False),
+    #                                                        recompute_chain_rewards=rl_agent_params.get("recompute_chain_rewards", True),
+    #                                                     set_reward_from_next_loss=rl_agent_params.get("set_reward_from_next_loss", True))
     # if backup_params is not None:
     #     optim_state, params_state = load_rl_agent_from_comet(backup_params["experiment_key"], map_location=device_type())
     #     rl_agent.model_optim.load_state_dict(optim_state)

@@ -20,11 +20,10 @@ from RL.rl_utils.logger import log_priority_to_comet
 from RL.rl_utils.metrics import collect_policy_metrics_by_seq_position
 
 
-EPS_START = 0.5
+EPS_START = 0.95
 EPS_END = 0.05
-EPS_DECAY = 50
+EPS_DECAY = 1000
 TAU = 0.01
-
 
 class DQNAgent:
     def __init__(self, n_observation=None, n_action=None, optimizer_dict=None, lr=1e-3, gamma=0.98, epsilon=1.0,
