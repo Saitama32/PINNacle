@@ -5,7 +5,14 @@ import torch
 # from .nncg import NNCG
 from .causal import CausalOptimizer
 from .pso import PSO
-from ..config import CAUSAL_options, LBFGS_options, NNCG_options, PSO_options
+from .soap import SOAP
+from ..config import (
+    CAUSAL_options,
+    LBFGS_options,
+    NNCG_options,
+    PSO_options,
+    SOAP_options,
+)
 
 
 # NOTE: edited
@@ -54,9 +61,24 @@ def _make_base_optimizer(params, optimizer, learning_rate=None, decay=None, weig
             raise ValueError("No learning rate for adam.")
         return torch.optim.Adam(params, lr=learning_rate, weight_decay=weight_decay)
 
+    if optimizer == "soap":
+        if learning_rate is None:
+            raise ValueError("No learning rate for soap.")
+        return SOAP(
+            params,
+            lr=learning_rate,
+            betas=(SOAP_options["beta1"], SOAP_options["beta2"]),
+            shampoo_beta=SOAP_options["shampoo_beta"],
+            eps=SOAP_options["epsilon"],
+            weight_decay=weight_decay,
+            precondition_frequency=SOAP_options["precondition_frequency"],
+            max_precondition_dim=SOAP_options["max_precondition_dim"],
+            bias_correction=SOAP_options["bias_correction"],
+        )
+
     raise NotImplementedError(
         f"Causal base optimizer {optimizer} is not supported. "
-        "Use one of: adam, L-BFGS, L-BFGS-B, PSO."
+        "Use one of: adam, soap, L-BFGS, L-BFGS-B, PSO."
     )
 
 
@@ -75,7 +97,7 @@ def get(params, optimizer, learning_rate=None, decay=None, weight_decay=0):
         ):
             raise ValueError(
                 "Causal cyclic_windows strategy does not support PSO yet. "
-                "Use adam, L-BFGS, or L-BFGS-B."
+                "Use adam, soap, L-BFGS, or L-BFGS-B."
             )
 
         base_optim = _make_base_optimizer(
@@ -139,6 +161,18 @@ def get(params, optimizer, learning_rate=None, decay=None, weight_decay=0):
             )
         elif optimizer == "adam":
             optim = torch.optim.Adam(params, lr=learning_rate, weight_decay=weight_decay)
+        elif optimizer == "soap":
+            optim = SOAP(
+                params,
+                lr=learning_rate,
+                betas=(SOAP_options["beta1"], SOAP_options["beta2"]),
+                shampoo_beta=SOAP_options["shampoo_beta"],
+                eps=SOAP_options["epsilon"],
+                weight_decay=weight_decay,
+                precondition_frequency=SOAP_options["precondition_frequency"],
+                max_precondition_dim=SOAP_options["max_precondition_dim"],
+                bias_correction=SOAP_options["bias_correction"],
+            )
         elif optimizer == "adamw":
             if weight_decay == 0:
                 raise ValueError("AdamW optimizer requires non-zero weight decay")

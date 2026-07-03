@@ -215,7 +215,7 @@ class CausalValidationCallback(Callback):
 def configure_causal_optimizer(args, pde):
     if args.base_optimizer == "PSO" and args.causal_strategy == "cyclic_windows":
         raise ValueError(
-            "cyclic_windows does not support PSO yet. Use adam, L-BFGS, or L-BFGS-B."
+            "cyclic_windows does not support PSO yet. Use adam, soap, L-BFGS, or L-BFGS-B."
         )
 
     x_state = None
@@ -260,6 +260,16 @@ def configure_causal_optimizer(args, pde):
         )
         dde.optimizers.LBFGS_options["iter_per_step"] = 10
         dde.optimizers.LBFGS_options["fun_per_step"] = None
+    elif args.base_optimizer == "soap":
+        dde.optimizers.set_SOAP_options(
+            beta1=args.soap_beta1,
+            beta2=args.soap_beta2,
+            shampoo_beta=args.soap_shampoo_beta,
+            epsilon=args.soap_epsilon,
+            precondition_frequency=args.soap_precondition_frequency,
+            max_precondition_dim=args.soap_max_precondition_dim,
+            bias_correction=args.soap_bias_correction,
+        )
 
 
 def make_callbacks(args):
@@ -349,8 +359,8 @@ def parse_args():
 
     parser.add_argument(
         "--base-optimizer",
-        choices=["adam", "L-BFGS", "L-BFGS-B", "PSO"],
-        default="adam",
+        choices=["adam", "soap", "L-BFGS", "L-BFGS-B", "PSO"],
+        default="soap",
     )
     parser.add_argument("--n-time-bins", type=int, default=20)
     parser.add_argument("--start-bins", type=int, default=1)
@@ -384,6 +394,19 @@ def parse_args():
     parser.add_argument("--pso-n-iter", type=int, default=2000)
 
     parser.add_argument("--lbfgs-lr", type=float, default=1)
+    parser.add_argument("--soap-beta1", type=float, default=0.99)
+    parser.add_argument("--soap-beta2", type=float, default=0.999)
+    parser.add_argument("--soap-shampoo-beta", type=float, default=None)
+    parser.add_argument("--soap-epsilon", type=float, default=1e-8)
+    parser.add_argument("--soap-precondition-frequency", type=int, default=10)
+    parser.add_argument("--soap-max-precondition-dim", type=int, default=4096)
+    parser.add_argument(
+        "--soap-bias-correction",
+        type=str2bool,
+        nargs="?",
+        const=True,
+        default=True,
+    )
     return parser.parse_args()
 
 

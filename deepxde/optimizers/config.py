@@ -2,6 +2,7 @@ __all__ = [
     "set_LBFGS_options",
     "set_NNCG_options",
     "set_PSO_options",
+    "set_SOAP_options",
     "set_CAUSAL_options",
     "set_hvd_opt_options",
 ]
@@ -12,6 +13,7 @@ from ..backend import backend_name
 LBFGS_options = {}
 NNCG_options = {}
 PSO_options = {}
+SOAP_options = {}
 CAUSAL_options = {}
 hvd = None
 if hvd is not None:
@@ -167,6 +169,39 @@ def set_PSO_options(
     PSO_options["n_iter"] = n_iter
 
 
+def set_SOAP_options(
+    beta1=0.99,
+    beta2=0.999,
+    shampoo_beta=None,
+    epsilon=1e-8,
+    precondition_frequency=10,
+    max_precondition_dim=4096,
+    bias_correction=True,
+):
+    """Sets the hyperparameters of SOAP optimizer.
+
+    The SOAP optimizer only supports PyTorch. In this implementation, matrix
+    preconditioning is applied to 2D tensors, while 1D tensors and scalars use
+    an AdamW-style fallback.
+
+    Args:
+        beta1 (float): Gradient momentum coefficient.
+        beta2 (float): Second-moment coefficient for AdamW fallback.
+        shampoo_beta (float): Matrix statistics coefficient. If ``None``, uses beta2.
+        epsilon (float): Numerical stability constant.
+        precondition_frequency (int): Matrix inverse-root update frequency.
+        max_precondition_dim (int): Maximum matrix side for preconditioning.
+        bias_correction (bool): Whether to apply Adam-style bias correction.
+    """
+    SOAP_options["beta1"] = beta1
+    SOAP_options["beta2"] = beta2
+    SOAP_options["shampoo_beta"] = beta2 if shampoo_beta is None else shampoo_beta
+    SOAP_options["epsilon"] = epsilon
+    SOAP_options["precondition_frequency"] = precondition_frequency
+    SOAP_options["max_precondition_dim"] = max_precondition_dim
+    SOAP_options["bias_correction"] = bias_correction
+
+
 def set_CAUSAL_options(
     base_optimizer="adam",
     n_time_bins=20,
@@ -187,7 +222,7 @@ def set_CAUSAL_options(
     """Sets the hyperparameters of causal optimizer wrapper.
 
     Args:
-        base_optimizer: One of "adam", "L-BFGS", "L-BFGS-B", "PSO".
+        base_optimizer: One of "adam", "soap", "L-BFGS", "L-BFGS-B", "PSO".
         n_time_bins: Number of temporal bins.
         start_bins: Number of initially active temporal bins.
         time_index: Column index of time in train_x. Usually -1.
@@ -256,6 +291,7 @@ def set_hvd_opt_options(
 set_LBFGS_options()
 set_NNCG_options()
 set_PSO_options()
+set_SOAP_options()
 set_CAUSAL_options()
 if hvd is not None:
     set_hvd_opt_options()
