@@ -3,6 +3,7 @@ __all__ = [
     "set_NNCG_options",
     "set_PSO_options",
     "set_SOAP_options",
+    "set_PCGRAD_options",
     "set_CAUSAL_options",
     "set_hvd_opt_options",
 ]
@@ -14,6 +15,7 @@ LBFGS_options = {}
 NNCG_options = {}
 PSO_options = {}
 SOAP_options = {}
+PCGRAD_options = {}
 CAUSAL_options = {}
 hvd = None
 if hvd is not None:
@@ -202,6 +204,16 @@ def set_SOAP_options(
     SOAP_options["bias_correction"] = bias_correction
 
 
+def set_PCGRAD_options(base_optimizer="adam"):
+    """Sets the hyperparameters of PCGrad optimizer wrapper.
+
+    Args:
+        base_optimizer (str): Wrapped optimizer. Currently only "adam" is used,
+            matching the public PCGrad example that wraps Adam.
+    """
+    PCGRAD_options["base_optimizer"] = base_optimizer
+
+
 def set_CAUSAL_options(
     base_optimizer="adam",
     n_time_bins=20,
@@ -292,6 +304,7 @@ set_LBFGS_options()
 set_NNCG_options()
 set_PSO_options()
 set_SOAP_options()
+set_PCGRAD_options()
 set_CAUSAL_options()
 if hvd is not None:
     set_hvd_opt_options()

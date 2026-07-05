@@ -4,12 +4,14 @@ import torch
 
 # from .nncg import NNCG
 from .causal import CausalOptimizer
+from .pcgrad import PCGrad
 from .pso import PSO
 from .soap import SOAP
 from ..config import (
     CAUSAL_options,
     LBFGS_options,
     NNCG_options,
+    PCGRAD_options,
     PSO_options,
     SOAP_options,
 )
@@ -172,6 +174,12 @@ def get(params, optimizer, learning_rate=None, decay=None, weight_decay=0):
                 precondition_frequency=SOAP_options["precondition_frequency"],
                 max_precondition_dim=SOAP_options["max_precondition_dim"],
                 bias_correction=SOAP_options["bias_correction"],
+            )
+        elif optimizer == "pcgrad":
+            if PCGRAD_options["base_optimizer"] != "adam":
+                raise NotImplementedError("PCGrad currently wraps only adam.")
+            optim = PCGrad(
+                torch.optim.Adam(params, lr=learning_rate, weight_decay=weight_decay)
             )
         elif optimizer == "adamw":
             if weight_decay == 0:

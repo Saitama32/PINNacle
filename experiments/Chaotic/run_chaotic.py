@@ -89,6 +89,10 @@ def configure_optimizer(args):
             max_precondition_dim=args.soap_max_precondition_dim,
             bias_correction=args.soap_bias_correction,
         )
+    elif args.optimizer == "pcgrad":
+        dde.optimizers.set_PCGRAD_options(
+            base_optimizer=args.pcgrad_base_optimizer,
+        )
 
 
 def make_callbacks(args):
@@ -162,8 +166,18 @@ def parse_args():
 
     parser.add_argument(
         "--optimizer",
-        choices=["adam", "soap", "L-BFGS", "L-BFGS-B", "PSO", "sgd", "rmsprop", "adamw"],
-        default="soap",
+        choices=[
+            "adam",
+            "pcgrad",
+            "soap",
+            "L-BFGS",
+            "L-BFGS-B",
+            "PSO",
+            "sgd",
+            "rmsprop",
+            "adamw",
+        ],
+        default="pcgrad",
     )
     parser.add_argument("--weight-decay", type=float, default=0.0)
 
@@ -180,6 +194,7 @@ def parse_args():
     parser.add_argument("--pso-n-iter", type=int, default=2000)
 
     parser.add_argument("--lbfgs-lr", type=float, default=1)
+    parser.add_argument("--pcgrad-base-optimizer", choices=["adam"], default="adam")
     parser.add_argument("--soap-beta1", type=float, default=0.99)
     parser.add_argument("--soap-beta2", type=float, default=0.999)
     parser.add_argument("--soap-shampoo-beta", type=float, default=None)
