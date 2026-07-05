@@ -153,7 +153,7 @@ def parse_args():
         default="kuramoto-sivashinsky",
     )
     parser.add_argument("--hidden-layers", type=str, default="100*5")
-    parser.add_argument("--iterations", type=int, default=10000)
+    parser.add_argument("--iterations", type=int, default=40000)
     parser.add_argument("--lr", type=float, default=5e-4)
     parser.add_argument("--seed", type=int, default=1234)
     parser.add_argument("--out", type=str, default="runs_plain")
