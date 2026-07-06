@@ -215,6 +215,14 @@ class SSBroyden(Optimizer):
             device=self._params[0].device,
         )
 
+    def _reset_hessian(self, state):
+        state["Hk"] = torch.eye(
+            self._numel(),
+            dtype=state["Hk"].dtype,
+            device=state["Hk"].device,
+        )
+        state["first_step"] = True
+
     def _numel(self):
         if self._numel_cache is None:
             self._numel_cache = sum(
@@ -335,6 +343,8 @@ class SSBroyden(Optimizer):
 
         prec_grad = state["Hk"] @ grad_k
         prec_grad = prec_grad.neg()
+        direction_norm = prec_grad.norm()
+        h_norm = state["Hk"].norm()
         gtd = grad_k.dot(prec_grad)
 
         loss, grad_kp1, alpha_k, ls_func_evals = _strong_wolfe(
@@ -349,13 +359,16 @@ class SSBroyden(Optimizer):
             or torch.any(torch.isinf(grad_kp1))
         ):
             orig_loss = closure()
+            self._reset_hessian(state)
             self._print_debug(
                 state,
-                status="line_search_invalid",
+                status="line_search_invalid_reset_hk",
                 loss=loss,
                 alpha_k=alpha_k,
                 gtd=gtd,
                 grad_max=grad_k.abs().max(),
+                direction_norm=direction_norm,
+                h_norm=h_norm,
             )
             return orig_loss
 
@@ -387,6 +400,8 @@ class SSBroyden(Optimizer):
                 yk_dot_sk=yk_dot_sk,
                 yk_dot_Hkyk=yk_dot_Hkyk,
                 grad_max=grad_k.abs().max(),
+                direction_norm=direction_norm,
+                h_norm=h_norm,
             )
             return orig_loss
 
@@ -428,9 +443,10 @@ class SSBroyden(Optimizer):
 
         if torch.any(torch.isnan(H_kp1)):
             orig_loss = closure()
+            self._reset_hessian(state)
             self._print_debug(
                 state,
-                status="h_update_nan",
+                status="h_update_nan_reset_hk",
                 loss=loss,
                 alpha_k=alpha_k,
                 gtd=gtd,
@@ -440,6 +456,8 @@ class SSBroyden(Optimizer):
                 theta_k=theta_k,
                 phi_k=phi_k,
                 grad_max=grad_k.abs().max(),
+                direction_norm=direction_norm,
+                h_norm=h_norm,
             )
             return orig_loss
 
@@ -458,6 +476,8 @@ class SSBroyden(Optimizer):
             theta_k=theta_k,
             phi_k=phi_k,
             grad_max=grad_k.abs().max(),
+            direction_norm=direction_norm,
+            h_norm=h_norm,
         )
         return orig_loss
 
@@ -490,6 +510,8 @@ class SSBroyden(Optimizer):
             "theta_k",
             "phi_k",
             "grad_max",
+            "direction_norm",
+            "h_norm",
         ):
             value = scalar(values.get(name))
             if value is not None:
