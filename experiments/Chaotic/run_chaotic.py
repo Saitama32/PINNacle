@@ -39,15 +39,15 @@ def str2bool(value):
     raise argparse.ArgumentTypeError(f"Invalid boolean value: {value}")
 
 
-def loss_weights_for(pde):
+def loss_weights_for(pde, bc_loss_weight):
     weights = np.ones(pde.num_loss, dtype=float)
     for i, config in enumerate(pde.loss_config):
         if config.get("type") in ("boundary", "initial", "ic"):
-            weights[i] = 100.0
+            weights[i] = bc_loss_weight
     return weights
 
 
-def build_model(equation_name, hidden_layers):
+def build_model(equation_name, hidden_layers, bc_loss_weight):
     pde = EQUATIONS[equation_name]()
     layers = [
         pde.input_dim,
@@ -55,7 +55,7 @@ def build_model(equation_name, hidden_layers):
         pde.output_dim,
     ]
     net = dde.nn.FNN(layers, "tanh", "Glorot normal").float()
-    return pde.create_model(net), loss_weights_for(pde)
+    return pde.create_model(net), loss_weights_for(pde, bc_loss_weight)
 
 
 def configure_optimizer(args):
@@ -97,6 +97,8 @@ def configure_optimizer(args):
         dde.optimizers.set_SSBROYDEN_options(
             lr=args.ssbroyden_lr,
             tolerance_grad=args.ssbroyden_tolerance_grad,
+            debug=args.ssbroyden_debug,
+            debug_every=args.ssbroyden_debug_every,
         )
 
 
@@ -119,7 +121,11 @@ def run_one(equation_name, args):
         torch.manual_seed(args.seed)
         np.random.seed(args.seed)
 
-    model, loss_weights = build_model(equation_name, args.hidden_layers)
+    model, loss_weights = build_model(
+        equation_name,
+        args.hidden_layers,
+        args.bc_loss_weight,
+    )
     if args.weight_decay > 0:
         model.net.regularizer = ("l2", args.weight_decay)
     configure_optimizer(args)
@@ -160,6 +166,7 @@ def parse_args():
     parser.add_argument("--hidden-layers", type=str, default="100*5")
     parser.add_argument("--iterations", type=int, default=4)
     parser.add_argument("--lr", type=float, default=5e-4)
+    parser.add_argument("--bc-loss-weight", type=float, default=100.0)
     parser.add_argument("--seed", type=int, default=1234)
     parser.add_argument("--out", type=str, default="runs_plain")
     parser.add_argument("--log-every", type=int, default=100)
@@ -204,6 +211,8 @@ def parse_args():
     parser.add_argument("--pcgrad-base-optimizer", choices=["adam"], default="adam")
     parser.add_argument("--ssbroyden-lr", type=float, default=1.0)
     parser.add_argument("--ssbroyden-tolerance-grad", type=float, default=1e-10)
+    parser.add_argument("--ssbroyden-debug", type=str2bool, nargs="?", const=True, default=True)
+    parser.add_argument("--ssbroyden-debug-every", type=int, default=100)
     parser.add_argument("--soap-beta1", type=float, default=0.99)
     parser.add_argument("--soap-beta2", type=float, default=0.999)
     parser.add_argument("--soap-shampoo-beta", type=float, default=None)

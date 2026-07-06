@@ -186,12 +186,14 @@ def get(params, optimizer, learning_rate=None, decay=None, weight_decay=0):
         elif optimizer in ["SSBroyden", "ssbroyden"]:
             if weight_decay > 0:
                 raise ValueError("SSBroyden optimizer doesn't support weight_decay > 0")
-            if learning_rate is not None or decay is not None:
-                print("Warning: learning rate is ignored for {}".format(optimizer))
+            if decay is not None:
+                print("Warning: learning rate scheduler is ignored for {}".format(optimizer))
             optim = SSBroyden(
                 params,
                 lr=SSBROYDEN_options["lr"],
                 tolerance_grad=SSBROYDEN_options["tolerance_grad"],
+                debug=SSBROYDEN_options["debug"],
+                debug_every=SSBROYDEN_options["debug_every"],
             )
         elif optimizer == "adamw":
             if weight_decay == 0:

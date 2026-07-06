@@ -164,6 +164,8 @@ class SSBroyden(Optimizer):
         params,
         lr: Union[float, Tensor] = 1.0,
         tolerance_grad: float = 1e-10,
+        debug: bool = False,
+        debug_every: int = 100,
     ):
         if isinstance(lr, Tensor):
             if lr.numel() != 1:
@@ -176,11 +178,15 @@ class SSBroyden(Optimizer):
             raise ValueError(f"Invalid learning rate: {lr}")
         if not 0.0 < tolerance_grad:
             raise ValueError(f"Invalid tolerance on gradient: {tolerance_grad}")
+        if debug_every < 1:
+            raise ValueError(f"Invalid debug_every value: {debug_every}")
 
         defaults = {
             "lr": lr,
             "tolerance_grad": tolerance_grad,
             "method": "ssbroyden",
+            "debug": debug,
+            "debug_every": debug_every,
         }
         super().__init__(params, defaults)
         if len(self.param_groups) != 1:
@@ -407,4 +413,36 @@ class SSBroyden(Optimizer):
         state["Hk"] = H_kp1
         state["first_step"] = False
         state["k"] += 1
+        self._print_debug(
+            state,
+            alpha_k=alpha_k,
+            gtd=gtd,
+            yk_dot_sk=yk_dot_sk,
+            tau_k=tau_k,
+            theta_k=theta_k,
+            phi_k=phi_k,
+        )
         return orig_loss
+
+    def _print_debug(self, state, *, alpha_k, gtd, yk_dot_sk, tau_k, theta_k, phi_k):
+        group = self.param_groups[0]
+        if not group["debug"]:
+            return
+        if state["k"] % group["debug_every"] != 0:
+            return
+
+        def scalar(value):
+            if isinstance(value, torch.Tensor):
+                return float(value.detach().cpu())
+            return float(value)
+
+        print(
+            "[SSBroyden debug] "
+            f"step={state['k']} "
+            f"alpha_k={scalar(alpha_k):.6e} "
+            f"gtd={scalar(gtd):.6e} "
+            f"yk_dot_sk={scalar(yk_dot_sk):.6e} "
+            f"tau_k={scalar(tau_k):.6e} "
+            f"theta_k={scalar(theta_k):.6e} "
+            f"phi_k={scalar(phi_k):.6e}"
+        )

@@ -216,7 +216,12 @@ def set_PCGRAD_options(base_optimizer="adam"):
     PCGRAD_options["base_optimizer"] = base_optimizer
 
 
-def set_SSBROYDEN_options(lr=1.0, tolerance_grad=1e-10):
+def set_SSBROYDEN_options(
+    lr=1.0,
+    tolerance_grad=1e-10,
+    debug=False,
+    debug_every=100,
+):
     """Sets the hyperparameters of SSBroyden optimizer.
 
     The SSBroyden optimizer only supports PyTorch.
@@ -224,9 +229,13 @@ def set_SSBROYDEN_options(lr=1.0, tolerance_grad=1e-10):
     Args:
         lr (float): Initial line-search step.
         tolerance_grad (float): First-order optimality tolerance.
+        debug (bool): Whether to print SSBroyden step diagnostics.
+        debug_every (int): Print diagnostics every this many optimizer steps.
     """
     SSBROYDEN_options["lr"] = lr
     SSBROYDEN_options["tolerance_grad"] = tolerance_grad
+    SSBROYDEN_options["debug"] = debug
+    SSBROYDEN_options["debug_every"] = debug_every
 
 
 def set_CAUSAL_options(
