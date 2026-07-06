@@ -7,12 +7,14 @@ from .causal import CausalOptimizer
 from .pcgrad import PCGrad
 from .pso import PSO
 from .soap import SOAP
+from .ssbroyden import SSBroyden
 from ..config import (
     CAUSAL_options,
     LBFGS_options,
     NNCG_options,
     PCGRAD_options,
     PSO_options,
+    SSBROYDEN_options,
     SOAP_options,
 )
 
@@ -180,6 +182,16 @@ def get(params, optimizer, learning_rate=None, decay=None, weight_decay=0):
                 raise NotImplementedError("PCGrad currently wraps only adam.")
             optim = PCGrad(
                 torch.optim.Adam(params, lr=learning_rate, weight_decay=weight_decay)
+            )
+        elif optimizer in ["SSBroyden", "ssbroyden"]:
+            if weight_decay > 0:
+                raise ValueError("SSBroyden optimizer doesn't support weight_decay > 0")
+            if learning_rate is not None or decay is not None:
+                print("Warning: learning rate is ignored for {}".format(optimizer))
+            optim = SSBroyden(
+                params,
+                lr=SSBROYDEN_options["lr"],
+                tolerance_grad=SSBROYDEN_options["tolerance_grad"],
             )
         elif optimizer == "adamw":
             if weight_decay == 0:

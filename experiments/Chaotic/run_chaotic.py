@@ -93,6 +93,11 @@ def configure_optimizer(args):
         dde.optimizers.set_PCGRAD_options(
             base_optimizer=args.pcgrad_base_optimizer,
         )
+    elif args.optimizer in {"SSBroyden", "ssbroyden"}:
+        dde.optimizers.set_SSBROYDEN_options(
+            lr=args.ssbroyden_lr,
+            tolerance_grad=args.ssbroyden_tolerance_grad,
+        )
 
 
 def make_callbacks(args):
@@ -153,7 +158,7 @@ def parse_args():
         default="kuramoto-sivashinsky",
     )
     parser.add_argument("--hidden-layers", type=str, default="100*5")
-    parser.add_argument("--iterations", type=int, default=40000)
+    parser.add_argument("--iterations", type=int, default=4)
     parser.add_argument("--lr", type=float, default=5e-4)
     parser.add_argument("--seed", type=int, default=1234)
     parser.add_argument("--out", type=str, default="runs_plain")
@@ -176,8 +181,10 @@ def parse_args():
             "sgd",
             "rmsprop",
             "adamw",
+            "SSBroyden",
+            "ssbroyden",
         ],
-        default="pcgrad",
+        default="ssbroyden",
     )
     parser.add_argument("--weight-decay", type=float, default=0.0)
 
@@ -195,6 +202,8 @@ def parse_args():
 
     parser.add_argument("--lbfgs-lr", type=float, default=1)
     parser.add_argument("--pcgrad-base-optimizer", choices=["adam"], default="adam")
+    parser.add_argument("--ssbroyden-lr", type=float, default=1.0)
+    parser.add_argument("--ssbroyden-tolerance-grad", type=float, default=1e-10)
     parser.add_argument("--soap-beta1", type=float, default=0.99)
     parser.add_argument("--soap-beta2", type=float, default=0.999)
     parser.add_argument("--soap-shampoo-beta", type=float, default=None)

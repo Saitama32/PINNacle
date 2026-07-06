@@ -4,6 +4,7 @@ __all__ = [
     "set_PSO_options",
     "set_SOAP_options",
     "set_PCGRAD_options",
+    "set_SSBROYDEN_options",
     "set_CAUSAL_options",
     "set_hvd_opt_options",
 ]
@@ -16,6 +17,7 @@ NNCG_options = {}
 PSO_options = {}
 SOAP_options = {}
 PCGRAD_options = {}
+SSBROYDEN_options = {}
 CAUSAL_options = {}
 hvd = None
 if hvd is not None:
@@ -214,6 +216,19 @@ def set_PCGRAD_options(base_optimizer="adam"):
     PCGRAD_options["base_optimizer"] = base_optimizer
 
 
+def set_SSBROYDEN_options(lr=1.0, tolerance_grad=1e-10):
+    """Sets the hyperparameters of SSBroyden optimizer.
+
+    The SSBroyden optimizer only supports PyTorch.
+
+    Args:
+        lr (float): Initial line-search step.
+        tolerance_grad (float): First-order optimality tolerance.
+    """
+    SSBROYDEN_options["lr"] = lr
+    SSBROYDEN_options["tolerance_grad"] = tolerance_grad
+
+
 def set_CAUSAL_options(
     base_optimizer="adam",
     n_time_bins=20,
@@ -305,6 +320,7 @@ set_NNCG_options()
 set_PSO_options()
 set_SOAP_options()
 set_PCGRAD_options()
+set_SSBROYDEN_options()
 set_CAUSAL_options()
 if hvd is not None:
     set_hvd_opt_options()

@@ -13,6 +13,8 @@ from .config import (
     set_SOAP_options,
     PCGRAD_options,
     set_PCGRAD_options,
+    SSBROYDEN_options,
+    set_SSBROYDEN_options,
     CAUSAL_options,
     set_CAUSAL_options,
 )
