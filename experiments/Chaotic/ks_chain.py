@@ -68,7 +68,7 @@ def main():
     parser.add_argument("--device", type=str, default="0")
     parser.add_argument("--seed", type=int, default=1234)
 
-    parser.add_argument("--hidden-layers", type=str, default="100*5")
+    parser.add_argument("--hidden-layers", type=str, default="50*5")
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--log-every", type=int, default=100)
     parser.add_argument("--plot-every", type=int, default=2000)
@@ -106,21 +106,21 @@ def main():
         "bnd_coeff": 1,
     }
     optimizers = {
-        "Adam": {
-            "lr": [1e-2, 1e-3, 1e-4],
-            "epochs": [100, 1000, 2500],
-        },
-        "LBFGS": {
-            "lr": [1, 5e-1, 1e-1],
-            "epochs": [100, 500, 1500],
-        },
         "PSO": {
             "lr": [0.0, 1e-3, 1e-4],
             "epochs": [100, 200, 300],
         },
-                "SOAP": {
+        "SOAP": {
             "lr": [1e-3, 3e-4, 3e-5],
             "epochs": [100, 1000, 2500],
+        },
+        "PCGrad": {
+            "lr": [1e-2, 1e-3, 1e-4],
+            "epochs": [100, 1000, 2000],
+        },
+        "SSBroyden": {
+            "lr": [1.0, 5e-1, 1e-1],
+            "epochs": [100, 500, 1000],
         },
     }
 
