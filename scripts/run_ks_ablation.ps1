@@ -84,5 +84,6 @@ Run-Experiment "E8_all_windows" @(
     "--resample-collocation",
     "--resample-every", "1",
     "--use-windows",
+    "--window-model-mode", "new_model",
     "--num-windows", "10"
 )

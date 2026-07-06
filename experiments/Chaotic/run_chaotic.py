@@ -71,8 +71,7 @@ def build_state_grid(pde, state_grid_size):
     return np.stack([axis.reshape(-1) for axis in mesh], axis=1).astype(np.float32)
 
 
-def build_model(equation_name, args):
-    pde = EQUATIONS[equation_name]()
+def build_model_from_pde(pde, args):
     feature_encoder = None
     input_dim = pde.input_dim
     if args.use_fourier_features:
@@ -99,9 +98,34 @@ def build_model(equation_name, args):
     return pde.create_model(net), loss_weights_for(pde, args.bc_loss_weight)
 
 
+def build_model(equation_name, args):
+    return build_model_from_pde(EQUATIONS[equation_name](), args)
+
+
+def make_window_initial_state(x):
+    return np.cos(x) * (1.0 + np.sin(x))
+
+
+def build_window_ks_pde(window_length, x_state, y_state):
+    base = KuramotoSivashinskyEquation(bbox=[0, 2 * np.pi, 0, window_length])
+    x_ic = np.hstack(
+        [
+            x_state.reshape(-1, 1).astype(np.float32),
+            np.zeros((x_state.size, 1), dtype=np.float32),
+        ]
+    )
+    y_ic = y_state.reshape(-1, 1).astype(np.float32)
+    base.bcs = [dde.PointSetBC(x_ic, y_ic, component=0)]
+    base.loss_config = base.loss_config[: base.num_pde] + [
+        {"name": "window_ic", "type": "boundary"}
+    ]
+    return base
+
+
 def configure_optimizer(args):
-    optimizer = "Causal" if args.use_windows else args.optimizer
-    if args.use_windows:
+    wrap_windows = args.use_windows and args.window_model_mode == "reuse_model"
+    optimizer = "Causal" if wrap_windows else args.optimizer
+    if wrap_windows:
         supported = {"adam", "soap", "L-BFGS", "L-BFGS-B", "PSO"}
         if args.optimizer not in supported:
             raise ValueError(
@@ -197,13 +221,29 @@ def make_callbacks(args):
     return callbacks
 
 
-def run_one(equation_name, args):
-    if args.seed is not None:
-        dde.config.set_random_seed(args.seed)
-        torch.manual_seed(args.seed)
-        np.random.seed(args.seed)
+def make_window_callbacks(args):
+    callbacks = []
+    if not args.no_callbacks:
+        callbacks.append(LossCallback(verbose=args.loss_verbose))
+        if args.use_causal_loss:
+            callbacks.append(
+                CausalDiagnosticsCallback(
+                    log_every=args.log_every,
+                    verbose=args.causal_diagnostics_verbose,
+                )
+            )
+    if args.resample_collocation:
+        callbacks.append(
+            dde.callbacks.PDEPointResampler(
+                period=args.resample_every,
+                pde_points=True,
+                bc_points=False,
+            )
+        )
+    return callbacks or None
 
-    model, loss_weights = build_model(equation_name, args)
+
+def apply_causal_loss_options(model, args):
     if args.use_causal_loss:
         model.causal_loss_options = {
             "enabled": True,
@@ -213,9 +253,95 @@ def run_one(equation_name, args):
             "include_ic_in_weights": args.causal_include_ic,
             "ic_weight_in_causal": args.causal_ic_weight,
         }
+
+
+def run_ks_new_model_windows(args):
+    if args.seed is not None:
+        dde.config.set_random_seed(args.seed)
+        torch.manual_seed(args.seed)
+        np.random.seed(args.seed)
+
+    reference_pde = KuramotoSivashinskyEquation()
+    t_min, t_max = reference_pde.bbox[2], reference_pde.bbox[3]
+    window_length = (t_max - t_min) / args.num_windows
+    x_state = np.linspace(
+        reference_pde.bbox[0],
+        reference_pde.bbox[1],
+        args.window_state_grid_size,
+        dtype=np.float32,
+    )
+    y_state = make_window_initial_state(x_state).astype(np.float32)
+
+    timestamp = time.strftime("%m.%d-%H.%M.%S", time.localtime())
+    run_name = args.name or "ks_new_model_windows"
+    base_save_path = os.path.join(args.out, f"{timestamp}-{run_name}")
+    os.makedirs(base_save_path, exist_ok=True)
+
+    np.savetxt(
+        os.path.join(base_save_path, "window_state_x.txt"),
+        x_state.reshape(-1, 1),
+        header="x coordinates used to pass predicted ICs between window models",
+    )
+
+    for window_idx in range(args.num_windows):
+        print(
+            f"Training KS window {window_idx + 1}/{args.num_windows} "
+            f"with a fresh neural network."
+        )
+        pde = build_window_ks_pde(window_length, x_state, y_state)
+        model, loss_weights = build_model_from_pde(pde, args)
+        apply_causal_loss_options(model, args)
+        if args.weight_decay > 0:
+            model.net.regularizer = ("l2", args.weight_decay)
+
+        optimizer = configure_optimizer(args)
+        model.compile(optimizer, lr=args.lr, loss_weights=loss_weights)
+
+        window_save_path = os.path.join(
+            base_save_path,
+            f"window_{window_idx + 1:03d}_t_{t_min + window_idx * window_length:.6f}_"
+            f"{t_min + (window_idx + 1) * window_length:.6f}",
+        )
+        os.makedirs(window_save_path, exist_ok=True)
+        model.train(
+            iterations=args.iterations,
+            display_every=args.log_every,
+            callbacks=make_window_callbacks(args),
+            model_save_path=window_save_path,
+            save_model=args.save_model,
+        )
+
+        x_right = np.hstack(
+            [
+                x_state.reshape(-1, 1),
+                np.full((x_state.size, 1), window_length, dtype=np.float32),
+            ]
+        )
+        y_state = model.predict(x_right).reshape(-1, 1).astype(np.float32)
+        np.savetxt(
+            os.path.join(base_save_path, f"window_{window_idx + 1:03d}_right_state.txt"),
+            np.hstack([x_state.reshape(-1, 1), y_state]),
+            header="x, predicted_u_at_right_window_boundary",
+        )
+
+
+def run_one(equation_name, args):
+    if args.use_windows and args.window_model_mode == "new_model":
+        if equation_name not in {"ks", "kuramoto-sivashinsky"}:
+            raise ValueError("--window-model-mode new_model is implemented only for KS.")
+        run_ks_new_model_windows(args)
+        return None, None
+
+    if args.seed is not None:
+        dde.config.set_random_seed(args.seed)
+        torch.manual_seed(args.seed)
+        np.random.seed(args.seed)
+
+    model, loss_weights = build_model(equation_name, args)
+    apply_causal_loss_options(model, args)
     if args.weight_decay > 0:
         model.net.regularizer = ("l2", args.weight_decay)
-    if args.use_windows:
+    if args.use_windows and args.window_model_mode == "reuse_model":
         args.window_x_state = build_state_grid(model.pde, args.window_state_grid_size)
     else:
         args.window_x_state = None
@@ -292,6 +418,11 @@ def parse_args():
 
     parser.add_argument("--use-windows", action="store_true")
     parser.add_argument("--num-windows", type=int, default=1)
+    parser.add_argument(
+        "--window-model-mode",
+        choices=["reuse_model", "new_model"],
+        default="reuse_model",
+    )
     parser.add_argument("--window-steps-per-window", type=int, default=200)
     parser.add_argument("--window-state-grid-size", type=int, default=128)
     parser.add_argument("--window-ic-weight", type=float, default=100.0)
