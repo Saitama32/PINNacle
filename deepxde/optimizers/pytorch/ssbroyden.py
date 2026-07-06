@@ -222,6 +222,7 @@ class SSBroyden(Optimizer):
             device=state["Hk"].device,
         )
         state["first_step"] = True
+        state["h_updates"] = 0
 
     def _numel(self):
         if self._numel_cache is None:
@@ -347,9 +348,17 @@ class SSBroyden(Optimizer):
         h_norm = state["Hk"].norm()
         gtd = grad_k.dot(prec_grad)
 
+        if gtd >= 0 or torch.isnan(gtd) or torch.isinf(gtd):
+            self._reset_hessian(state)
+            prec_grad = grad_k.neg()
+            direction_norm = prec_grad.norm()
+            h_norm = state["Hk"].norm()
+            gtd = grad_k.dot(prec_grad)
+
         loss, grad_kp1, alpha_k, ls_func_evals = _strong_wolfe(
             obj_func, x_init, lr, prec_grad, loss, grad_k, gtd
         )
+
         if (
             math.isnan(loss)
             or math.isinf(loss)
@@ -363,6 +372,27 @@ class SSBroyden(Optimizer):
             self._print_debug(
                 state,
                 status="line_search_invalid_reset_hk",
+                loss=loss,
+                alpha_k=alpha_k,
+                gtd=gtd,
+                grad_max=grad_k.abs().max(),
+                direction_norm=direction_norm,
+                h_norm=h_norm,
+            )
+            return orig_loss
+
+        min_alpha = torch.tensor(
+            1e-12,
+            dtype=alpha_k.dtype,
+            device=alpha_k.device,
+        )
+
+        if alpha_k <= min_alpha:
+            orig_loss = closure()
+            self._reset_hessian(state)
+            self._print_debug(
+                state,
+                status="line_search_zero_alpha_reset_hk",
                 loss=loss,
                 alpha_k=alpha_k,
                 gtd=gtd,
@@ -390,10 +420,11 @@ class SSBroyden(Optimizer):
             or torch.isinf(yk_dot_sk)
             or torch.isinf(yk_dot_Hkyk)
         ):
-            state["first_step"] = False
+            orig_loss = closure()
+            self._reset_hessian(state)
             self._print_debug(
                 state,
-                status="bad_curvature",
+                status="bad_curvature_reset_hk",
                 loss=loss,
                 alpha_k=alpha_k,
                 gtd=gtd,
