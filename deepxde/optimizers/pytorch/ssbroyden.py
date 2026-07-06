@@ -156,6 +156,9 @@ def _strong_wolfe(
 class SSBroyden(Optimizer):
     """Implements the self-scaled Broyden algorithm."""
 
+    _INIT_MATRIX_MULTIPLIER = 1
+    _UPDATE_MATRIX_MULTIPLIER = 6
+
     def __init__(
         self,
         params,
@@ -189,6 +192,13 @@ class SSBroyden(Optimizer):
         self._params = self.param_groups[0]["params"]
         self._numel_cache = None
         nbparams = self._numel()
+        self._check_cuda_dense_memory(
+            nbparams,
+            self._params[0].dtype,
+            self._params[0].device,
+            self._INIT_MATRIX_MULTIPLIER,
+            "initializing Hk",
+        )
         state = self.state[self._params[0]]
         state["k"] = 0
         state["Hk"] = torch.eye(
@@ -204,6 +214,41 @@ class SSBroyden(Optimizer):
                 for p in self._params
             )
         return self._numel_cache
+
+    @staticmethod
+    def _format_bytes(num_bytes):
+        units = ["B", "KiB", "MiB", "GiB", "TiB"]
+        value = float(num_bytes)
+        for unit in units:
+            if abs(value) < 1024.0 or unit == units[-1]:
+                return f"{value:.2f} {unit}"
+            value /= 1024.0
+
+    @classmethod
+    def _dense_matrix_bytes(cls, num_params, dtype):
+        element_size = torch.empty((), dtype=dtype).element_size()
+        return int(num_params) * int(num_params) * element_size
+
+    @classmethod
+    def _check_cuda_dense_memory(cls, num_params, dtype, device, matrix_multiplier, stage):
+        if device.type != "cuda":
+            return
+
+        one_matrix = cls._dense_matrix_bytes(num_params, dtype)
+        required = matrix_multiplier * one_matrix
+        free, total = torch.cuda.mem_get_info(device)
+        if required <= free:
+            return
+
+        raise RuntimeError(
+            "SSBroyden requires dense O(n_params^2) memory and cannot safely "
+            f"continue while {stage}. "
+            f"num_params={num_params}; one dense matrix="
+            f"{cls._format_bytes(one_matrix)}; estimated peak for this stage="
+            f"{cls._format_bytes(required)}; CUDA free={cls._format_bytes(free)}; "
+            f"CUDA total={cls._format_bytes(total)}. Reduce --hidden-layers or use "
+            "a first-order optimizer for this model size."
+        )
 
     def _gather_flat_grad(self):
         views = []
@@ -313,7 +358,7 @@ class SSBroyden(Optimizer):
         b_k = -alpha_k * (s_k @ grad_k) / yk_dot_sk
         h_k = yk_dot_Hkyk / yk_dot_sk
         a_k = h_k * b_k - 1.0
-        c_k = torch.sqrt(a_k / (a_k + 1.0))
+        c_k = torch.sqrt(torch.abs(a_k) / (a_k + 1.0))
         rhom_k = min(1.0, h_k * (1 - c_k))
         thetam_k = (rhom_k - 1) / a_k
         thetap_k = 1.0 / rhom_k
@@ -327,6 +372,13 @@ class SSBroyden(Optimizer):
             tau_k = min(tau_k * sigma_k_pow, sigma_k)
         phi_k = (1 - theta_k) / (1.0 + a_k * theta_k)
 
+        self._check_cuda_dense_memory(
+            self._numel(),
+            state["Hk"].dtype,
+            state["Hk"].device,
+            self._UPDATE_MATRIX_MULTIPLIER,
+            "updating Hk",
+        )
         temp1 = (Hkyk[:, None] @ Hkyk[None, :]) / yk_dot_Hkyk
         temp2 = phi_k * (v_k[:, None] @ v_k[None, :])
         temp3 = (s_k[:, None] @ s_k[None, :]) / yk_dot_sk
