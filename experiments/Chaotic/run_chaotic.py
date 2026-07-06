@@ -43,7 +43,7 @@ def loss_weights_for(pde):
     weights = np.ones(pde.num_loss, dtype=float)
     for i, config in enumerate(pde.loss_config):
         if config.get("type") in ("boundary", "initial", "ic"):
-            weights[i] = 10000.0
+            weights[i] = 100.0
     return weights
 
 
