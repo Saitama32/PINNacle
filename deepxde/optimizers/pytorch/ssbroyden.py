@@ -201,6 +201,7 @@ class SSBroyden(Optimizer):
         )
         state = self.state[self._params[0]]
         state["k"] = 0
+        state["first_step"] = True
         state["Hk"] = torch.eye(
             nbparams,
             dtype=self._params[0].dtype,
@@ -350,9 +351,20 @@ class SSBroyden(Optimizer):
         Hkyk = state["Hk"] @ y_k
         yk_dot_Hkyk = y_k @ Hkyk
         yk_dot_sk = y_k @ s_k
+        eps = torch.finfo(yk_dot_sk.dtype).eps
+        if (
+            yk_dot_sk <= eps
+            or yk_dot_Hkyk <= eps
+            or torch.isnan(yk_dot_sk)
+            or torch.isnan(yk_dot_Hkyk)
+            or torch.isinf(yk_dot_sk)
+            or torch.isinf(yk_dot_Hkyk)
+        ):
+            state["first_step"] = False
+            state["k"] += 1
+            return orig_loss
 
         v_k = torch.sqrt(yk_dot_Hkyk) * (s_k / (yk_dot_sk) - Hkyk / yk_dot_Hkyk)
-        tau_k = min(1.0, -yk_dot_sk / (alpha_k * (s_k @ grad_k)))
         phi_k = 1.0
 
         b_k = -alpha_k * (s_k @ grad_k) / yk_dot_sk
@@ -365,11 +377,15 @@ class SSBroyden(Optimizer):
         theta_k = max(thetam_k, min(thetap_k, (1.0 - b_k) / b_k))
         sigma_k = 1 + a_k * theta_k
         n = self._numel()
-        sigma_k_pow = sigma_k ** (-1 / (n - 1))
-        if theta_k > 0:
-            tau_k = tau_k * min(sigma_k_pow, 1.0 / theta_k)
+        if state.get("first_step", False):
+            tau_k = h_k / (1.0 + a_k * theta_k)
         else:
-            tau_k = min(tau_k * sigma_k_pow, sigma_k)
+            rhok_k = min(1.0, 1.0 / b_k)
+            sigma_k_pow = torch.abs(sigma_k) ** (1.0 / (1.0 - n))
+            if theta_k <= 0:
+                tau_k = min(rhok_k * sigma_k_pow, sigma_k)
+            else:
+                tau_k = rhok_k * min(sigma_k_pow, 1.0 / theta_k)
         phi_k = (1 - theta_k) / (1.0 + a_k * theta_k)
 
         self._check_cuda_dense_memory(
@@ -389,5 +405,6 @@ class SSBroyden(Optimizer):
             return orig_loss
 
         state["Hk"] = H_kp1
+        state["first_step"] = False
         state["k"] += 1
         return orig_loss
