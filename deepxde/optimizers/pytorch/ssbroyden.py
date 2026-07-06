@@ -207,6 +207,7 @@ class SSBroyden(Optimizer):
         )
         state = self.state[self._params[0]]
         state["k"] = 0
+        state["h_updates"] = 0
         state["first_step"] = True
         state["Hk"] = torch.eye(
             nbparams,
@@ -317,6 +318,7 @@ class SSBroyden(Optimizer):
         tolerance_grad = group["tolerance_grad"]
 
         state = self.state[self._params[0]]
+        state["k"] += 1
         x_init = self._clone_param()
         theta_k = self._flatten(x_init)
 
@@ -328,6 +330,7 @@ class SSBroyden(Optimizer):
         grad_k = self._gather_flat_grad()
         opt_cond = grad_k.abs().max() <= tolerance_grad
         if opt_cond:
+            self._print_debug(state, status="optimality", loss=loss, grad_max=grad_k.abs().max())
             return orig_loss
 
         prec_grad = state["Hk"] @ grad_k
@@ -346,6 +349,14 @@ class SSBroyden(Optimizer):
             or torch.any(torch.isinf(grad_kp1))
         ):
             orig_loss = closure()
+            self._print_debug(
+                state,
+                status="line_search_invalid",
+                loss=loss,
+                alpha_k=alpha_k,
+                gtd=gtd,
+                grad_max=grad_k.abs().max(),
+            )
             return orig_loss
 
         self._add_grad(alpha_k, prec_grad)
@@ -367,7 +378,16 @@ class SSBroyden(Optimizer):
             or torch.isinf(yk_dot_Hkyk)
         ):
             state["first_step"] = False
-            state["k"] += 1
+            self._print_debug(
+                state,
+                status="bad_curvature",
+                loss=loss,
+                alpha_k=alpha_k,
+                gtd=gtd,
+                yk_dot_sk=yk_dot_sk,
+                yk_dot_Hkyk=yk_dot_Hkyk,
+                grad_max=grad_k.abs().max(),
+            )
             return orig_loss
 
         v_k = torch.sqrt(yk_dot_Hkyk) * (s_k / (yk_dot_sk) - Hkyk / yk_dot_Hkyk)
@@ -408,23 +428,40 @@ class SSBroyden(Optimizer):
 
         if torch.any(torch.isnan(H_kp1)):
             orig_loss = closure()
+            self._print_debug(
+                state,
+                status="h_update_nan",
+                loss=loss,
+                alpha_k=alpha_k,
+                gtd=gtd,
+                yk_dot_sk=yk_dot_sk,
+                yk_dot_Hkyk=yk_dot_Hkyk,
+                tau_k=tau_k,
+                theta_k=theta_k,
+                phi_k=phi_k,
+                grad_max=grad_k.abs().max(),
+            )
             return orig_loss
 
         state["Hk"] = H_kp1
         state["first_step"] = False
-        state["k"] += 1
+        state["h_updates"] += 1
         self._print_debug(
             state,
+            status="updated",
+            loss=loss,
             alpha_k=alpha_k,
             gtd=gtd,
             yk_dot_sk=yk_dot_sk,
+            yk_dot_Hkyk=yk_dot_Hkyk,
             tau_k=tau_k,
             theta_k=theta_k,
             phi_k=phi_k,
+            grad_max=grad_k.abs().max(),
         )
         return orig_loss
 
-    def _print_debug(self, state, *, alpha_k, gtd, yk_dot_sk, tau_k, theta_k, phi_k):
+    def _print_debug(self, state, status, **values):
         group = self.param_groups[0]
         if not group["debug"]:
             return
@@ -432,17 +469,30 @@ class SSBroyden(Optimizer):
             return
 
         def scalar(value):
+            if value is None:
+                return None
             if isinstance(value, torch.Tensor):
                 return float(value.detach().cpu())
             return float(value)
 
-        print(
-            "[SSBroyden debug] "
-            f"step={state['k']} "
-            f"alpha_k={scalar(alpha_k):.6e} "
-            f"gtd={scalar(gtd):.6e} "
-            f"yk_dot_sk={scalar(yk_dot_sk):.6e} "
-            f"tau_k={scalar(tau_k):.6e} "
-            f"theta_k={scalar(theta_k):.6e} "
-            f"phi_k={scalar(phi_k):.6e}"
-        )
+        fields = [
+            f"step={state['k']}",
+            f"h_updates={state['h_updates']}",
+            f"status={status}",
+        ]
+        for name in (
+            "loss",
+            "alpha_k",
+            "gtd",
+            "yk_dot_sk",
+            "yk_dot_Hkyk",
+            "tau_k",
+            "theta_k",
+            "phi_k",
+            "grad_max",
+        ):
+            value = scalar(values.get(name))
+            if value is not None:
+                fields.append(f"{name}={value:.6e}")
+
+        print("[SSBroyden debug] " + " ".join(fields))
