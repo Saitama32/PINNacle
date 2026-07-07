@@ -72,6 +72,15 @@ def configure_optimizer(args):
             epsilon=args.pso_epsilon,
             n_iter=args.pso_n_iter,
         )
+    elif args.optimizer == "ZOCGE":
+        dde.optimizers.set_ZOCGE_options(
+            mu=args.zo_step_size,
+            sparsity=args.zo_sparsity,
+            prune_method=args.zo_prune_method,
+            remask_interval=args.zo_remask_interval,
+            feature_reuse=args.zo_feature_reuse,
+            grasp_sample_size=args.zo_grasp_sample_size,
+        )
     elif args.optimizer in {"L-BFGS", "L-BFGS-B"}:
         dde.optimizers.set_LBFGS_options(
             lr=args.lbfgs_lr,
@@ -163,13 +172,13 @@ def parse_args():
         choices=["gs", "grayscott", "gray-scott", "ks", "kuramoto-sivashinsky", "both"],
         default="kuramoto-sivashinsky",
     )
-    parser.add_argument("--hidden-layers", type=str, default="100*5")
-    parser.add_argument("--iterations", type=int, default=4)
+    parser.add_argument("--hidden-layers", type=str, default="50*5")
+    parser.add_argument("--iterations", type=int, default=100)
     parser.add_argument("--lr", type=float, default=5e-4)
     parser.add_argument("--bc-loss-weight", type=float, default=100.0)
     parser.add_argument("--seed", type=int, default=1234)
     parser.add_argument("--out", type=str, default="runs_plain")
-    parser.add_argument("--log-every", type=int, default=100)
+    parser.add_argument("--log-every", type=int, default=10)
     parser.add_argument("--plot-every", type=int, default=0)
     parser.add_argument("--fast-plot", type=str2bool, nargs="?", const=True, default=True)
     parser.add_argument("--loss-verbose", type=str2bool, nargs="?", const=True, default=True)
@@ -185,13 +194,14 @@ def parse_args():
             "L-BFGS",
             "L-BFGS-B",
             "PSO",
+            "ZOCGE",
             "sgd",
             "rmsprop",
             "adamw",
             "SSBroyden",
             "ssbroyden",
         ],
-        default="ssbroyden",
+        default="ZOCGE",
     )
     parser.add_argument("--weight-decay", type=float, default=0.0)
 
@@ -206,6 +216,16 @@ def parse_args():
     parser.add_argument("--pso-variance", type=float, default=1.0)
     parser.add_argument("--pso-epsilon", type=float, default=1e-8)
     parser.add_argument("--pso-n-iter", type=int, default=2000)
+    parser.add_argument("--zo-step-size", type=float, default=1e-3)
+    parser.add_argument("--zo-sparsity", type=float, default=0.9)
+    parser.add_argument(
+        "--zo-prune-method",
+        choices=["random", "zo_grasp"],
+        default="zo_grasp",
+    )
+    parser.add_argument("--zo-remask-interval", type=int, default=10)
+    parser.add_argument("--zo-feature-reuse", type=str2bool, nargs="?", const=True, default=True)
+    parser.add_argument("--zo-grasp-sample-size", type=int, default=32)
 
     parser.add_argument("--lbfgs-lr", type=float, default=1)
     parser.add_argument("--pcgrad-base-optimizer", choices=["adam"], default="adam")

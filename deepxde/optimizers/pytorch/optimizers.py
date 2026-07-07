@@ -8,6 +8,7 @@ from .pcgrad import PCGrad
 from .pso import PSO
 from .soap import SOAP
 from .ssbroyden import SSBroyden
+from .zo_cge import ZOCGE
 from ..config import (
     CAUSAL_options,
     LBFGS_options,
@@ -16,6 +17,7 @@ from ..config import (
     PSO_options,
     SSBROYDEN_options,
     SOAP_options,
+    ZOCGE_options,
 )
 
 
@@ -58,6 +60,21 @@ def _make_base_optimizer(params, optimizer, learning_rate=None, decay=None, weig
             variance=PSO_options["variance"],
             epsilon=PSO_options["epsilon"],
             n_iter=PSO_options["n_iter"],
+        )
+
+    if optimizer == "ZOCGE":
+        if learning_rate is None:
+            raise ValueError("No learning rate for ZOCGE.")
+        return ZOCGE(
+            params,
+            lr=learning_rate,
+            mu=ZOCGE_options["mu"],
+            weight_decay=weight_decay,
+            sparsity=ZOCGE_options["sparsity"],
+            prune_method=ZOCGE_options["prune_method"],
+            remask_interval=ZOCGE_options["remask_interval"],
+            feature_reuse=ZOCGE_options["feature_reuse"],
+            grasp_sample_size=ZOCGE_options["grasp_sample_size"],
         )
 
     if optimizer == "adam":
@@ -176,6 +193,18 @@ def get(params, optimizer, learning_rate=None, decay=None, weight_decay=0):
                 precondition_frequency=SOAP_options["precondition_frequency"],
                 max_precondition_dim=SOAP_options["max_precondition_dim"],
                 bias_correction=SOAP_options["bias_correction"],
+            )
+        elif optimizer == "ZOCGE":
+            optim = ZOCGE(
+                params,
+                lr=learning_rate,
+                mu=ZOCGE_options["mu"],
+                weight_decay=weight_decay,
+                sparsity=ZOCGE_options["sparsity"],
+                prune_method=ZOCGE_options["prune_method"],
+                remask_interval=ZOCGE_options["remask_interval"],
+                feature_reuse=ZOCGE_options["feature_reuse"],
+                grasp_sample_size=ZOCGE_options["grasp_sample_size"],
             )
         elif optimizer == "pcgrad":
             if PCGRAD_options["base_optimizer"] != "adam":

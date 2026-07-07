@@ -9,6 +9,8 @@ from .config import (
     set_NNCG_options,
     PSO_options,
     set_PSO_options,
+    ZOCGE_options,
+    set_ZOCGE_options,
     SOAP_options,
     set_SOAP_options,
     PCGRAD_options,

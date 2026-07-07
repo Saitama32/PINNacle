@@ -2,6 +2,7 @@ __all__ = [
     "set_LBFGS_options",
     "set_NNCG_options",
     "set_PSO_options",
+    "set_ZOCGE_options",
     "set_SOAP_options",
     "set_PCGRAD_options",
     "set_SSBROYDEN_options",
@@ -15,6 +16,7 @@ from ..backend import backend_name
 LBFGS_options = {}
 NNCG_options = {}
 PSO_options = {}
+ZOCGE_options = {}
 SOAP_options = {}
 PCGRAD_options = {}
 SSBROYDEN_options = {}
@@ -22,6 +24,16 @@ CAUSAL_options = {}
 hvd = None
 if hvd is not None:
     hvd_opt_options = {}
+
+set_ZOCGE_defaults = {
+    "mu": 1e-3,
+    "sparsity": 0.0,
+    "prune_method": "random",
+    "remask_interval": 0,
+    "feature_reuse": False,
+    "grasp_sample_size": 0,
+}
+ZOCGE_options.update(set_ZOCGE_defaults)
 
 
 def set_LBFGS_options(
@@ -171,6 +183,23 @@ def set_PSO_options(
     PSO_options["variance"] = variance
     PSO_options["epsilon"] = epsilon
     PSO_options["n_iter"] = n_iter
+
+
+def set_ZOCGE_options(
+    mu=1e-3,
+    sparsity=0.0,
+    prune_method="random",
+    remask_interval=0,
+    feature_reuse=False,
+    grasp_sample_size=0,
+):
+    """Sets the hyperparameters of zeroth-order full CGE optimizer."""
+    ZOCGE_options["mu"] = mu
+    ZOCGE_options["sparsity"] = sparsity
+    ZOCGE_options["prune_method"] = prune_method
+    ZOCGE_options["remask_interval"] = remask_interval
+    ZOCGE_options["feature_reuse"] = feature_reuse
+    ZOCGE_options["grasp_sample_size"] = grasp_sample_size
 
 
 def set_SOAP_options(

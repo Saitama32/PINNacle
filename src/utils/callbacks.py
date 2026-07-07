@@ -352,7 +352,18 @@ class TesterCallback(Callback):
             return
 
         self.indexes = np.array(self.indexes)
-        self.frmses = np.array(self.frmses)
+        self.frmses = np.asarray(self.frmses, dtype=float)
+        if self.frmses.size == 0:
+            self.frmses = np.empty((0, 3), dtype=float)
+        elif self.frmses.ndim == 1:
+            if self.frmses.shape[0] == len(self.indexes) * 3 and len(self.indexes) > 0:
+                self.frmses = self.frmses.reshape(len(self.indexes), 3)
+            elif self.frmses.shape[0] == len(self.indexes):
+                self.frmses = np.repeat(self.frmses[:, None], 3, axis=1)
+            elif self.frmses.shape[0] == 3:
+                self.frmses = np.repeat(self.frmses[None, :], len(self.indexes), axis=0)
+            else:
+                self.frmses = np.full((len(self.indexes), 3), np.nan, dtype=float)
         np.savetxt(
             self.save_path + 'errors.txt',
             np.array([self.indexes, self.maes, self.mses, self.mxes, self.bc_mses, self.l1res, self.l2res, self.crmses,\

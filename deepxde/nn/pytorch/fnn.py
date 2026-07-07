@@ -1,3 +1,5 @@
+import re
+
 import torch
 
 from .nn import NN
@@ -8,6 +10,8 @@ from ... import config
 
 class FNN(NN):
     """Fully-connected neural network."""
+
+    supports_feature_reuse = True
 
     def __init__(self, layer_sizes, activation, kernel_initializer):
         super().__init__()
@@ -32,20 +36,45 @@ class FNN(NN):
             initializer(self.linears[-1].weight)
             initializer_zero(self.linears[-1].bias)
 
-    def forward(self, inputs):
+    def forward(
+        self,
+        inputs,
+        starting_id=0,
+        return_interval=False,
+        original_inputs=None,
+    ):
         x = inputs
-        if self._input_transform is not None:
+        if starting_id == 0:
+            original_inputs = inputs
+        elif original_inputs is None:
+            raise ValueError("original_inputs must be provided when starting_id > 0")
+
+        if starting_id == 0 and self._input_transform is not None:
             x = self._input_transform(x)
+        intervals = [x] if return_interval else None
+
         for j, linear in enumerate(self.linears[:-1]):
+            if j < starting_id:
+                continue
             x = (
                 self.activation[j](linear(x))
                 if isinstance(self.activation, list)
                 else self.activation(linear(x))
             )
-        x = self.linears[-1](x)
+            if return_interval:
+                intervals.append(x)
+        x = self.linears[-1](x) if starting_id <= len(self.linears) - 1 else x
         if self._output_transform is not None:
-            x = self._output_transform(inputs, x)
+            x = self._output_transform(original_inputs, x)
+        if return_interval:
+            return x, intervals
         return x
+
+    def parameter_to_layer_index(self, param_name):
+        match = re.search(r"linears\.(\d+)\.(weight|weight_orig|bias)$", param_name)
+        if match is None:
+            return None
+        return int(match.group(1))
 
 
 class PFNN(NN):

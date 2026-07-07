@@ -255,26 +255,51 @@ class Model:
                     f"{self.net.regularizer[0]} regularizer hasn't been implemented for backend pytorch."
                 )
 
+        def _prepare_inputs(inputs):
+            if isinstance(inputs, tuple):
+                return tuple(map(lambda x: torch.as_tensor(x).requires_grad_(), inputs))
+            inputs = torch.as_tensor(inputs)
+            inputs.requires_grad_()
+            return inputs
+
         def outputs(training, inputs):
             self.net.train(mode=training)
             with torch.no_grad():
-                if isinstance(inputs, tuple):
-                    inputs = tuple(map(lambda x: torch.as_tensor(x).requires_grad_(), inputs))
-                else:
-                    inputs = torch.as_tensor(inputs)
-                    inputs.requires_grad_()
+                inputs = _prepare_inputs(inputs)
             # Clear cached Jacobians and Hessians.
             grad.clear()
             return self.net(inputs)
 
-        def outputs_losses(training, inputs, targets, losses_fn):
+        def outputs_losses(
+            training,
+            inputs,
+            targets,
+            losses_fn,
+            starting_id=0,
+            cached_intermediates=None,
+            return_intermediates=False,
+        ):
             self.net.train(mode=training)
-            if isinstance(inputs, tuple):
-                inputs = tuple(map(lambda x: torch.as_tensor(x).requires_grad_(), inputs))
+            if starting_id == 0:
+                inputs = _prepare_inputs(inputs)
+                if return_intermediates:
+                    outputs_, intervals = self.net(inputs, return_interval=True)
+                    cached_intermediates = (intervals, inputs)
+                else:
+                    outputs_ = self.net(inputs)
+                    cached_intermediates = None
             else:
-                inputs = torch.as_tensor(inputs)
-                inputs.requires_grad_()
-            outputs_ = self.net(inputs)
+                if cached_intermediates is None:
+                    raise ValueError("cached_intermediates are required when starting_id > 0")
+                if isinstance(inputs, tuple):
+                    raise NotImplementedError("Feature reuse is only supported for tensor inputs.")
+                intervals, original_inputs = cached_intermediates
+                outputs_ = self.net(
+                    intervals[starting_id],
+                    starting_id=starting_id,
+                    original_inputs=original_inputs,
+                )
+                inputs = original_inputs
             # Data losses
             if targets is not None:
                 targets = torch.as_tensor(targets)
@@ -288,6 +313,8 @@ class Model:
                 losses *= torch.as_tensor(loss_weights)
             # Clear cached Jacobians and Hessians.
             grad.clear()
+            if return_intermediates:
+                return outputs_, losses, cached_intermediates
             return outputs_, losses
 
         def outputs_losses_train(inputs, targets):
@@ -334,15 +361,37 @@ class Model:
 
         def train_step(inputs, targets):
             # NOTE: edited
-            def closure(*, skip_backward=False):
+            def closure(
+                *,
+                skip_backward=False,
+                return_intermediates=False,
+                cached_intermediates=None,
+                starting_id=0,
+            ):
                 if hasattr(self.opt, "causal_context"):
                     context = self.opt.causal_context(inputs, targets, self.data)
                 else:
                     context = None
 
-                if context is None:
-                    active_inputs, active_targets = inputs, targets
-                    losses = outputs_losses_train(active_inputs, active_targets)[1]
+                def _compute(active_inputs, active_targets):
+                    if return_intermediates or starting_id > 0:
+                        outputs_losses_result = outputs_losses(
+                            True,
+                            active_inputs,
+                            active_targets,
+                            self.data.losses_train,
+                            starting_id=starting_id,
+                            cached_intermediates=cached_intermediates,
+                            return_intermediates=return_intermediates,
+                        )
+                        if return_intermediates:
+                            _, losses, new_cached_intermediates = outputs_losses_result
+                        else:
+                            _, losses = outputs_losses_result
+                            new_cached_intermediates = None
+                    else:
+                        losses = outputs_losses_train(active_inputs, active_targets)[1]
+                        new_cached_intermediates = None
                     if hasattr(self.opt, "window_ic_loss"):
                         ic_loss = self.opt.window_ic_loss()
                         if ic_loss is not None:
@@ -352,20 +401,15 @@ class Model:
                     if not skip_backward:
                         self.opt.zero_grad()
                         total_loss.backward()
+                    if return_intermediates:
+                        return total_loss, new_cached_intermediates
                     return total_loss
 
+                if context is None:
+                    return _compute(inputs, targets)
+
                 with context as (active_inputs, active_targets):
-                    losses = outputs_losses_train(active_inputs, active_targets)[1]
-                    if hasattr(self.opt, "window_ic_loss"):
-                        ic_loss = self.opt.window_ic_loss()
-                        if ic_loss is not None:
-                            losses = torch.cat([losses, ic_loss.reshape(1)])
-                    self.opt.losses = losses
-                    total_loss = torch.sum(losses)
-                    if not skip_backward:
-                        self.opt.zero_grad()
-                        total_loss.backward()
-                    return total_loss
+                    return _compute(active_inputs, active_targets)
 
             loss = self.opt.step(closure)
             if hasattr(self.opt, "after_train_step"):
