@@ -43,7 +43,9 @@ class PlotCallback(Callback):
 
     def on_epoch_end(self):
         self.valid_epoch += 1
-        if self.log_every is None or self.valid_epoch % self.log_every != 0:
+        if self.log_every is None or self.log_every <= 0:
+            return
+        if self.valid_epoch % self.log_every != 0:
             return
         if self.verbose:
             print("Plotting at epoch {} ...".format(self.valid_epoch))

@@ -118,9 +118,8 @@ def make_callbacks(args):
     callbacks = [
         TesterCallback(log_every=args.log_every),
         LossCallback(verbose=args.loss_verbose),
+        PlotCallback(log_every=args.plot_every, fast=args.fast_plot),
     ]
-    if args.plot_every > 0:
-        callbacks.append(PlotCallback(log_every=args.plot_every, fast=args.fast_plot))
     return callbacks
 
 
@@ -179,7 +178,7 @@ def parse_args():
     parser.add_argument("--seed", type=int, default=1234)
     parser.add_argument("--out", type=str, default="runs_plain")
     parser.add_argument("--log-every", type=int, default=10)
-    parser.add_argument("--plot-every", type=int, default=0)
+    parser.add_argument("--plot-every", type=int, default=100)
     parser.add_argument("--fast-plot", type=str2bool, nargs="?", const=True, default=True)
     parser.add_argument("--loss-verbose", type=str2bool, nargs="?", const=True, default=True)
     parser.add_argument("--no-callbacks", action="store_true")
