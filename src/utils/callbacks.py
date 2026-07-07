@@ -67,9 +67,13 @@ class LossCallback(Callback):
         self.verbose = verbose
         self.valid_epoch = 0
         self.loss_weights = []
+        self.history_start = 0
 
     def on_train_begin(self):
         self.log_every = self.model.display_every
+        self.valid_epoch = 0
+        self.loss_weights = []
+        self.history_start = max(len(self.model.losshistory.steps) - 1, 0)
         if self.model.losshistory.loss_weights is not None:
             self.loss_weights.append(self.model.losshistory.loss_weights)
         else:
@@ -99,15 +103,31 @@ class LossCallback(Callback):
         save_path = self.model.model_save_path + "/"
         loss_history = self.model.losshistory
         loss_weights = np.array(self.loss_weights)
+        steps = np.array(loss_history.steps[self.history_start :])
+        loss_train = np.array(loss_history.loss_train[self.history_start :])
+        loss_test = np.array(loss_history.loss_test[self.history_start :])
+        metrics_test = loss_history.metrics_test[self.history_start :]
+        if len(steps) == 0 or len(loss_weights) == 0:
+            return
+
+        class _LossHistoryView:
+            pass
+
+        history_view = _LossHistoryView()
+        history_view.steps = steps
+        history_view.loss_train = loss_train
+        history_view.loss_test = loss_test
+        history_view.metrics_test = metrics_test
+
         loss = np.hstack((
-            np.array(loss_history.steps)[:, None],
-            np.array(loss_history.loss_train) / loss_weights,
-            np.array(loss_history.loss_test) / loss_weights,
+            steps[:, None],
+            loss_train / loss_weights,
+            loss_test / loss_weights,
             loss_weights,
         ))
         np.savetxt(save_path + "loss.txt", loss, header="step, loss_train, loss_test, loss_weight")
-        plot.plot_loss_history(self.model.pde, loss_history, save_path)
-        plot.plot_loss_history(self.model.pde, loss_history, save_path, loss_weights=loss_weights)
+        plot.plot_loss_history(self.model.pde, history_view, save_path)
+        plot.plot_loss_history(self.model.pde, history_view, save_path, loss_weights=loss_weights)
 
 
 class CausalDiagnosticsCallback(Callback):

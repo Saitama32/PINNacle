@@ -466,6 +466,17 @@ def run_ks_new_model_windows(args):
                     model_save_path=window_save_path,
                     save_model=args.save_model,
                 )
+                stage_quality = evaluate_window_against_reference(
+                    model=model,
+                    reference_pde=reference_pde,
+                    window_idx=window_idx,
+                    num_windows=args.num_windows,
+                )
+                print(
+                    f"Window {window_idx + 1}/{args.num_windows} stage tol={tol_value:g}: "
+                    f"MSE={stage_quality['mse']:.10e}, RMSE={stage_quality['rmse']:.10e}, "
+                    f"MAE={stage_quality['mae']:.10e}, L2RE={stage_quality['l2re']:.10e}"
+                )
         else:
             model.train(
                 iterations=args.iterations,
