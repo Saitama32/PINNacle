@@ -169,6 +169,15 @@ class PDE(Data):
         ic_loss = None
         if use_causal and ic_losses:
             ic_loss = sum(ic_losses) / len(ic_losses)
+        elif (
+            use_causal
+            and bool(causal_options.get("include_ic_in_weights", False))
+            and bc_losses
+        ):
+            # Windowed multi-network KS training passes the previous-window state as
+            # a PointSetBC. Treat it as the IC surrogate when no explicit IC object
+            # is present.
+            ic_loss = sum(bc_losses) / len(bc_losses)
 
         losses = []
         causal_diagnostics = {}
