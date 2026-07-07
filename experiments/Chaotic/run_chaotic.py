@@ -122,6 +122,123 @@ def build_window_ks_pde(window_length, x_state, y_state):
     return base
 
 
+def evaluate_window_against_reference(model, reference_pde, window_idx, num_windows):
+    ref_data = reference_pde.ref_data
+    input_dim = reference_pde.input_dim
+    x_ref = ref_data[:, :input_dim]
+    y_true = ref_data[:, input_dim:]
+
+    t_min, t_max = reference_pde.bbox[2], reference_pde.bbox[3]
+    window_length = (t_max - t_min) / num_windows
+    t_left = t_min + window_idx * window_length
+    t_right = t_min + (window_idx + 1) * window_length
+    t = x_ref[:, -1]
+
+    if window_idx == num_windows - 1:
+        mask = (t >= t_left) & (t <= t_right)
+    else:
+        mask = (t >= t_left) & (t < t_right)
+    mask &= ~np.isnan(ref_data).any(axis=1)
+
+    count = int(np.sum(mask))
+    if count == 0:
+        return {
+            "window": window_idx + 1,
+            "t_left": t_left,
+            "t_right": t_right,
+            "count": 0,
+            "mse": np.nan,
+            "rmse": np.nan,
+            "mae": np.nan,
+            "l2re": np.nan,
+            "sse": 0.0,
+            "sae": 0.0,
+            "true_sq": 0.0,
+        }
+
+    x_local = x_ref[mask].copy()
+    x_local[:, -1] = x_local[:, -1] - t_left
+    y_window_true = y_true[mask]
+    y_pred = model.predict(x_local)
+    error = y_pred - y_window_true
+
+    sse = float(np.sum(error**2))
+    sae = float(np.sum(np.abs(error)))
+    true_sq = float(np.sum(y_window_true**2))
+    mse = sse / error.size
+    rmse = float(np.sqrt(mse))
+    mae = sae / error.size
+    l2re = float(np.sqrt(sse / (true_sq + 1e-12)))
+
+    return {
+        "window": window_idx + 1,
+        "t_left": t_left,
+        "t_right": t_right,
+        "count": count,
+        "mse": mse,
+        "rmse": rmse,
+        "mae": mae,
+        "l2re": l2re,
+        "sse": sse,
+        "sae": sae,
+        "true_sq": true_sq,
+    }
+
+
+def save_window_quality(base_save_path, quality_rows):
+    if not quality_rows:
+        return
+
+    table = np.asarray(
+        [
+            [
+                row["window"],
+                row["t_left"],
+                row["t_right"],
+                row["count"],
+                row["mse"],
+                row["rmse"],
+                row["mae"],
+                row["l2re"],
+            ]
+            for row in quality_rows
+        ],
+        dtype=float,
+    )
+    np.savetxt(
+        os.path.join(base_save_path, "window_quality.txt"),
+        table,
+        header="window, t_left, t_right, count, mse, rmse, mae, l2re",
+    )
+
+    total_count = sum(row["count"] for row in quality_rows)
+    total_values = sum(row["count"] for row in quality_rows)
+    total_sse = sum(row["sse"] for row in quality_rows)
+    total_sae = sum(row["sae"] for row in quality_rows)
+    total_true_sq = sum(row["true_sq"] for row in quality_rows)
+    aggregate_mse = total_sse / max(total_values, 1)
+    aggregate_rmse = float(np.sqrt(aggregate_mse))
+    aggregate_mae = total_sae / max(total_values, 1)
+    aggregate_l2re = float(np.sqrt(total_sse / (total_true_sq + 1e-12)))
+
+    summary_path = os.path.join(base_save_path, "quality_summary.txt")
+    with open(summary_path, "w", encoding="utf-8") as f:
+        f.write("KS multi-network window quality\n")
+        f.write(f"windows: {len(quality_rows)}\n")
+        f.write(f"reference_points: {total_count}\n")
+        f.write(f"mse: {aggregate_mse:.10e}\n")
+        f.write(f"rmse: {aggregate_rmse:.10e}\n")
+        f.write(f"mae: {aggregate_mae:.10e}\n")
+        f.write(f"l2re: {aggregate_l2re:.10e}\n")
+
+    print(
+        "Window quality summary: "
+        f"MSE={aggregate_mse:.10e}, RMSE={aggregate_rmse:.10e}, "
+        f"MAE={aggregate_mae:.10e}, L2RE={aggregate_l2re:.10e}. "
+        f"Saved to {summary_path}"
+    )
+
+
 def configure_optimizer(args):
     wrap_windows = args.use_windows and args.window_model_mode == "reuse_model"
     optimizer = "Causal" if wrap_windows else args.optimizer
@@ -283,6 +400,7 @@ def run_ks_new_model_windows(args):
         header="x coordinates used to pass predicted ICs between window models",
     )
 
+    quality_rows = []
     for window_idx in range(args.num_windows):
         print(
             f"Training KS window {window_idx + 1}/{args.num_windows} "
@@ -309,6 +427,20 @@ def run_ks_new_model_windows(args):
             callbacks=make_window_callbacks(args),
             model_save_path=window_save_path,
             save_model=args.save_model,
+        )
+
+        quality = evaluate_window_against_reference(
+            model=model,
+            reference_pde=reference_pde,
+            window_idx=window_idx,
+            num_windows=args.num_windows,
+        )
+        quality_rows.append(quality)
+        save_window_quality(base_save_path, quality_rows)
+        print(
+            f"Window {window_idx + 1}/{args.num_windows} quality: "
+            f"MSE={quality['mse']:.10e}, RMSE={quality['rmse']:.10e}, "
+            f"MAE={quality['mae']:.10e}, L2RE={quality['l2re']:.10e}"
         )
 
         x_right = np.hstack(
