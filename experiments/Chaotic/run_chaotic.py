@@ -1,4 +1,5 @@
 import argparse
+import csv
 import os
 import sys
 import time
@@ -106,6 +107,18 @@ def make_window_initial_state(x):
     return np.cos(x) * (1.0 + np.sin(x))
 
 
+def reference_spatial_grid(pde):
+    ref_data = pde.ref_data
+    ref_data = ref_data[~np.isnan(ref_data).any(axis=1)]
+    return np.sort(np.unique(ref_data[:, 0].astype(np.float32)))
+
+
+def parse_float_list(value):
+    if value is None or str(value).strip() == "":
+        return []
+    return [float(item.strip()) for item in str(value).split(",") if item.strip()]
+
+
 def build_window_ks_pde(window_length, x_state, y_state):
     base = KuramotoSivashinskyEquation(bbox=[0, 2 * np.pi, 0, window_length])
     x_ic = np.hstack(
@@ -147,6 +160,7 @@ def evaluate_window_against_reference(model, reference_pde, window_idx, num_wind
             "t_left": t_left,
             "t_right": t_right,
             "count": 0,
+            "values": 0,
             "mse": np.nan,
             "rmse": np.nan,
             "mae": np.nan,
@@ -175,6 +189,7 @@ def evaluate_window_against_reference(model, reference_pde, window_idx, num_wind
         "t_left": t_left,
         "t_right": t_right,
         "count": count,
+        "values": int(error.size),
         "mse": mse,
         "rmse": rmse,
         "mae": mae,
@@ -189,18 +204,20 @@ def save_window_quality(base_save_path, quality_rows):
     if not quality_rows:
         return
 
+    columns = [
+        "window",
+        "t_left",
+        "t_right",
+        "count",
+        "values",
+        "mse",
+        "rmse",
+        "mae",
+        "l2re",
+    ]
     table = np.asarray(
         [
-            [
-                row["window"],
-                row["t_left"],
-                row["t_right"],
-                row["count"],
-                row["mse"],
-                row["rmse"],
-                row["mae"],
-                row["l2re"],
-            ]
+            [row[column] for column in columns]
             for row in quality_rows
         ],
         dtype=float,
@@ -208,11 +225,21 @@ def save_window_quality(base_save_path, quality_rows):
     np.savetxt(
         os.path.join(base_save_path, "window_quality.txt"),
         table,
-        header="window, t_left, t_right, count, mse, rmse, mae, l2re",
+        header=", ".join(columns),
     )
+    with open(
+        os.path.join(base_save_path, "window_quality.csv"),
+        "w",
+        encoding="utf-8",
+        newline="",
+    ) as f:
+        writer = csv.DictWriter(f, fieldnames=columns)
+        writer.writeheader()
+        for row in quality_rows:
+            writer.writerow({column: row[column] for column in columns})
 
     total_count = sum(row["count"] for row in quality_rows)
-    total_values = sum(row["count"] for row in quality_rows)
+    total_values = sum(row["values"] for row in quality_rows)
     total_sse = sum(row["sse"] for row in quality_rows)
     total_sae = sum(row["sae"] for row in quality_rows)
     total_true_sq = sum(row["true_sq"] for row in quality_rows)
@@ -381,12 +408,15 @@ def run_ks_new_model_windows(args):
     reference_pde = KuramotoSivashinskyEquation()
     t_min, t_max = reference_pde.bbox[2], reference_pde.bbox[3]
     window_length = (t_max - t_min) / args.num_windows
-    x_state = np.linspace(
-        reference_pde.bbox[0],
-        reference_pde.bbox[1],
-        args.window_state_grid_size,
-        dtype=np.float32,
-    )
+    if args.window_state_source == "reference":
+        x_state = reference_spatial_grid(reference_pde)
+    else:
+        x_state = np.linspace(
+            reference_pde.bbox[0],
+            reference_pde.bbox[1],
+            args.window_state_grid_size,
+            dtype=np.float32,
+        )
     y_state = make_window_initial_state(x_state).astype(np.float32)
 
     timestamp = time.strftime("%m.%d-%H.%M.%S", time.localtime())
@@ -421,13 +451,29 @@ def run_ks_new_model_windows(args):
             f"{t_min + (window_idx + 1) * window_length:.6f}",
         )
         os.makedirs(window_save_path, exist_ok=True)
-        model.train(
-            iterations=args.iterations,
-            display_every=args.log_every,
-            callbacks=make_window_callbacks(args),
-            model_save_path=window_save_path,
-            save_model=args.save_model,
-        )
+        tol_schedule = parse_float_list(args.window_causal_tol_schedule)
+        if args.use_causal_loss and tol_schedule:
+            for tol_value in tol_schedule:
+                model.causal_loss_options["tol"] = tol_value
+                print(
+                    f"Training KS window {window_idx + 1}/{args.num_windows} "
+                    f"with causal tol={tol_value:g}."
+                )
+                model.train(
+                    iterations=args.iterations,
+                    display_every=args.log_every,
+                    callbacks=make_window_callbacks(args),
+                    model_save_path=window_save_path,
+                    save_model=args.save_model,
+                )
+        else:
+            model.train(
+                iterations=args.iterations,
+                display_every=args.log_every,
+                callbacks=make_window_callbacks(args),
+                model_save_path=window_save_path,
+                save_model=args.save_model,
+            )
 
         quality = evaluate_window_against_reference(
             model=model,
@@ -557,6 +603,17 @@ def parse_args():
     )
     parser.add_argument("--window-steps-per-window", type=int, default=200)
     parser.add_argument("--window-state-grid-size", type=int, default=128)
+    parser.add_argument(
+        "--window-state-source",
+        choices=["reference", "linspace"],
+        default="reference",
+    )
+    parser.add_argument(
+        "--window-causal-tol-schedule",
+        type=str,
+        default="",
+        help="Comma-separated tol schedule for new_model windows, e.g. 1e-3,1e-2,1e-1,1,10,100.",
+    )
     parser.add_argument("--window-ic-weight", type=float, default=100.0)
     parser.add_argument("--window-verbose", type=str2bool, nargs="?", const=True, default=False)
 

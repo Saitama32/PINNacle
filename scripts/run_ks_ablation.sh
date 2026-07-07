@@ -68,13 +68,18 @@ run_experiment E7_causal_fourier_resampling \
   --resample-every 1
 
 run_experiment E8_all_windows \
+  --bc-loss-weight 10000 \
   --use-causal-loss \
   --causal-num-chunks 16 \
   --causal-tol 0.1 \
+  --causal-include-ic true \
+  --causal-ic-weight 10000 \
   --use-fourier-features \
   --fourier-num-modes-x 16 \
   --resample-collocation \
   --resample-every 1 \
   --use-windows \
   --window-model-mode new_model \
+  --window-state-source reference \
+  --window-causal-tol-schedule 1e-3,1e-2,1e-1,1,10,100 \
   --num-windows 10
