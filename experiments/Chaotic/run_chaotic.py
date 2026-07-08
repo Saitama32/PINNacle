@@ -14,6 +14,7 @@ import numpy as np
 import torch
 import deepxde as dde
 
+from src.model import ResNet
 from src.pde.chaotic import GrayScottEquation, KuramotoSivashinskyEquation
 from src.utils.args import parse_hidden_layers
 from src.utils.callbacks import LossCallback, PlotCallback, TesterCallback
@@ -47,14 +48,45 @@ def loss_weights_for(pde, bc_loss_weight):
     return weights
 
 
-def build_model(equation_name, hidden_layers, bc_loss_weight):
+def parse_resnet_shape(hidden_layers):
+    layers = parse_hidden_layers(argparse.Namespace(hidden_layers=hidden_layers))
+    if not layers:
+        raise ValueError("ResNet requires at least one hidden layer specification.")
+
+    width = layers[0]
+    if any(layer != width for layer in layers):
+        raise ValueError(
+            "ResNet mode only supports uniform hidden layers, for example '50*5' or '64,64,64'."
+        )
+    return width, len(layers)
+
+
+def build_network(pde, hidden_layers, net_type):
+    if net_type == "mlp":
+        layers = [
+            pde.input_dim,
+            *parse_hidden_layers(argparse.Namespace(hidden_layers=hidden_layers)),
+            pde.output_dim,
+        ]
+        return dde.nn.FNN(layers, "tanh", "Glorot normal").float()
+
+    if net_type == "resnet":
+        width, num_blocks = parse_resnet_shape(hidden_layers)
+        return ResNet(
+            input_size=pde.input_dim,
+            output_size=pde.output_dim,
+            width=width,
+            num_blocks=num_blocks,
+            activation="tanh",
+            kernel_initializer="Glorot normal",
+        ).float()
+
+    raise ValueError(f"Unsupported network type: {net_type}")
+
+
+def build_model(equation_name, hidden_layers, bc_loss_weight, net_type):
     pde = EQUATIONS[equation_name]()
-    layers = [
-        pde.input_dim,
-        *parse_hidden_layers(argparse.Namespace(hidden_layers=hidden_layers)),
-        pde.output_dim,
-    ]
-    net = dde.nn.FNN(layers, "tanh", "Glorot normal").float()
+    net = build_network(pde, hidden_layers, net_type)
     return pde.create_model(net), loss_weights_for(pde, bc_loss_weight)
 
 
@@ -133,6 +165,7 @@ def run_one(equation_name, args):
         equation_name,
         args.hidden_layers,
         args.bc_loss_weight,
+        args.net,
     )
     if args.weight_decay > 0:
         model.net.regularizer = ("l2", args.weight_decay)
@@ -143,12 +176,12 @@ def run_one(equation_name, args):
     timestamp = time.strftime("%m.%d-%H.%M.%S", time.localtime())
     save_path = os.path.join(
         args.out,
-        f"{timestamp}-{run_name}-pinn-{args.optimizer.lower()}",
+        f"{timestamp}-{run_name}-pinn-{args.net}-{args.optimizer.lower()}",
     )
     os.makedirs(save_path, exist_ok=True)
 
     print(
-        f"Training {equation_name} with plain PINN optimizer={args.optimizer} "
+        f"Training {equation_name} with {args.net} PINN optimizer={args.optimizer} "
         f"for {args.iterations} iterations."
     )
     losshistory, train_state = model.train(
@@ -172,7 +205,8 @@ def parse_args():
         default="kuramoto-sivashinsky",
     )
     parser.add_argument("--hidden-layers", type=str, default="50*5")
-    parser.add_argument("--iterations", type=int, default=100)
+    parser.add_argument("--net", choices=["mlp", "resnet"], default="resnet")
+    parser.add_argument("--iterations", type=int, default=1000)
     parser.add_argument("--lr", type=float, default=5e-4)
     parser.add_argument("--bc-loss-weight", type=float, default=100.0)
     parser.add_argument("--seed", type=int, default=1234)
@@ -200,7 +234,7 @@ def parse_args():
             "SSBroyden",
             "ssbroyden",
         ],
-        default="ZOCGE",
+        default="pcgrad",
     )
     parser.add_argument("--weight-decay", type=float, default=0.0)
 
