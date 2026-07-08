@@ -234,11 +234,11 @@ def parse_args():
             "SSBroyden",
             "ssbroyden",
         ],
-        default="pcgrad",
+        default="PSO",
     )
     parser.add_argument("--weight-decay", type=float, default=0.0)
 
-    parser.add_argument("--pso-pop-size", type=int, default=10)
+    parser.add_argument("--pso-pop-size", type=int, default=30)
     parser.add_argument("--pso-b", type=float, default=0.9)
     parser.add_argument("--pso-c1", type=float, default=8e-2)
     parser.add_argument("--pso-c2", type=float, default=5e-1)
