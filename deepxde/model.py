@@ -270,6 +270,24 @@ class Model:
             grad.clear()
             return self.net(inputs)
 
+        def _resolve_loss_weights(active_loss_weights, reference_losses):
+            if active_loss_weights is None:
+                return None
+            if callable(active_loss_weights):
+                active_loss_weights = active_loss_weights()
+            if active_loss_weights is None:
+                return None
+            if torch.is_tensor(active_loss_weights):
+                return active_loss_weights.to(
+                    device=reference_losses.device,
+                    dtype=reference_losses.dtype,
+                )
+            return torch.as_tensor(
+                active_loss_weights,
+                device=reference_losses.device,
+                dtype=reference_losses.dtype,
+            )
+
         def outputs_losses(
             training,
             inputs,
@@ -309,8 +327,9 @@ class Model:
                 losses = [losses]
             losses = torch.stack(losses)
             # Weighted losses
-            if loss_weights is not None:
-                losses *= torch.as_tensor(loss_weights)
+            active_loss_weights = _resolve_loss_weights(loss_weights, losses)
+            if active_loss_weights is not None:
+                losses *= active_loss_weights
             # Clear cached Jacobians and Hessians.
             grad.clear()
             if return_intermediates:

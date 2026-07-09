@@ -18,6 +18,7 @@ from src.model import ResNet
 from src.pde.chaotic import GrayScottEquation, KuramotoSivashinskyEquation
 from src.utils.args import parse_hidden_layers
 from src.utils.callbacks import LossCallback, PlotCallback, TesterCallback
+from src.utils.fam import FAMTrainConfig, FAMTrainer, LossWeightAdapter
 
 
 EQUATIONS = {
@@ -170,27 +171,68 @@ def run_one(equation_name, args):
     if args.weight_decay > 0:
         model.net.regularizer = ("l2", args.weight_decay)
     configure_optimizer(args)
-    model.compile(args.optimizer, lr=args.lr, loss_weights=loss_weights)
+    if args.sampling_method == "none":
+        model.compile(args.optimizer, lr=args.lr, loss_weights=loss_weights)
+    else:
+        if equation_name not in {"ks", "kuramoto-sivashinsky"}:
+            raise ValueError("The first FAM/FAMAW integration currently supports only KS in run_chaotic.py.")
+        loss_weight_adapter = LossWeightAdapter(np.ones_like(loss_weights))
+        model.compile(args.optimizer, lr=args.lr, loss_weights=loss_weight_adapter)
 
     run_name = equation_name.replace("-", "_")
     timestamp = time.strftime("%m.%d-%H.%M.%S", time.localtime())
     save_path = os.path.join(
         args.out,
-        f"{timestamp}-{run_name}-pinn-{args.net}-{args.optimizer.lower()}",
+        f"{timestamp}-{run_name}-pinn-{args.net}-{args.optimizer.lower()}-{args.sampling_method}",
     )
     os.makedirs(save_path, exist_ok=True)
 
     print(
         f"Training {equation_name} with {args.net} PINN optimizer={args.optimizer} "
-        f"for {args.iterations} iterations."
+        f"sampling={args.sampling_method} for {args.iterations} iterations."
     )
-    losshistory, train_state = model.train(
-        iterations=args.iterations,
-        display_every=args.log_every,
-        callbacks=make_callbacks(args),
-        model_save_path=save_path,
-        save_model=args.save_model,
-    )
+    callbacks = make_callbacks(args)
+    if args.sampling_method == "none":
+        losshistory, train_state = model.train(
+            iterations=args.iterations,
+            display_every=args.log_every,
+            callbacks=callbacks,
+            model_save_path=save_path,
+            save_model=args.save_model,
+        )
+    else:
+        if args.fam_fixed_points is None or args.fam_movable_points is None:
+            raise ValueError(
+                "--fam-fixed-points and --fam-movable-points are required when sampling-method is fam-w or famaw-w."
+            )
+        if args.sampling_refresh_count <= 0:
+            raise ValueError("--sampling-refresh-count must be positive when adaptive sampling is enabled.")
+        fam_config = FAMTrainConfig(
+            mode=args.sampling_method,
+            iterations=args.iterations,
+            refresh_count=args.sampling_refresh_count,
+            weight_lr=args.faw_lr,
+            alpha=args.fam_alpha,
+            beta=args.fam_beta,
+            gamma=args.fam_gamma,
+            num_fixed_points=args.fam_fixed_points,
+            num_movable_points=args.fam_movable_points,
+            display_every=args.log_every,
+            save_model=args.save_model,
+            save_diagnostics=args.fam_save_diagnostics,
+            save_point_plots=args.fam_save_point_plots,
+            point_plot_every=args.plot_every,
+        )
+        trainer = FAMTrainer(
+            model,
+            fam_config,
+            loss_weight_adapter=loss_weight_adapter,
+            callbacks=callbacks,
+            model_save_path=save_path,
+            seed=args.seed,
+            static_loss_weights=loss_weights,
+        )
+        losshistory, train_state = trainer.train()
 
     return losshistory, train_state
 
@@ -204,9 +246,9 @@ def parse_args():
         choices=["gs", "grayscott", "gray-scott", "ks", "kuramoto-sivashinsky", "both"],
         default="kuramoto-sivashinsky",
     )
-    parser.add_argument("--hidden-layers", type=str, default="50*5")
-    parser.add_argument("--net", choices=["mlp", "resnet"], default="resnet")
-    parser.add_argument("--iterations", type=int, default=1000)
+    parser.add_argument("--hidden-layers", type=str, default="100*5")
+    parser.add_argument("--net", choices=["mlp", "resnet"], default="mlp")
+    parser.add_argument("--iterations", type=int, default=10000)
     parser.add_argument("--lr", type=float, default=5e-4)
     parser.add_argument("--bc-loss-weight", type=float, default=100.0)
     parser.add_argument("--seed", type=int, default=1234)
@@ -217,6 +259,20 @@ def parse_args():
     parser.add_argument("--loss-verbose", type=str2bool, nargs="?", const=True, default=True)
     parser.add_argument("--no-callbacks", action="store_true")
     parser.add_argument("--save-model", type=str2bool, nargs="?", const=True, default=True)
+    parser.add_argument(
+        "--sampling-method",
+        choices=["none", "fam-w", "famaw-w"],
+        default="famaw-w",
+    )
+    parser.add_argument("--sampling-refresh-count", type=int, default=100)
+    parser.add_argument("--fam-alpha", type=float, default=1.0)
+    parser.add_argument("--fam-beta", type=float, default=1.0)
+    parser.add_argument("--fam-gamma", type=float, default=1.0)
+    parser.add_argument("--faw-lr", type=float, default=1e-3)
+    parser.add_argument("--fam-fixed-points", type=int, default=3500)
+    parser.add_argument("--fam-movable-points", type=int, default=2000)
+    parser.add_argument("--fam-save-diagnostics", type=str2bool, nargs="?", const=True, default=False)
+    parser.add_argument("--fam-save-point-plots", type=str2bool, nargs="?", const=True, default=True)
 
     parser.add_argument(
         "--optimizer",
@@ -234,7 +290,7 @@ def parse_args():
             "SSBroyden",
             "ssbroyden",
         ],
-        default="PSO",
+        default="adam",
     )
     parser.add_argument("--weight-decay", type=float, default=0.0)
 

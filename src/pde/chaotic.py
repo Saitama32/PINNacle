@@ -62,7 +62,14 @@ class GrayScottEquation(baseclass.BaseTimePDE):
 
 class KuramotoSivashinskyEquation(baseclass.BaseTimePDE):
 
-    def __init__(self, datapath="ref/Kuramoto_Sivashinsky.dat", bbox=[0, 2 * np.pi, 0, 1], alpha=100 / 16, beta=100 / (16 * 16), gamma=100 / (16**4)):
+    def __init__(
+        self,
+        datapath="ref/Kuramoto_Sivashinsky.dat",
+        bbox=[0, 2 * np.pi, 0, 1],
+        alpha=100 / 16,
+        beta=100 / (16 * 16),
+        gamma=100 / (16**4),
+    ):
         super().__init__()
         # output dim
         self.output_dim = 1
