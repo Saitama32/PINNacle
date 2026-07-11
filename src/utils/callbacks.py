@@ -32,9 +32,16 @@ class PlotCallback(Callback):
         self.fast = fast
         self.valid_epoch = 0
 
-    def plot(self, save_path):
+    def plot(self, save_path, save_true=False):
         train_state = self.model.train_state
-        plot.plot_state(self.model.pde, train_state, save_path, is_best=False, fast=self.fast)
+        plot.plot_state(
+            self.model.pde,
+            train_state,
+            save_path,
+            is_best=False,
+            fast=self.fast,
+            save_true=save_true,
+        )
 
     def on_train_begin(self):
         self.base_save_path = self.model.model_save_path + "/"
@@ -53,7 +60,7 @@ class PlotCallback(Callback):
         save_path = self.base_save_path + str(self.valid_epoch) + '/'
         if not os.path.exists(save_path):
             os.mkdir(save_path)
-        self.plot(save_path)
+        self.plot(save_path, save_true=(self.valid_epoch == self.log_every))
 
     def on_train_end(self):
         if self.verbose:

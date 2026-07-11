@@ -185,7 +185,7 @@ def plot_streamline(x, y, u, v, path=None, vmin=None, vmax=None, title='', xlabe
     plt.close()
 
 
-def plot_state(pde, train_state, output_dir, is_best=False, fast=False):
+def plot_state(pde, train_state, output_dir, is_best=False, fast=False, save_true=False):
     """Plot the current/best result of the smallest training loss.
     """
     if isinstance(train_state.X_train, (list, tuple)):
@@ -251,6 +251,16 @@ def plot_state(pde, train_state, output_dir, is_best=False, fast=False):
             error_save_path = output_dir + pde.output_config[i]['name'] + '_err.png'
             plot_heatmap(x_test[:, 0], x_test[:, 1], y_test[:, i], save_path, title=f"Prediction for {pde.output_config[i]['name']}", pde=pde)
             if x_data is not None:
+                if save_true:
+                    true_save_path = output_dir + pde.output_config[i]['name'] + '_true.png'
+                    plot_heatmap(
+                        x_data[:, 0],
+                        x_data[:, 1],
+                        y_data[:, i],
+                        true_save_path,
+                        title=f"True solution for {pde.output_config[i]['name']}",
+                        pde=pde
+                    )
                 if pde.ref_sol is not None:
                     plot_heatmap(
                         x_test[:, 0],

@@ -1,6 +1,7 @@
 import json
 import os
 from dataclasses import dataclass
+from typing import Optional
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -50,6 +51,11 @@ def normalize_brightness(values, power=1.0):
     if not np.isfinite(total) or total <= 0:
         return np.full_like(weighted, 1.0 / max(len(weighted), 1))
     return weighted / total
+
+
+def gaussian_time_window(times, mu, sigma, w0):
+    times = np.asarray(times, dtype=np.float64)
+    return float(w0) * np.exp(-((times - float(mu)) ** 2) / (2.0 * float(sigma) ** 2))
 
 
 def famaw_weighted_loss(grouped_losses, c_params, group_names, base_weights=None):
@@ -184,6 +190,13 @@ class FAMTrainConfig:
     save_diagnostics: bool
     save_point_plots: bool
     point_plot_every: int
+    causal_window_enabled: bool = False
+    causal_sigma: Optional[float] = None
+    causal_w0: float = 1.0
+    causal_threshold: float = 1.05
+    causal_ema_beta: float = 0.9
+    causal_required_success_checks: int = 3
+    causal_log_brightness: bool = False
 
 
 class FAMTrainer:
@@ -231,6 +244,156 @@ class FAMTrainer:
         )
         self.refresh_steps = build_refresh_schedule(config.iterations, config.refresh_count)
         self.joint_weight_update_optimizers = {"adam", "sgd", "rmsprop", "adamw", "soap"}
+        self.causal_window_enabled = bool(config.causal_window_enabled)
+        self.causal_t_min, self.causal_t_max = self._time_bounds()
+        time_span = self.causal_t_max - self.causal_t_min
+        self.causal_sigma = (
+            0.1 * time_span
+            if config.causal_sigma is None
+            else float(config.causal_sigma)
+        )
+        self.causal_w0 = float(config.causal_w0)
+        self.causal_threshold = float(config.causal_threshold)
+        self.causal_ema_beta = float(config.causal_ema_beta)
+        self.causal_required_success_checks = int(config.causal_required_success_checks)
+        self.causal_log_brightness = bool(config.causal_log_brightness)
+        self.causal_mu = self.causal_t_min
+        self.causal_brightness_ema = None
+        self.causal_success_counter = 0
+        self.causal_stage_index = 0
+        self.causal_finished = False
+        self.last_causal_state = None
+        if self.causal_window_enabled:
+            self._validate_causal_window_config()
+
+    def _time_bounds(self):
+        timedomain = getattr(self.data.geom, "timedomain", None)
+        if timedomain is not None:
+            return float(timedomain.t0), float(timedomain.t1)
+        bbox = np.asarray(self.pde.bbox, dtype=np.float64)
+        return float(bbox[-2]), float(bbox[-1])
+
+    def _validate_causal_window_config(self):
+        if self.config.mode != "famaw-w":
+            raise ValueError("causal_window_enabled is only supported for famaw-w mode.")
+        if self.config.num_fixed_points <= 0:
+            raise ValueError("causal_window_enabled requires at least one fixed point.")
+        if self.causal_t_max <= self.causal_t_min:
+            raise ValueError("Causal window requires a positive time span.")
+        if self.causal_sigma <= 0:
+            raise ValueError("causal_sigma must be positive.")
+        if self.causal_w0 <= 0:
+            raise ValueError("causal_w0 must be positive.")
+        if not np.isfinite(self.causal_threshold):
+            raise ValueError("causal_threshold must be finite.")
+        if not 0 <= self.causal_ema_beta < 1:
+            raise ValueError("causal_ema_beta must satisfy 0 <= beta < 1.")
+        if self.causal_required_success_checks < 1:
+            raise ValueError("causal_required_success_checks must be at least 1.")
+
+    def _causal_window_weights(self, points):
+        times = np.asarray(points, dtype=np.float64)[:, -1]
+        # Causal weighting only boosts the base brightness and never dims it.
+        return np.maximum(
+            gaussian_time_window(times, self.causal_mu, self.causal_sigma, self.causal_w0),
+            0.5,
+        )
+
+    def _causal_check_interval(self):
+        if self.causal_stage_index == 0:
+            return self.causal_t_min, min(self.causal_t_min + self.causal_sigma, self.causal_t_max)
+        return (
+            max(self.causal_t_min, self.causal_mu - self.causal_sigma),
+            min(self.causal_t_max, self.causal_mu + self.causal_sigma),
+        )
+
+    def _causal_check_points(self, left, right):
+        times = self.fixed_points[:, -1]
+        mask = (times >= left) & (times <= right)
+        if np.any(mask):
+            return self.fixed_points[mask], False
+        return self.fixed_points, True
+
+    def _causal_count_movable_points(self, left, right):
+        times = self.movable_points[:, -1]
+        return int(np.count_nonzero((times >= left) & (times <= right)))
+
+    def _log_causal_brightness_state(self, step, state):
+        step_text = "?" if step is None else str(int(step))
+        ema = state["causal_brightness_ema"]
+        ema_text = "None" if ema is None else f"{ema:.6g}"
+        print(
+            "[FAMAW causal brightness] "
+            f"step={step_text} "
+            f"stage={state['causal_stage_index']} "
+            f"mu={state['causal_mu']:.6g} "
+            f"interval=[{state['causal_check_left']:.6g}, {state['causal_check_right']:.6g}] "
+            f"points={state['causal_check_points']} "
+            f"movable_points={state['causal_movable_points_in_interval']} "
+            f"mean={state['causal_mean_brightness']:.6g} "
+            f"ema={ema_text} "
+            f"threshold={self.causal_threshold:.6g} "
+            f"success={state['causal_success_counter']}/{self.causal_required_success_checks} "
+            f"shifted={state['causal_shifted']} "
+            f"finished={state['causal_finished']} "
+            f"fallback={state['causal_used_fallback']}"
+        )
+
+    def _update_causal_window(self, step=None):
+        if not self.causal_window_enabled:
+            self.last_causal_state = None
+            return None
+
+        left, right = self._causal_check_interval()
+        check_points, used_fallback = self._causal_check_points(left, right)
+        movable_points_in_interval = self._causal_count_movable_points(left, right)
+        check_brightness = compute_gradient_brightness(self.model, check_points)
+        mean_brightness = float(np.mean(check_brightness))
+        if self.causal_brightness_ema is None:
+            self.causal_brightness_ema = mean_brightness
+        else:
+            self.causal_brightness_ema = (
+                self.causal_ema_beta * self.causal_brightness_ema
+                + (1.0 - self.causal_ema_beta) * mean_brightness
+            )
+        ema_for_record = float(self.causal_brightness_ema)
+
+        shifted = False
+        if not self.causal_finished:
+            if self.causal_brightness_ema < self.causal_threshold:
+                self.causal_success_counter += 1
+            else:
+                self.causal_success_counter = 0
+
+            if self.causal_success_counter >= self.causal_required_success_checks:
+                self.causal_mu = min(self.causal_mu + self.causal_sigma, self.causal_t_max)
+                self.causal_success_counter = 0
+                self.causal_brightness_ema = None
+                self.causal_stage_index += 1
+                shifted = True
+                if self.causal_mu >= self.causal_t_max or self.causal_mu + self.causal_sigma >= self.causal_t_max:
+                    self.causal_mu = self.causal_t_max
+                    self.causal_finished = True
+
+        self.last_causal_state = {
+            "causal_mu": float(self.causal_mu),
+            "causal_sigma": float(self.causal_sigma),
+            "causal_w0": float(self.causal_w0),
+            "causal_check_left": float(left),
+            "causal_check_right": float(right),
+            "causal_check_points": int(len(check_points)),
+            "causal_movable_points_in_interval": movable_points_in_interval,
+            "causal_mean_brightness": mean_brightness,
+            "causal_brightness_ema": ema_for_record,
+            "causal_success_counter": int(self.causal_success_counter),
+            "causal_stage_index": int(self.causal_stage_index),
+            "causal_shifted": bool(shifted),
+            "causal_finished": bool(self.causal_finished),
+            "causal_used_fallback": bool(used_fallback),
+        }
+        if self.causal_log_brightness:
+            self._log_causal_brightness_state(step, self.last_causal_state)
+        return self.last_causal_state
 
     def _sample_initial_pde_points(self):
         total = self.config.num_fixed_points + self.config.num_movable_points
@@ -336,7 +499,10 @@ class FAMTrainer:
 
     def _move_points(self):
         brightness_raw = compute_gradient_brightness(self.model, self.movable_points)
-        brightness_norm = normalize_brightness(brightness_raw)
+        brightness_for_move = brightness_raw
+        if self.causal_window_enabled:
+            brightness_for_move = brightness_raw * self._causal_window_weights(self.movable_points)
+        brightness_norm = normalize_brightness(brightness_for_move)
         bbox = np.asarray(self.pde.bbox, dtype=np.float32)
         lower = bbox[::2]
         upper = bbox[1::2]
@@ -400,6 +566,8 @@ class FAMTrainer:
             "brightness_max": float(np.max(brightness_raw)),
             "moved_distance_mean": float(np.mean(np.linalg.norm(moved_after - moved_before, axis=1))),
         }
+        if self.last_causal_state is not None:
+            record.update(self.last_causal_state)
         self.refresh_history.append(record)
         if self.save_path is None:
             return
@@ -516,6 +684,7 @@ class FAMTrainer:
 
             if self.model.train_state.step in refresh_steps:
                 moved_before, moved_after, brightness_raw, brightness_norm = self._move_points()
+                self._update_causal_window(self.model.train_state.step)
                 self._record_refresh_state(
                     self.model.train_state.step,
                     brightness_raw,

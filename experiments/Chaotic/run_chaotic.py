@@ -144,6 +144,27 @@ def configure_optimizer(args):
         )
 
 
+def validate_args(args):
+    if args.weight_decay < 0:
+        raise ValueError("--weight-decay must be non-negative.")
+
+    if args.optimizer == "adamw" and args.weight_decay == 0:
+        raise ValueError(
+            "AdamW requires --weight-decay > 0. "
+            "Either pass a positive value, for example --weight-decay 1e-4, "
+            "or switch to --optimizer adam."
+        )
+
+    if args.famaw_causal_window and args.sampling_method != "famaw-w":
+        raise ValueError("--famaw-causal-window is only supported with --sampling-method famaw-w.")
+    if args.famaw_causal_sigma is not None and args.famaw_causal_sigma <= 0:
+        raise ValueError("--famaw-causal-sigma must be positive.")
+    if args.famaw_causal_w0 <= 0:
+        raise ValueError("--famaw-causal-w0 must be positive.")
+    if not np.isfinite(args.famaw_causal_threshold):
+        raise ValueError("--famaw-causal-threshold must be finite.")
+
+
 def make_callbacks(args):
     if args.no_callbacks:
         return None
@@ -222,6 +243,11 @@ def run_one(equation_name, args):
             save_diagnostics=args.fam_save_diagnostics,
             save_point_plots=args.fam_save_point_plots,
             point_plot_every=args.plot_every,
+            causal_window_enabled=args.famaw_causal_window,
+            causal_sigma=args.famaw_causal_sigma,
+            causal_w0=args.famaw_causal_w0,
+            causal_threshold=args.famaw_causal_threshold,
+            causal_log_brightness=args.famaw_causal_log_brightness,
         )
         trainer = FAMTrainer(
             model,
@@ -246,9 +272,9 @@ def parse_args():
         choices=["gs", "grayscott", "gray-scott", "ks", "kuramoto-sivashinsky", "both"],
         default="kuramoto-sivashinsky",
     )
-    parser.add_argument("--hidden-layers", type=str, default="100*5")
-    parser.add_argument("--net", choices=["mlp", "resnet"], default="mlp")
-    parser.add_argument("--iterations", type=int, default=10000)
+    parser.add_argument("--hidden-layers", type=str, default="50*5")
+    parser.add_argument("--net", choices=["mlp", "resnet"], default="resnet")
+    parser.add_argument("--iterations", type=int, default=1000)
     parser.add_argument("--lr", type=float, default=5e-4)
     parser.add_argument("--bc-loss-weight", type=float, default=100.0)
     parser.add_argument("--seed", type=int, default=1234)
@@ -264,15 +290,20 @@ def parse_args():
         choices=["none", "fam-w", "famaw-w"],
         default="famaw-w",
     )
-    parser.add_argument("--sampling-refresh-count", type=int, default=100)
+    parser.add_argument("--sampling-refresh-count", type=int, default=10)
     parser.add_argument("--fam-alpha", type=float, default=1.0)
     parser.add_argument("--fam-beta", type=float, default=1.0)
     parser.add_argument("--fam-gamma", type=float, default=1.0)
     parser.add_argument("--faw-lr", type=float, default=1e-3)
-    parser.add_argument("--fam-fixed-points", type=int, default=3500)
-    parser.add_argument("--fam-movable-points", type=int, default=2000)
+    parser.add_argument("--fam-fixed-points", type=int, default=4000)
+    parser.add_argument("--fam-movable-points", type=int, default=1500)
     parser.add_argument("--fam-save-diagnostics", type=str2bool, nargs="?", const=True, default=False)
     parser.add_argument("--fam-save-point-plots", type=str2bool, nargs="?", const=True, default=True)
+    parser.add_argument("--famaw-causal-window", action="store_true", default=True)
+    parser.add_argument("--famaw-causal-sigma", type=float, default=0.1)
+    parser.add_argument("--famaw-causal-w0", type=float, default=50)
+    parser.add_argument("--famaw-causal-threshold", type=float, default=1.05)
+    parser.add_argument("--famaw-causal-log-brightness", action="store_true", default=True)
 
     parser.add_argument(
         "--optimizer",
@@ -292,7 +323,7 @@ def parse_args():
         ],
         default="adam",
     )
-    parser.add_argument("--weight-decay", type=float, default=0.0)
+    parser.add_argument("--weight-decay", type=float, default=0)
 
     parser.add_argument("--pso-pop-size", type=int, default=30)
     parser.add_argument("--pso-b", type=float, default=0.9)
@@ -340,6 +371,7 @@ def parse_args():
 
 def main():
     args = parse_args()
+    validate_args(args)
     if args.equation == "both":
         for equation_name in ("gs", "ks"):
             run_one(equation_name, args)
