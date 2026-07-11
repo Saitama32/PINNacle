@@ -263,6 +263,7 @@ class FAMTrainer:
         self.causal_stage_index = 0
         self.causal_finished = False
         self.last_causal_state = None
+        self.last_causal_move_state = None
         if self.causal_window_enabled:
             self._validate_causal_window_config()
 
@@ -296,7 +297,7 @@ class FAMTrainer:
         # Causal weighting only boosts the base brightness and never dims it.
         return np.maximum(
             gaussian_time_window(times, self.causal_mu, self.causal_sigma, self.causal_w0),
-            0.5,
+            0.1,
         )
 
     def _causal_check_interval(self):
@@ -318,6 +319,35 @@ class FAMTrainer:
         times = self.movable_points[:, -1]
         return int(np.count_nonzero((times >= left) & (times <= right)))
 
+    def _build_causal_move_state(self, brightness_raw, window_weights, brightness_for_move, brightness_norm):
+        left, right = self._causal_check_interval()
+        times = np.asarray(self.movable_points[:, -1], dtype=np.float64)
+        interval_mask = (times >= left) & (times <= right)
+        brightest_index = int(np.argmax(brightness_for_move))
+        nearest_mu_index = int(np.argmin(np.abs(times - self.causal_mu)))
+        return {
+            "causal_window_weight_min": float(np.min(window_weights)),
+            "causal_window_weight_mean": float(np.mean(window_weights)),
+            "causal_window_weight_max": float(np.max(window_weights)),
+            "causal_move_brightness_min": float(np.min(brightness_for_move)),
+            "causal_move_brightness_mean": float(np.mean(brightness_for_move)),
+            "causal_move_brightness_max": float(np.max(brightness_for_move)),
+            "causal_move_norm_min": float(np.min(brightness_norm)),
+            "causal_move_norm_mean": float(np.mean(brightness_norm)),
+            "causal_move_norm_max": float(np.max(brightness_norm)),
+            "causal_move_mass_in_interval": float(np.sum(brightness_norm[interval_mask])),
+            "causal_move_points_in_interval": int(np.count_nonzero(interval_mask)),
+            "causal_move_brightest_time": float(times[brightest_index]),
+            "causal_move_brightest_weight": float(window_weights[brightest_index]),
+            "causal_move_brightest_raw": float(brightness_raw[brightest_index]),
+            "causal_move_brightest_total": float(brightness_for_move[brightest_index]),
+            "causal_move_nearest_mu_time": float(times[nearest_mu_index]),
+            "causal_move_nearest_mu_weight": float(window_weights[nearest_mu_index]),
+            "causal_move_nearest_mu_raw": float(brightness_raw[nearest_mu_index]),
+            "causal_move_nearest_mu_total": float(brightness_for_move[nearest_mu_index]),
+            "causal_move_weighted_time_mean": float(np.sum(times * brightness_norm)),
+        }
+
     def _log_causal_brightness_state(self, step, state):
         step_text = "?" if step is None else str(int(step))
         ema = state["causal_brightness_ema"]
@@ -338,6 +368,22 @@ class FAMTrainer:
             f"finished={state['causal_finished']} "
             f"fallback={state['causal_used_fallback']}"
         )
+        if "causal_move_brightness_max" in state:
+            print(
+                "[FAMAW causal move] "
+                f"step={step_text} "
+                f"mu={state['causal_mu']:.6g} "
+                f"weight[min/mean/max]={state['causal_window_weight_min']:.6g}/{state['causal_window_weight_mean']:.6g}/{state['causal_window_weight_max']:.6g} "
+                f"total_brightness[min/mean/max]={state['causal_move_brightness_min']:.6g}/{state['causal_move_brightness_mean']:.6g}/{state['causal_move_brightness_max']:.6g} "
+                f"norm[min/max]={state['causal_move_norm_min']:.6g}/{state['causal_move_norm_max']:.6g} "
+                f"mass_in_interval={state['causal_move_mass_in_interval']:.6g} "
+                f"movable_in_interval={state['causal_move_points_in_interval']} "
+                f"brightest_time={state['causal_move_brightest_time']:.6g} "
+                f"brightest_weight={state['causal_move_brightest_weight']:.6g} "
+                f"nearest_mu_time={state['causal_move_nearest_mu_time']:.6g} "
+                f"nearest_mu_weight={state['causal_move_nearest_mu_weight']:.6g} "
+                f"weighted_time_mean={state['causal_move_weighted_time_mean']:.6g}"
+            )
 
     def _update_causal_window(self, step=None):
         if not self.causal_window_enabled:
@@ -391,6 +437,8 @@ class FAMTrainer:
             "causal_finished": bool(self.causal_finished),
             "causal_used_fallback": bool(used_fallback),
         }
+        if self.last_causal_move_state is not None:
+            self.last_causal_state.update(self.last_causal_move_state)
         if self.causal_log_brightness:
             self._log_causal_brightness_state(step, self.last_causal_state)
         return self.last_causal_state
@@ -500,9 +548,19 @@ class FAMTrainer:
     def _move_points(self):
         brightness_raw = compute_gradient_brightness(self.model, self.movable_points)
         brightness_for_move = brightness_raw
+        window_weights = None
+        self.last_causal_move_state = None
         if self.causal_window_enabled:
-            brightness_for_move = brightness_raw * self._causal_window_weights(self.movable_points)
+            window_weights = self._causal_window_weights(self.movable_points)
+            brightness_for_move = brightness_raw * window_weights
         brightness_norm = normalize_brightness(brightness_for_move)
+        if self.causal_window_enabled:
+            self.last_causal_move_state = self._build_causal_move_state(
+                brightness_raw,
+                window_weights,
+                brightness_for_move,
+                brightness_norm,
+            )
         bbox = np.asarray(self.pde.bbox, dtype=np.float32)
         lower = bbox[::2]
         upper = bbox[1::2]
@@ -566,6 +624,8 @@ class FAMTrainer:
             "brightness_max": float(np.max(brightness_raw)),
             "moved_distance_mean": float(np.mean(np.linalg.norm(moved_after - moved_before, axis=1))),
         }
+        if self.last_causal_move_state is not None:
+            record.update(self.last_causal_move_state)
         if self.last_causal_state is not None:
             record.update(self.last_causal_state)
         self.refresh_history.append(record)

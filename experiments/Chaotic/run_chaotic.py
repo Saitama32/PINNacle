@@ -291,9 +291,9 @@ def parse_args():
         default="famaw-w",
     )
     parser.add_argument("--sampling-refresh-count", type=int, default=10)
-    parser.add_argument("--fam-alpha", type=float, default=1.0)
+    parser.add_argument("--fam-alpha", type=float, default=0.3)
     parser.add_argument("--fam-beta", type=float, default=1.0)
-    parser.add_argument("--fam-gamma", type=float, default=1.0)
+    parser.add_argument("--fam-gamma", type=float, default=0.8)
     parser.add_argument("--faw-lr", type=float, default=1e-3)
     parser.add_argument("--fam-fixed-points", type=int, default=4000)
     parser.add_argument("--fam-movable-points", type=int, default=1500)
@@ -301,7 +301,7 @@ def parse_args():
     parser.add_argument("--fam-save-point-plots", type=str2bool, nargs="?", const=True, default=True)
     parser.add_argument("--famaw-causal-window", action="store_true", default=True)
     parser.add_argument("--famaw-causal-sigma", type=float, default=0.1)
-    parser.add_argument("--famaw-causal-w0", type=float, default=50)
+    parser.add_argument("--famaw-causal-w0", type=float, default=1)
     parser.add_argument("--famaw-causal-threshold", type=float, default=1.05)
     parser.add_argument("--famaw-causal-log-brightness", action="store_true", default=True)
 
