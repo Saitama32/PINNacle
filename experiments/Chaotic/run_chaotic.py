@@ -119,6 +119,11 @@ def parse_float_list(value):
     return [float(item.strip()) for item in str(value).split(",") if item.strip()]
 
 
+def format_path_float(value):
+    text = f"{float(value):.10g}"
+    return text.replace("-", "m").replace("+", "").replace(".", "p")
+
+
 def build_window_ks_pde(window_length, x_state, y_state):
     base = KuramotoSivashinskyEquation(bbox=[0, 2 * np.pi, 0, window_length])
     x_ic = np.hstack(
@@ -376,6 +381,8 @@ def make_window_callbacks(args):
                     verbose=args.causal_diagnostics_verbose,
                 )
             )
+        if args.plot_every > 0:
+            callbacks.append(PlotCallback(log_every=args.plot_every, fast=args.fast_plot))
     if args.resample_collocation:
         callbacks.append(
             dde.callbacks.PDEPointResampler(
@@ -453,8 +460,13 @@ def run_ks_new_model_windows(args):
         os.makedirs(window_save_path, exist_ok=True)
         tol_schedule = parse_float_list(args.window_causal_tol_schedule)
         if args.use_causal_loss and tol_schedule:
-            for tol_value in tol_schedule:
+            for stage_idx, tol_value in enumerate(tol_schedule, start=1):
                 model.causal_loss_options["tol"] = tol_value
+                stage_save_path = os.path.join(
+                    window_save_path,
+                    f"stage_{stage_idx:02d}_tol_{format_path_float(tol_value)}",
+                )
+                os.makedirs(stage_save_path, exist_ok=True)
                 print(
                     f"Training KS window {window_idx + 1}/{args.num_windows} "
                     f"with causal tol={tol_value:g}."
@@ -463,7 +475,7 @@ def run_ks_new_model_windows(args):
                     iterations=args.iterations,
                     display_every=args.log_every,
                     callbacks=make_window_callbacks(args),
-                    model_save_path=window_save_path,
+                    model_save_path=stage_save_path,
                     save_model=args.save_model,
                 )
                 stage_quality = evaluate_window_against_reference(
@@ -478,11 +490,13 @@ def run_ks_new_model_windows(args):
                     f"MAE={stage_quality['mae']:.10e}, L2RE={stage_quality['l2re']:.10e}"
                 )
         else:
+            stage_save_path = os.path.join(window_save_path, "stage_01_main")
+            os.makedirs(stage_save_path, exist_ok=True)
             model.train(
                 iterations=args.iterations,
                 display_every=args.log_every,
                 callbacks=make_window_callbacks(args),
-                model_save_path=window_save_path,
+                model_save_path=stage_save_path,
                 save_model=args.save_model,
             )
 
@@ -577,7 +591,7 @@ def parse_args():
     parser.add_argument("--seed", type=int, default=1234)
     parser.add_argument("--out", type=str, default="runs_plain")
     parser.add_argument("--log-every", type=int, default=100)
-    parser.add_argument("--plot-every", type=int, default=0)
+    parser.add_argument("--plot-every", type=int, default=100)
     parser.add_argument("--fast-plot", type=str2bool, nargs="?", const=True, default=True)
     parser.add_argument("--loss-verbose", type=str2bool, nargs="?", const=True, default=True)
     parser.add_argument("--no-callbacks", action="store_true")
