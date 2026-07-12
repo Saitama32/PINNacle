@@ -338,10 +338,10 @@ def parse_args():
         default="kuramoto-sivashinsky",
     )
     parser.add_argument("--hidden-layers", type=str, default="100*5")
-    parser.add_argument("--net", choices=["mlp", "resnet", "fourier-mlp"], default="mlp")
+    parser.add_argument("--net", choices=["mlp", "resnet", "fourier-mlp"], default="fourier-mlp")
     parser.add_argument("--fourier-features", type=int, default=10)
-    parser.add_argument("--fourier-sigma", type=float, default=3.0)
-    parser.add_argument("--fourier-include-raw-x", type=str2bool, nargs="?", const=True, default=False)
+    parser.add_argument("--fourier-sigma", type=float, default=5.0)
+    parser.add_argument("--fourier-include-raw-x", type=str2bool, nargs="?", const=True, default=True)
     parser.add_argument("--fourier-include-bias", type=str2bool, nargs="?", const=True, default=True)
     parser.add_argument("--iterations", type=int, default=10000)
     parser.add_argument("--lr", type=float, default=5e-4)
@@ -357,7 +357,7 @@ def parse_args():
     parser.add_argument(
         "--sampling-method",
         choices=["none", "fam-w", "famaw-w"],
-        default="fam-w",
+        default="none",
     )
     parser.add_argument("--sampling-refresh-every", type=int, default=100)
     parser.add_argument("--fam-alpha", type=float, default=0.4)
