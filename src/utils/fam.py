@@ -25,22 +25,14 @@ def split_fixed_movable_points(points, num_fixed, num_movable, rng=None, shuffle
     return points[:num_fixed].copy(), points[num_fixed:].copy()
 
 
-def build_refresh_schedule(iterations, refresh_count):
+def build_refresh_schedule_every(iterations, refresh_every):
     if iterations <= 1:
         return []
-    if refresh_count < 0:
-        raise ValueError("refresh_count must be non-negative.")
-    if refresh_count == 0:
-        return []
-    if refresh_count >= iterations:
-        raise ValueError("refresh_count must be smaller than iterations.")
-    steps = []
-    for index in range(1, refresh_count + 1):
-        step = int(round(index * iterations / (refresh_count + 1)))
-        step = min(max(step, 1), iterations - 1)
-        if not steps or steps[-1] != step:
-            steps.append(step)
-    return steps
+    if refresh_every <= 0:
+        raise ValueError("refresh_every must be positive.")
+    if refresh_every >= iterations:
+        raise ValueError("refresh_every must be smaller than iterations.")
+    return list(range(refresh_every, iterations, refresh_every))
 
 
 def normalize_brightness(values, power=1.0):
@@ -178,7 +170,7 @@ class LossWeightAdapter:
 class FAMTrainConfig:
     mode: str
     iterations: int
-    refresh_count: int
+    refresh_every: int
     weight_lr: float
     alpha: float
     beta: float
@@ -242,7 +234,7 @@ class FAMTrainer:
             if static_loss_weights is not None
             else np.ones(self.pde.num_loss, dtype=np.float32)
         )
-        self.refresh_steps = build_refresh_schedule(config.iterations, config.refresh_count)
+        self.refresh_steps = build_refresh_schedule_every(config.iterations, config.refresh_every)
         self.joint_weight_update_optimizers = {"adam", "sgd", "rmsprop", "adamw", "soap"}
         self.causal_window_enabled = bool(config.causal_window_enabled)
         self.causal_t_min, self.causal_t_max = self._time_bounds()
@@ -275,8 +267,8 @@ class FAMTrainer:
         return float(bbox[-2]), float(bbox[-1])
 
     def _validate_causal_window_config(self):
-        if self.config.mode != "famaw-w":
-            raise ValueError("causal_window_enabled is only supported for famaw-w mode.")
+        if self.config.mode not in {"fam-w", "famaw-w"}:
+            raise ValueError("causal_window_enabled is only supported for fam-w or famaw-w mode.")
         if self.config.num_fixed_points <= 0:
             raise ValueError("causal_window_enabled requires at least one fixed point.")
         if self.causal_t_max <= self.causal_t_min:

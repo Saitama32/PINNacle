@@ -155,14 +155,16 @@ def validate_args(args):
             "or switch to --optimizer adam."
         )
 
-    if args.famaw_causal_window and args.sampling_method != "famaw-w":
-        raise ValueError("--famaw-causal-window is only supported with --sampling-method famaw-w.")
+    if args.famaw_causal_window and args.sampling_method not in {"fam-w", "famaw-w"}:
+        raise ValueError("--famaw-causal-window is only supported with --sampling-method fam-w or famaw-w.")
     if args.famaw_causal_sigma is not None and args.famaw_causal_sigma <= 0:
         raise ValueError("--famaw-causal-sigma must be positive.")
     if args.famaw_causal_w0 <= 0:
         raise ValueError("--famaw-causal-w0 must be positive.")
     if not np.isfinite(args.famaw_causal_threshold):
         raise ValueError("--famaw-causal-threshold must be finite.")
+    if args.sampling_refresh_every <= 0:
+        raise ValueError("--sampling-refresh-every must be positive.")
 
 
 def make_callbacks(args):
@@ -226,12 +228,10 @@ def run_one(equation_name, args):
             raise ValueError(
                 "--fam-fixed-points and --fam-movable-points are required when sampling-method is fam-w or famaw-w."
             )
-        if args.sampling_refresh_count <= 0:
-            raise ValueError("--sampling-refresh-count must be positive when adaptive sampling is enabled.")
         fam_config = FAMTrainConfig(
             mode=args.sampling_method,
             iterations=args.iterations,
-            refresh_count=args.sampling_refresh_count,
+            refresh_every=args.sampling_refresh_every,
             weight_lr=args.faw_lr,
             alpha=args.fam_alpha,
             beta=args.fam_beta,
@@ -272,11 +272,11 @@ def parse_args():
         choices=["gs", "grayscott", "gray-scott", "ks", "kuramoto-sivashinsky", "both"],
         default="kuramoto-sivashinsky",
     )
-    parser.add_argument("--hidden-layers", type=str, default="50*5")
-    parser.add_argument("--net", choices=["mlp", "resnet"], default="resnet")
-    parser.add_argument("--iterations", type=int, default=1000)
+    parser.add_argument("--hidden-layers", type=str, default="100*5")
+    parser.add_argument("--net", choices=["mlp", "resnet"], default="mlp")
+    parser.add_argument("--iterations", type=int, default=10000)
     parser.add_argument("--lr", type=float, default=5e-4)
-    parser.add_argument("--bc-loss-weight", type=float, default=100.0)
+    parser.add_argument("--bc-loss-weight", type=float, default=10000.0)
     parser.add_argument("--seed", type=int, default=1234)
     parser.add_argument("--out", type=str, default="runs_plain")
     parser.add_argument("--log-every", type=int, default=10)
@@ -288,14 +288,14 @@ def parse_args():
     parser.add_argument(
         "--sampling-method",
         choices=["none", "fam-w", "famaw-w"],
-        default="famaw-w",
+        default="fam-w",
     )
-    parser.add_argument("--sampling-refresh-count", type=int, default=10)
-    parser.add_argument("--fam-alpha", type=float, default=0.3)
+    parser.add_argument("--sampling-refresh-every", type=int, default=100)
+    parser.add_argument("--fam-alpha", type=float, default=0.4)
     parser.add_argument("--fam-beta", type=float, default=1.0)
     parser.add_argument("--fam-gamma", type=float, default=0.8)
     parser.add_argument("--faw-lr", type=float, default=1e-3)
-    parser.add_argument("--fam-fixed-points", type=int, default=4000)
+    parser.add_argument("--fam-fixed-points", type=int, default=2000)
     parser.add_argument("--fam-movable-points", type=int, default=1500)
     parser.add_argument("--fam-save-diagnostics", type=str2bool, nargs="?", const=True, default=False)
     parser.add_argument("--fam-save-point-plots", type=str2bool, nargs="?", const=True, default=True)
