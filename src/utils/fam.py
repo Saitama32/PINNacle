@@ -189,6 +189,8 @@ class FAMTrainConfig:
     causal_ema_beta: float = 0.9
     causal_required_success_checks: int = 3
     causal_log_brightness: bool = False
+    pde_point_weighting_enabled: bool = False
+    pde_point_weight_coeff: float = 1.0
 
 
 class FAMTrainer:
@@ -256,8 +258,11 @@ class FAMTrainer:
         self.causal_finished = False
         self.last_causal_state = None
         self.last_causal_move_state = None
+        self.last_pde_point_brightness_norm = None
+        self.last_pde_point_weight_state = None
         if self.causal_window_enabled:
             self._validate_causal_window_config()
+        self._validate_pde_point_weighting_config()
 
     def _time_bounds(self):
         timedomain = getattr(self.data.geom, "timedomain", None)
@@ -283,6 +288,14 @@ class FAMTrainer:
             raise ValueError("causal_ema_beta must satisfy 0 <= beta < 1.")
         if self.causal_required_success_checks < 1:
             raise ValueError("causal_required_success_checks must be at least 1.")
+
+    def _validate_pde_point_weighting_config(self):
+        if not self.config.pde_point_weighting_enabled:
+            return
+        if self.config.mode not in {"fam-w", "famaw-w"}:
+            raise ValueError("pde_point_weighting_enabled is only supported for fam-w or famaw-w mode.")
+        if self.config.pde_point_weight_coeff < 0 or not np.isfinite(self.config.pde_point_weight_coeff):
+            raise ValueError("pde_point_weight_coeff must be finite and non-negative.")
 
     def _causal_window_weights(self, points):
         times = np.asarray(points, dtype=np.float64)[:, -1]
@@ -376,6 +389,16 @@ class FAMTrainer:
                 f"nearest_mu_weight={state['causal_move_nearest_mu_weight']:.6g} "
                 f"weighted_time_mean={state['causal_move_weighted_time_mean']:.6g}"
             )
+
+    def _log_pde_point_weight_state(self, step, state):
+        step_text = "?" if step is None else str(int(step))
+        print(
+            "[FAM PDE point weighting] "
+            f"step={step_text} "
+            f"coeff={state['pde_point_weight_coeff']:.6g} "
+            f"weight[min/mean/max]={state['pde_point_weight_min']:.6g}/"
+            f"{state['pde_point_weight_mean']:.6g}/{state['pde_point_weight_max']:.6g}"
+        )
 
     def _update_causal_window(self, step=None):
         if not self.causal_window_enabled:
@@ -498,6 +521,96 @@ class FAMTrainer:
         self.loss_weight_adapter.set(self.current_loss_weights.copy())
         self.model.losshistory.set_loss_weights(self.current_loss_weights.copy())
 
+    def _current_movable_pde_point_weights(self):
+        if not self.config.pde_point_weighting_enabled:
+            return None
+        if self.last_pde_point_brightness_norm is None:
+            return np.ones(self.config.num_movable_points, dtype=np.float32)
+        brightness_norm = np.asarray(self.last_pde_point_brightness_norm, dtype=np.float32).reshape(-1)
+        if len(brightness_norm) != len(self.movable_points):
+            raise ValueError(
+                f"Expected {len(self.movable_points)} movable PDE point weights, got {len(brightness_norm)}."
+            )
+        return 1.0 + float(self.config.pde_point_weight_coeff) * brightness_norm
+
+    def _compute_pde_point_weight_state(self):
+        point_weights = self._current_movable_pde_point_weights()
+        if point_weights is None:
+            self.last_pde_point_weight_state = None
+            return None
+        self.last_pde_point_weight_state = {
+            "pde_point_weight_coeff": float(self.config.pde_point_weight_coeff),
+            "pde_point_weight_min": float(np.min(point_weights)),
+            "pde_point_weight_mean": float(np.mean(point_weights)),
+            "pde_point_weight_max": float(np.max(point_weights)),
+        }
+        return self.last_pde_point_weight_state
+
+    def _compute_pointwise_pde_losses(self):
+        if self.pde.num_pde <= 0:
+            return []
+        first_param = next(self.model.net.parameters(), None)
+        device = first_param.device if first_param is not None else torch.device("cpu")
+
+        def residual_squares(points):
+            if len(points) == 0:
+                return []
+            inputs = torch.as_tensor(points, dtype=torch.float32, device=device)
+            inputs.requires_grad_()
+            outputs = self.model.net(inputs)
+            residuals = self.pde.pde(inputs, outputs)
+            if torch.is_tensor(residuals):
+                residuals = [residuals]
+            terms = []
+            for residual in residuals:
+                residual_flat = residual.reshape(residual.shape[0], -1)
+                terms.append(torch.mean(torch.square(residual_flat), dim=1))
+            return terms
+
+        fixed_terms = residual_squares(self.fixed_points)
+        movable_terms = residual_squares(self.movable_points)
+        point_weights_np = self._current_movable_pde_point_weights()
+        if point_weights_np is None:
+            point_weights = None
+        else:
+            point_weights = torch.as_tensor(point_weights_np, dtype=torch.float32, device=device)
+        losses = []
+        num_fixed = len(self.fixed_points)
+        num_movable = len(self.movable_points)
+        total_points = num_fixed + num_movable
+        if total_points <= 0:
+            return [torch.zeros((), dtype=torch.float32, device=device) for _ in range(self.pde.num_pde)]
+        for idx in range(self.pde.num_pde):
+            fixed_term = fixed_terms[idx] if idx < len(fixed_terms) else None
+            movable_term = movable_terms[idx] if idx < len(movable_terms) else None
+            fixed_sum = torch.sum(fixed_term) if fixed_term is not None else torch.zeros((), dtype=torch.float32, device=device)
+            if movable_term is None:
+                movable_weighted_sum = torch.zeros((), dtype=torch.float32, device=device)
+            elif point_weights is None:
+                movable_weighted_sum = torch.sum(movable_term)
+            else:
+                movable_mean = torch.sum(point_weights * movable_term) / torch.clamp(torch.sum(point_weights), min=1e-12)
+                movable_weighted_sum = movable_mean * float(num_movable)
+            losses.append((fixed_sum + movable_weighted_sum) / float(total_points))
+        return losses
+
+    def _apply_pointwise_pde_weighting(self, weighted_losses):
+        if not self.config.pde_point_weighting_enabled or self.pde.num_pde <= 0:
+            return weighted_losses
+        pde_losses = self._compute_pointwise_pde_losses()
+        group_weights = torch.as_tensor(
+            self.current_loss_weights[: self.pde.num_pde],
+            dtype=weighted_losses.dtype,
+            device=weighted_losses.device,
+        )
+        replaced = []
+        for idx in range(len(weighted_losses)):
+            if idx < self.pde.num_pde:
+                replaced.append(group_weights[idx] * pde_losses[idx].to(weighted_losses.dtype))
+            else:
+                replaced.append(weighted_losses[idx])
+        return torch.stack(replaced)
+
     def _compute_weighted_losses_tensor(self):
         self.model.net.auxiliary_vars = self.model.train_state.train_aux_vars
         try:
@@ -507,7 +620,34 @@ class FAMTrainer:
             )
         finally:
             self.model.net.auxiliary_vars = None
-        return weighted_losses
+        return self._apply_pointwise_pde_weighting(weighted_losses)
+
+    def _theta_closure(self, skip_backward=False):
+        weighted_losses = self._compute_weighted_losses_tensor()
+        theta_loss = torch.sum(weighted_losses)
+        if not skip_backward:
+            self.model.opt.zero_grad()
+            theta_loss.backward()
+        return theta_loss, weighted_losses
+
+    def _step_theta_optimizer(self):
+        self.model.net.auxiliary_vars = self.model.train_state.train_aux_vars
+        try:
+            def closure(*, skip_backward=False):
+                theta_loss, _ = self._theta_closure(skip_backward=skip_backward)
+                return theta_loss
+
+            loss = self.model.opt.step(closure)
+            if not torch.is_tensor(loss):
+                loss, _ = self._theta_closure(skip_backward=True)
+            if self.model.lr_scheduler is not None:
+                if self.model.lr_scheduler.__class__.__name__ == "ReduceLROnPlateau":
+                    self.model.lr_scheduler.step(loss.detach())
+                else:
+                    self.model.lr_scheduler.step()
+            return loss
+        finally:
+            self.model.net.auxiliary_vars = None
 
     def _compute_unweighted_losses_for_weights(self):
         weighted_losses = self._compute_weighted_losses_tensor()
@@ -553,6 +693,11 @@ class FAMTrainer:
                 brightness_for_move,
                 brightness_norm,
             )
+        if self.config.pde_point_weighting_enabled:
+            self.last_pde_point_brightness_norm = brightness_norm.astype(np.float32).copy()
+            state = self._compute_pde_point_weight_state()
+            if self.causal_log_brightness and state is not None:
+                self._log_pde_point_weight_state(self.model.train_state.step, state)
         bbox = np.asarray(self.pde.bbox, dtype=np.float32)
         lower = bbox[::2]
         upper = bbox[1::2]
@@ -616,6 +761,8 @@ class FAMTrainer:
             "brightness_max": float(np.max(brightness_raw)),
             "moved_distance_mean": float(np.mean(np.linalg.norm(moved_after - moved_before, axis=1))),
         }
+        if self.last_pde_point_weight_state is not None:
+            record.update(self.last_pde_point_weight_state)
         if self.last_causal_move_state is not None:
             record.update(self.last_causal_move_state)
         if self.last_causal_state is not None:
@@ -650,47 +797,33 @@ class FAMTrainer:
             )
 
     def _train_theta_step(self):
-        self.model._train_step(
-            self.model.train_state.X_train,
-            self.model.train_state.y_train,
-            self.model.train_state.train_aux_vars,
-        )
-
-    def _train_joint_theta_weight_step(self):
-        self.model.net.auxiliary_vars = self.model.train_state.train_aux_vars
-        try:
-            self.model.opt.zero_grad()
-            self.weight_optimizer.zero_grad()
-            _, weighted_losses = self.model.outputs_losses_train(
+        if not self.config.pde_point_weighting_enabled:
+            self.model._train_step(
                 self.model.train_state.X_train,
                 self.model.train_state.y_train,
+                self.model.train_state.train_aux_vars,
             )
-            theta_loss = torch.sum(weighted_losses)
-            theta_loss.backward()
+            return
+        self._step_theta_optimizer()
 
-            weights = torch.as_tensor(
-                self.current_loss_weights,
-                dtype=weighted_losses.dtype,
-                device=weighted_losses.device,
-            )
-            unweighted_losses = weighted_losses.detach() / torch.clamp(weights, min=1e-12)
-            grouped_losses = self._get_group_losses(unweighted_losses)
-            base_weights = {
-                name: float(self.static_loss_weights[indices[0]])
-                for name, indices in self.group_indices.items()
-            }
-            weight_loss = famaw_weighted_loss(grouped_losses, self.c_params, self.group_names, base_weights=base_weights)
-            weight_loss.backward()
-
-            self.model.opt.step()
-            if self.model.lr_scheduler is not None:
-                if self.model.lr_scheduler.__class__.__name__ == "ReduceLROnPlateau":
-                    self.model.lr_scheduler.step(theta_loss.detach())
-                else:
-                    self.model.lr_scheduler.step()
-            self.weight_optimizer.step()
-        finally:
-            self.model.net.auxiliary_vars = None
+    def _train_joint_theta_weight_step(self):
+        self.weight_optimizer.zero_grad()
+        self._step_theta_optimizer()
+        weighted_losses = self._compute_weighted_losses_tensor()
+        weights = torch.as_tensor(
+            self.current_loss_weights,
+            dtype=weighted_losses.dtype,
+            device=weighted_losses.device,
+        )
+        unweighted_losses = weighted_losses.detach() / torch.clamp(weights, min=1e-12)
+        grouped_losses = self._get_group_losses(unweighted_losses)
+        base_weights = {
+            name: float(self.static_loss_weights[indices[0]])
+            for name, indices in self.group_indices.items()
+        }
+        weight_loss = famaw_weighted_loss(grouped_losses, self.c_params, self.group_names, base_weights=base_weights)
+        weight_loss.backward()
+        self.weight_optimizer.step()
 
     def train(self):
         self._sample_initial_pde_points()

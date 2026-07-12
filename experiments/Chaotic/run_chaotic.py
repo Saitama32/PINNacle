@@ -14,7 +14,7 @@ import numpy as np
 import torch
 import deepxde as dde
 
-from src.model import ResNet
+from src.model import PeriodicFourierFeatures, ResNet
 from src.pde.chaotic import GrayScottEquation, KuramotoSivashinskyEquation
 from src.utils.args import parse_hidden_layers
 from src.utils.callbacks import LossCallback, PlotCallback, TesterCallback
@@ -62,11 +62,20 @@ def parse_resnet_shape(hidden_layers):
     return width, len(layers)
 
 
-def build_network(pde, hidden_layers, net_type):
+def build_network(
+    pde,
+    hidden_layers,
+    net_type,
+    fourier_features=None,
+    fourier_sigma=None,
+    fourier_include_raw_x=False,
+    fourier_include_bias=True,
+):
+    hidden = parse_hidden_layers(argparse.Namespace(hidden_layers=hidden_layers))
     if net_type == "mlp":
         layers = [
             pde.input_dim,
-            *parse_hidden_layers(argparse.Namespace(hidden_layers=hidden_layers)),
+            *hidden,
             pde.output_dim,
         ]
         return dde.nn.FNN(layers, "tanh", "Glorot normal").float()
@@ -82,12 +91,48 @@ def build_network(pde, hidden_layers, net_type):
             kernel_initializer="Glorot normal",
         ).float()
 
+    if net_type == "fourier-mlp":
+        if not isinstance(pde, KuramotoSivashinskyEquation):
+            raise ValueError("fourier-mlp is currently supported only for KS.")
+        feature_encoder = PeriodicFourierFeatures(
+            x_period=pde.bbox[1] - pde.bbox[0],
+            num_modes_x=fourier_features,
+            include_t=True,
+            include_raw_x=fourier_include_raw_x,
+            include_bias=fourier_include_bias,
+        )
+        layers = [
+            feature_encoder.out_dim,
+            *hidden,
+            pde.output_dim,
+        ]
+        net = dde.nn.FNN(layers, "tanh", "Glorot normal").float()
+        net.apply_feature_transform(feature_encoder)
+        return net
+
     raise ValueError(f"Unsupported network type: {net_type}")
 
 
-def build_model(equation_name, hidden_layers, bc_loss_weight, net_type):
+def build_model(
+    equation_name,
+    hidden_layers,
+    bc_loss_weight,
+    net_type,
+    fourier_features=None,
+    fourier_sigma=None,
+    fourier_include_raw_x=False,
+    fourier_include_bias=True,
+):
     pde = EQUATIONS[equation_name]()
-    net = build_network(pde, hidden_layers, net_type)
+    net = build_network(
+        pde,
+        hidden_layers,
+        net_type,
+        fourier_features=fourier_features,
+        fourier_sigma=fourier_sigma,
+        fourier_include_raw_x=fourier_include_raw_x,
+        fourier_include_bias=fourier_include_bias,
+    )
     return pde.create_model(net), loss_weights_for(pde, bc_loss_weight)
 
 
@@ -163,8 +208,16 @@ def validate_args(args):
         raise ValueError("--famaw-causal-w0 must be positive.")
     if not np.isfinite(args.famaw_causal_threshold):
         raise ValueError("--famaw-causal-threshold must be finite.")
+    if args.fam_pde_point_weighting and args.sampling_method not in {"fam-w", "famaw-w"}:
+        raise ValueError("--fam-pde-point-weighting is only supported with --sampling-method fam-w or famaw-w.")
+    if args.fam_pde_point_weight_coeff < 0 or not np.isfinite(args.fam_pde_point_weight_coeff):
+        raise ValueError("--fam-pde-point-weight-coeff must be finite and non-negative.")
     if args.sampling_refresh_every <= 0:
         raise ValueError("--sampling-refresh-every must be positive.")
+    if args.fourier_features <= 0:
+        raise ValueError("--fourier-features must be positive.")
+    if args.fourier_sigma <= 0 or not np.isfinite(args.fourier_sigma):
+        raise ValueError("--fourier-sigma must be positive and finite.")
 
 
 def make_callbacks(args):
@@ -185,11 +238,21 @@ def run_one(equation_name, args):
         torch.manual_seed(args.seed)
         np.random.seed(args.seed)
 
+    if args.net == "fourier-mlp" and not np.isclose(args.fourier_sigma, 3.0):
+        print(
+            "Warning: --fourier-sigma is kept only for CLI backward compatibility and is ignored "
+            "by the current periodic KS Fourier features."
+        )
+
     model, loss_weights = build_model(
         equation_name,
         args.hidden_layers,
         args.bc_loss_weight,
         args.net,
+        fourier_features=args.fourier_features,
+        fourier_sigma=args.fourier_sigma,
+        fourier_include_raw_x=args.fourier_include_raw_x,
+        fourier_include_bias=args.fourier_include_bias,
     )
     if args.weight_decay > 0:
         model.net.regularizer = ("l2", args.weight_decay)
@@ -248,6 +311,8 @@ def run_one(equation_name, args):
             causal_w0=args.famaw_causal_w0,
             causal_threshold=args.famaw_causal_threshold,
             causal_log_brightness=args.famaw_causal_log_brightness,
+            pde_point_weighting_enabled=args.fam_pde_point_weighting,
+            pde_point_weight_coeff=args.fam_pde_point_weight_coeff,
         )
         trainer = FAMTrainer(
             model,
@@ -273,10 +338,14 @@ def parse_args():
         default="kuramoto-sivashinsky",
     )
     parser.add_argument("--hidden-layers", type=str, default="100*5")
-    parser.add_argument("--net", choices=["mlp", "resnet"], default="mlp")
+    parser.add_argument("--net", choices=["mlp", "resnet", "fourier-mlp"], default="mlp")
+    parser.add_argument("--fourier-features", type=int, default=10)
+    parser.add_argument("--fourier-sigma", type=float, default=3.0)
+    parser.add_argument("--fourier-include-raw-x", type=str2bool, nargs="?", const=True, default=False)
+    parser.add_argument("--fourier-include-bias", type=str2bool, nargs="?", const=True, default=True)
     parser.add_argument("--iterations", type=int, default=10000)
     parser.add_argument("--lr", type=float, default=5e-4)
-    parser.add_argument("--bc-loss-weight", type=float, default=10000.0)
+    parser.add_argument("--bc-loss-weight", type=float, default=100.0)
     parser.add_argument("--seed", type=int, default=1234)
     parser.add_argument("--out", type=str, default="runs_plain")
     parser.add_argument("--log-every", type=int, default=10)
@@ -299,11 +368,13 @@ def parse_args():
     parser.add_argument("--fam-movable-points", type=int, default=1500)
     parser.add_argument("--fam-save-diagnostics", type=str2bool, nargs="?", const=True, default=False)
     parser.add_argument("--fam-save-point-plots", type=str2bool, nargs="?", const=True, default=True)
-    parser.add_argument("--famaw-causal-window", action="store_true", default=True)
+    parser.add_argument("--famaw-causal-window", action="store_true", default=False)
     parser.add_argument("--famaw-causal-sigma", type=float, default=0.1)
     parser.add_argument("--famaw-causal-w0", type=float, default=1)
     parser.add_argument("--famaw-causal-threshold", type=float, default=1.05)
-    parser.add_argument("--famaw-causal-log-brightness", action="store_true", default=True)
+    parser.add_argument("--famaw-causal-log-brightness", action="store_true", default=False)
+    parser.add_argument("--fam-pde-point-weighting", action="store_true", default=False)
+    parser.add_argument("--fam-pde-point-weight-coeff", type=float, default=10000.0)
 
     parser.add_argument(
         "--optimizer",
@@ -319,7 +390,7 @@ def parse_args():
             "rmsprop",
             "adamw",
             "SSBroyden",
-            "ssbroyden",
+            "adam",
         ],
         default="adam",
     )
