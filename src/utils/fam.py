@@ -634,7 +634,8 @@ class FAMTrainer:
         self.model.net.auxiliary_vars = self.model.train_state.train_aux_vars
         try:
             def closure(*, skip_backward=False):
-                theta_loss, _ = self._theta_closure(skip_backward=skip_backward)
+                theta_loss, weighted_losses = self._theta_closure(skip_backward=skip_backward)
+                self.model.opt.losses = weighted_losses
                 return theta_loss
 
             loss = self.model.opt.step(closure)
