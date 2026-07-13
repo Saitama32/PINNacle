@@ -97,15 +97,25 @@ def build_network(
         ).float()
 
     if net_type == "fourier-mlp":
-        if not isinstance(pde, KuramotoSivashinskyEquation):
-            raise ValueError("fourier-mlp is currently supported only for KS.")
-        feature_encoder = PeriodicFourierFeatures(
-            x_period=pde.bbox[1] - pde.bbox[0],
-            num_modes_x=fourier_features,
-            include_t=True,
-            include_raw_x=fourier_include_raw_x,
-            include_bias=fourier_include_bias,
-        )
+        if isinstance(pde, KuramotoSivashinskyEquation):
+            feature_encoder = PeriodicFourierFeatures(
+                x_period=pde.bbox[1] - pde.bbox[0],
+                num_modes_x=fourier_features,
+                include_t=True,
+                include_raw_x=fourier_include_raw_x,
+                include_bias=fourier_include_bias,
+            )
+        elif isinstance(pde, GrayScottEquation):
+            feature_encoder = PeriodicFourierFeatures(
+                x_period=pde.bbox[1] - pde.bbox[0],
+                y_period=pde.bbox[3] - pde.bbox[2],
+                num_modes_x=fourier_features,
+                include_t=True,
+                include_raw_x=fourier_include_raw_x,
+                include_bias=fourier_include_bias,
+            )
+        else:
+            raise ValueError("fourier-mlp is currently supported only for KS and Gray-Scott.")
         layers = [
             feature_encoder.out_dim,
             *hidden,
@@ -371,7 +381,7 @@ def parse_args():
     parser.add_argument("--fourier-include-raw-x", type=str2bool, nargs="?", const=True, default=True)
     parser.add_argument("--fourier-include-bias", type=str2bool, nargs="?", const=True, default=True)
     parser.add_argument("--iterations", type=int, default=10000)
-    parser.add_argument("--lr", type=float, default=5e-4)
+    parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--bc-loss-weight", type=float, default=100.0)
     parser.add_argument("--seed", type=int, default=1234)
     parser.add_argument("--out", type=str, default="runs_plain")
@@ -396,7 +406,7 @@ def parse_args():
     )
     parser.add_argument(
         "--sampling-method",
-        choices=["fam-w", "fam-w", "famaw-w"],
+        choices=["none", "fam-w", "famaw-w"],
         default="fam-w",
     )
     parser.add_argument("--sampling-refresh-every", type=int, default=100)
@@ -432,7 +442,7 @@ def parse_args():
             "SSBroyden",
             "adam",
         ],
-        default="PSO",
+        default="sgd",
     )
     parser.add_argument("--weight-decay", type=float, default=0)
 
