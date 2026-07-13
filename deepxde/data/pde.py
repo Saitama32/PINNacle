@@ -147,14 +147,65 @@ class PDE(Data):
         bcs_start = np.cumsum([0] + self.num_bcs)
         bcs_start = list(map(int, bcs_start))
         error_f = [fi[bcs_start[-1] :] for fi in f]
-        losses = [
-            loss_fn[i](bkd.zeros_like(error), error) for i, error in enumerate(error_f)
-        ]
+        bc_losses = []
+        ic_losses = []
         for i, bc in enumerate(self.bcs):
             beg, end = bcs_start[i], bcs_start[i + 1]
             # The same BC points are used for training and testing.
             error = bc.error(self.train_x, inputs, outputs, beg, end)
-            losses.append(loss_fn[len(error_f) + i](bkd.zeros_like(error), error))
+            loss = loss_fn[len(error_f) + i](bkd.zeros_like(error), error)
+            bc_losses.append(loss)
+            if bc.__class__.__name__ == "IC":
+                ic_losses.append(loss)
+
+        causal_options = getattr(model, "causal_loss_options", None)
+        use_causal = (
+            backend_name == "pytorch"
+            and causal_options is not None
+            and causal_options.get("enabled", False)
+            and getattr(model, "_dde_loss_context", None) == "train"
+        )
+        ic_loss = None
+        if use_causal and ic_losses:
+            ic_loss = sum(ic_losses) / len(ic_losses)
+        elif (
+            use_causal
+            and bool(causal_options.get("include_ic_in_weights", False))
+            and bc_losses
+        ):
+            ic_loss = sum(bc_losses) / len(bc_losses)
+
+        losses = []
+        causal_diagnostics = {}
+        for i, error in enumerate(error_f):
+            if use_causal:
+                from src.losses.causal import causal_residual_loss
+
+                time_index = int(causal_options.get("time_index", -1))
+                pde_inputs = inputs[bcs_start[-1] :]
+                t = pde_inputs[:, time_index].reshape(-1, 1)
+                loss, diagnostics = causal_residual_loss(
+                    residual=error,
+                    t=t,
+                    num_chunks=int(causal_options.get("num_chunks", 16)),
+                    tol=float(causal_options.get("tol", 0.1)),
+                    include_ic_in_weights=bool(
+                        causal_options.get("include_ic_in_weights", False)
+                    ),
+                    ic_loss=ic_loss,
+                    ic_weight_in_causal=float(
+                        causal_options.get("ic_weight_in_causal", 0.0)
+                    ),
+                )
+                losses.append(loss)
+                for key, value in diagnostics.items():
+                    causal_diagnostics[f"pde_{i}_{key}"] = value
+            else:
+                losses.append(loss_fn[i](bkd.zeros_like(error), error))
+
+        if use_causal:
+            model.causal_loss_diagnostics = causal_diagnostics
+        losses.extend(bc_losses)
         return losses
 
     @run_if_all_none("train_x", "train_y", "train_aux_vars")

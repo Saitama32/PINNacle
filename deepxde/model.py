@@ -322,7 +322,11 @@ class Model:
             if targets is not None:
                 targets = torch.as_tensor(targets)
             # NOTE: edited
-            losses = losses_fn(targets, outputs_, loss_fn, inputs, self, self.net.auxiliary_vars)
+            self._dde_loss_context = "train" if training else "test"
+            losses = losses_fn(
+                targets, outputs_, loss_fn, inputs, self, self.net.auxiliary_vars
+            )
+            self._dde_loss_context = None
             if not isinstance(losses, list):
                 losses = [losses]
             losses = torch.stack(losses)

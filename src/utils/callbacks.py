@@ -119,6 +119,54 @@ class LossCallback(Callback):
         plot.plot_loss_history(self.model.pde, loss_history, save_path, loss_weights=loss_weights)
 
 
+class CausalDiagnosticsCallback(Callback):
+    def __init__(self, log_every=None, verbose=False):
+        super(CausalDiagnosticsCallback, self).__init__()
+        self.log_every = log_every
+        self.verbose = verbose
+        self.rows = []
+        self.keys = None
+        self.epochs_since_last_log = 0
+
+    def on_train_begin(self):
+        if self.log_every is None:
+            self.log_every = self.model.display_every
+        self.save_path = self.model.model_save_path + "/causal_diagnostics.txt"
+
+    def on_epoch_end(self):
+        self.epochs_since_last_log += 1
+        if self.log_every is None or self.epochs_since_last_log < self.log_every:
+            return
+        self.epochs_since_last_log = 0
+
+        diagnostics = getattr(self.model, "causal_loss_diagnostics", None)
+        if not diagnostics:
+            return
+
+        if self.keys is None:
+            self.keys = sorted(diagnostics.keys())
+
+        row = [self.model.train_state.step]
+        for key in self.keys:
+            value = diagnostics.get(key, np.nan)
+            if torch.is_tensor(value):
+                value = value.detach().cpu().item()
+            row.append(float(value))
+        self.rows.append(row)
+
+        if self.verbose:
+            summary = ", ".join(
+                f"{key}={row[i + 1]:.10e}" for i, key in enumerate(self.keys)
+            )
+            print(f"Causal diagnostics: step={row[0]}, {summary}")
+
+    def on_train_end(self):
+        if not self.rows:
+            return
+        header = "step, " + ", ".join(self.keys)
+        np.savetxt(self.save_path, np.asarray(self.rows, dtype=float), header=header)
+
+
 class TesterCallback(Callback):
 
     def __init__(self, log_every=100, verbose=True, fRMSE_param={'enable':True, 'iLow':5, 'iHigh':13, 'calc_every':2000}):

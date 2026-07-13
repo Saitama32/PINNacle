@@ -17,7 +17,12 @@ import deepxde as dde
 from src.model import PeriodicFourierFeatures, ResNet
 from src.pde.chaotic import GrayScottEquation, KuramotoSivashinskyEquation
 from src.utils.args import parse_hidden_layers
-from src.utils.callbacks import LossCallback, PlotCallback, TesterCallback
+from src.utils.callbacks import (
+    CausalDiagnosticsCallback,
+    LossCallback,
+    PlotCallback,
+    TesterCallback,
+)
 from src.utils.fam import FAMTrainConfig, FAMTrainer, LossWeightAdapter
 
 
@@ -218,6 +223,20 @@ def validate_args(args):
         raise ValueError("--fourier-features must be positive.")
     if args.fourier_sigma <= 0 or not np.isfinite(args.fourier_sigma):
         raise ValueError("--fourier-sigma must be positive and finite.")
+    if args.causal_num_chunks <= 0:
+        raise ValueError("--causal-num-chunks must be positive.")
+
+
+def apply_causal_loss_options(model, args):
+    if args.use_causal_loss:
+        model.causal_loss_options = {
+            "enabled": True,
+            "num_chunks": args.causal_num_chunks,
+            "tol": args.causal_tol,
+            "time_index": args.causal_time_index,
+            "include_ic_in_weights": args.causal_include_ic,
+            "ic_weight_in_causal": args.causal_ic_weight,
+        }
 
 
 def make_callbacks(args):
@@ -229,6 +248,13 @@ def make_callbacks(args):
         LossCallback(verbose=args.loss_verbose),
         PlotCallback(log_every=args.plot_every, fast=args.fast_plot),
     ]
+    if args.use_causal_loss:
+        callbacks.append(
+            CausalDiagnosticsCallback(
+                log_every=args.log_every,
+                verbose=args.causal_diagnostics_verbose,
+            )
+        )
     return callbacks
 
 
@@ -254,6 +280,7 @@ def run_one(equation_name, args):
         fourier_include_raw_x=args.fourier_include_raw_x,
         fourier_include_bias=args.fourier_include_bias,
     )
+    apply_causal_loss_options(model, args)
     if args.weight_decay > 0:
         model.net.regularizer = ("l2", args.weight_decay)
     configure_optimizer(args)
@@ -354,6 +381,19 @@ def parse_args():
     parser.add_argument("--loss-verbose", type=str2bool, nargs="?", const=True, default=True)
     parser.add_argument("--no-callbacks", action="store_true")
     parser.add_argument("--save-model", type=str2bool, nargs="?", const=True, default=True)
+    parser.add_argument("--use-causal-loss", action="store_true")
+    parser.add_argument("--causal-num-chunks", type=int, default=16)
+    parser.add_argument("--causal-tol", type=float, default=0.1)
+    parser.add_argument("--causal-time-index", type=int, default=-1)
+    parser.add_argument("--causal-include-ic", type=str2bool, nargs="?", const=True, default=False)
+    parser.add_argument("--causal-ic-weight", type=float, default=0.0)
+    parser.add_argument(
+        "--causal-diagnostics-verbose",
+        type=str2bool,
+        nargs="?",
+        const=True,
+        default=False,
+    )
     parser.add_argument(
         "--sampling-method",
         choices=["fam-w", "fam-w", "famaw-w"],
