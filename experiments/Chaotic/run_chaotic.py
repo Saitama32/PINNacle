@@ -356,11 +356,11 @@ def parse_args():
     parser.add_argument("--save-model", type=str2bool, nargs="?", const=True, default=True)
     parser.add_argument(
         "--sampling-method",
-        choices=["none", "fam-w", "famaw-w"],
+        choices=["fam-w", "fam-w", "famaw-w"],
         default="fam-w",
     )
     parser.add_argument("--sampling-refresh-every", type=int, default=100)
-    parser.add_argument("--fam-alpha", type=float, default=0.4)
+    parser.add_argument("--fam-alpha", type=float, default=0.6)
     parser.add_argument("--fam-beta", type=float, default=1.0)
     parser.add_argument("--fam-gamma", type=float, default=0.8)
     parser.add_argument("--faw-lr", type=float, default=1e-3)
@@ -373,7 +373,7 @@ def parse_args():
     parser.add_argument("--famaw-causal-w0", type=float, default=1)
     parser.add_argument("--famaw-causal-threshold", type=float, default=1.05)
     parser.add_argument("--famaw-causal-log-brightness", action="store_true", default=False)
-    parser.add_argument("--fam-pde-point-weighting", type=str2bool, nargs="?", const=True, default=False)
+    parser.add_argument("--fam-pde-point-weighting", type=str2bool, nargs="?", const=True, default=True)
     parser.add_argument("--fam-pde-point-weight-coeff", type=float, default=10000.0)
 
     parser.add_argument(
@@ -392,7 +392,7 @@ def parse_args():
             "SSBroyden",
             "adam",
         ],
-        default="pcgrad",
+        default="PSO",
     )
     parser.add_argument("--weight-decay", type=float, default=0)
 

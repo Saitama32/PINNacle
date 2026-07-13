@@ -6,6 +6,7 @@ from typing import Optional
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
+from torch.nn.utils import parameters_to_vector, vector_to_parameters
 
 import deepxde as dde
 from deepxde import display
@@ -633,6 +634,34 @@ class FAMTrainer:
     def _step_theta_optimizer(self):
         self.model.net.auxiliary_vars = self.model.train_state.train_aux_vars
         try:
+            if self.model.opt_name == "PSO" or getattr(self.model.opt, "name", None) == "PSO":
+                params = list(self.model.opt.param_groups[0]["params"])
+
+                def closure():
+                    loss_list = []
+                    grad_list = []
+                    use_grad = getattr(self.model.opt, "use_grad", True)
+                    for i in range(self.model.opt.pop_size):
+                        vector_to_parameters(self.model.opt.swarm[i], params)
+                        theta_loss, weighted_losses = self._theta_closure(skip_backward=True)
+                        self.model.opt.losses = weighted_losses
+                        if use_grad:
+                            loss_list.append(theta_loss)
+                            grads = torch.autograd.grad(theta_loss, params)
+                            grad_list.append(parameters_to_vector(grads))
+                        else:
+                            loss_list.append(theta_loss.detach())
+                    grads_swarm = torch.stack(grad_list) if use_grad else None
+                    return torch.stack(loss_list), grads_swarm
+
+                loss = self.model.opt.step(closure)
+                if self.model.lr_scheduler is not None:
+                    if self.model.lr_scheduler.__class__.__name__ == "ReduceLROnPlateau":
+                        self.model.lr_scheduler.step(loss.detach())
+                    else:
+                        self.model.lr_scheduler.step()
+                return loss
+
             def closure(*, skip_backward=False):
                 theta_loss, weighted_losses = self._theta_closure(skip_backward=skip_backward)
                 self.model.opt.losses = weighted_losses
