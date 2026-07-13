@@ -36,7 +36,7 @@ run_experiment E2_fourier \
 
 run_experiment E3_resampling \
   --resample-collocation \
-  --resample-every 1
+  --resample-every 200
 
 run_experiment E4_causal_fourier \
   --use-causal-loss \
@@ -50,13 +50,13 @@ run_experiment E5_causal_resampling \
   --causal-num-chunks 16 \
   --causal-tol 0.1 \
   --resample-collocation \
-  --resample-every 1
+  --resample-every 200
 
 run_experiment E6_fourier_resampling \
   --use-fourier-features \
   --fourier-num-modes-x 16 \
   --resample-collocation \
-  --resample-every 1
+  --resample-every 200
 
 run_experiment E7_causal_fourier_resampling \
   --use-causal-loss \
@@ -65,7 +65,7 @@ run_experiment E7_causal_fourier_resampling \
   --use-fourier-features \
   --fourier-num-modes-x 16 \
   --resample-collocation \
-  --resample-every 1
+  --resample-every 200
 
 run_experiment E8_all_windows \
   --bc-loss-weight 10000 \
@@ -77,9 +77,9 @@ run_experiment E8_all_windows \
   --use-fourier-features \
   --fourier-num-modes-x 16 \
   --resample-collocation \
-  --resample-every 1 \
+  --resample-every 200 \
   --use-windows \
   --window-model-mode new_model \
   --window-state-source reference \
-  --window-causal-tol-schedule 1e-3,1e-2,1e-1,1,10,100 \
+  --window-causal-tol-schedule 1e-1,1,10 \
   --num-windows 10
