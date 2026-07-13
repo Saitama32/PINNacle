@@ -373,7 +373,7 @@ def parse_args():
     parser.add_argument("--famaw-causal-w0", type=float, default=1)
     parser.add_argument("--famaw-causal-threshold", type=float, default=1.05)
     parser.add_argument("--famaw-causal-log-brightness", action="store_true", default=False)
-    parser.add_argument("--fam-pde-point-weighting", action="store_true", default=True)
+    parser.add_argument("--fam-pde-point-weighting", type=str2bool, nargs="?", const=True, default=False)
     parser.add_argument("--fam-pde-point-weight-coeff", type=float, default=10000.0)
 
     parser.add_argument(

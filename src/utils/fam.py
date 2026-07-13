@@ -697,7 +697,7 @@ class FAMTrainer:
         if self.config.pde_point_weighting_enabled:
             self.last_pde_point_brightness_norm = brightness_norm.astype(np.float32).copy()
             state = self._compute_pde_point_weight_state()
-            if self.causal_log_brightness and state is not None:
+            if state is not None:
                 self._log_pde_point_weight_state(self.model.train_state.step, state)
         bbox = np.asarray(self.pde.bbox, dtype=np.float32)
         lower = bbox[::2]
