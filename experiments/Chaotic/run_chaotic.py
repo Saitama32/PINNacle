@@ -302,9 +302,10 @@ def run_one(equation_name, args):
 
     run_name = equation_name.replace("-", "_")
     timestamp = time.strftime("%m.%d-%H.%M.%S", time.localtime())
+    causal_tag = "-causal-loss" if args.use_causal_loss else ""
     save_path = os.path.join(
         args.out,
-        f"{timestamp}-{run_name}-pinn-{args.net}-{args.optimizer.lower()}-{args.sampling_method}",
+        f"{timestamp}-{run_name}-pinn-{args.net}-{args.optimizer.lower()}-{args.sampling_method}{causal_tag}",
     )
     os.makedirs(save_path, exist_ok=True)
 
@@ -383,7 +384,7 @@ def parse_args():
     parser.add_argument("--bc-loss-weight", type=float, default=100.0)
     parser.add_argument("--seed", type=int, default=1234)
     parser.add_argument("--out", type=str, default="runs_plain")
-    parser.add_argument("--log-every", type=int, default=10)
+    parser.add_argument("--log-every", type=int, default=100)
     parser.add_argument("--plot-every", type=int, default=100)
     parser.add_argument("--fast-plot", type=str2bool, nargs="?", const=True, default=True)
     parser.add_argument("--loss-verbose", type=str2bool, nargs="?", const=True, default=True)
@@ -405,14 +406,14 @@ def parse_args():
     parser.add_argument(
         "--sampling-method",
         choices=["none", "fam-w", "famaw-w"],
-        default="none",
+        default="fam-w",
     )
-    parser.add_argument("--sampling-refresh-every", type=int, default=100)
+    parser.add_argument("--sampling-refresh-every", type=int, default=1000)
     parser.add_argument("--fam-alpha", type=float, default=0.6)
     parser.add_argument("--fam-beta", type=float, default=1.0)
     parser.add_argument("--fam-gamma", type=float, default=0.8)
-    parser.add_argument("--faw-lr", type=float, default=1e-3)
-    parser.add_argument("--fam-fixed-points", type=int, default=2000)
+    parser.add_argument("--faw-lr", type=float, default=5e-4)
+    parser.add_argument("--fam-fixed-points", type=int, default=4000)
     parser.add_argument("--fam-movable-points", type=int, default=1500)
     parser.add_argument("--fam-save-diagnostics", type=str2bool, nargs="?", const=True, default=False)
     parser.add_argument("--fam-save-point-plots", type=str2bool, nargs="?", const=True, default=True)
@@ -440,7 +441,7 @@ def parse_args():
             "SSBroyden",
             "adam",
         ],
-        default="adam",
+        default="soap",
     )
     parser.add_argument("--weight-decay", type=float, default=0)
 
