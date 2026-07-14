@@ -277,7 +277,7 @@ def run_one(equation_name, args):
     if args.net == "fourier-mlp" and not np.isclose(args.fourier_sigma, 3.0):
         print(
             "Warning: --fourier-sigma is kept only for CLI backward compatibility and is ignored "
-            "by the current periodic KS Fourier features."
+            "by the current periodic Fourier features."
         )
 
     model, loss_weights = build_model(
@@ -297,8 +297,6 @@ def run_one(equation_name, args):
     if args.sampling_method == "none":
         model.compile(args.optimizer, lr=args.lr, loss_weights=loss_weights)
     else:
-        if equation_name not in {"ks", "kuramoto-sivashinsky"}:
-            raise ValueError("The first FAM/FAMAW integration currently supports only KS in run_chaotic.py.")
         loss_weight_adapter = LossWeightAdapter(np.ones_like(loss_weights))
         model.compile(args.optimizer, lr=args.lr, loss_weights=loss_weight_adapter)
 
