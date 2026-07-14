@@ -379,7 +379,7 @@ def parse_args():
     parser.add_argument("--fourier-include-raw-x", type=str2bool, nargs="?", const=True, default=True)
     parser.add_argument("--fourier-include-bias", type=str2bool, nargs="?", const=True, default=True)
     parser.add_argument("--iterations", type=int, default=10000)
-    parser.add_argument("--lr", type=float, default=1e-4)
+    parser.add_argument("--lr", type=float, default=5e-4)
     parser.add_argument("--bc-loss-weight", type=float, default=100.0)
     parser.add_argument("--seed", type=int, default=1234)
     parser.add_argument("--out", type=str, default="runs_plain")
@@ -389,7 +389,7 @@ def parse_args():
     parser.add_argument("--loss-verbose", type=str2bool, nargs="?", const=True, default=True)
     parser.add_argument("--no-callbacks", action="store_true")
     parser.add_argument("--save-model", type=str2bool, nargs="?", const=True, default=True)
-    parser.add_argument("--use-causal-loss", action="store_true")
+    parser.add_argument("--use-causal-loss", action="store_true", default=True)
     parser.add_argument("--causal-num-chunks", type=int, default=16)
     parser.add_argument("--causal-tol", type=float, default=0.1)
     parser.add_argument("--causal-time-index", type=int, default=-1)
@@ -405,7 +405,7 @@ def parse_args():
     parser.add_argument(
         "--sampling-method",
         choices=["none", "fam-w", "famaw-w"],
-        default="fam-w",
+        default="none",
     )
     parser.add_argument("--sampling-refresh-every", type=int, default=100)
     parser.add_argument("--fam-alpha", type=float, default=0.6)
@@ -421,7 +421,7 @@ def parse_args():
     parser.add_argument("--famaw-causal-w0", type=float, default=1)
     parser.add_argument("--famaw-causal-threshold", type=float, default=1.05)
     parser.add_argument("--famaw-causal-log-brightness", action="store_true", default=False)
-    parser.add_argument("--fam-pde-point-weighting", type=str2bool, nargs="?", const=True, default=True)
+    parser.add_argument("--fam-pde-point-weighting", type=str2bool, nargs="?", const=True, default=False)
     parser.add_argument("--fam-pde-point-weight-coeff", type=float, default=10000.0)
 
     parser.add_argument(
@@ -440,7 +440,7 @@ def parse_args():
             "SSBroyden",
             "adam",
         ],
-        default="sgd",
+        default="adam",
     )
     parser.add_argument("--weight-decay", type=float, default=0)
 
