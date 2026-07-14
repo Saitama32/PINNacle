@@ -177,6 +177,7 @@ def configure_optimizer(args):
     elif args.optimizer in {"L-BFGS", "L-BFGS-B"}:
         dde.optimizers.set_LBFGS_options(
             lr=args.lbfgs_lr,
+            maxiter=args.iterations,
             maxls=50,
         )
         dde.optimizers.LBFGS_options["iter_per_step"] = 10
