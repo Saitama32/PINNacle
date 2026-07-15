@@ -391,7 +391,7 @@ def parse_args():
     parser.add_argument("--loss-verbose", type=str2bool, nargs="?", const=True, default=True)
     parser.add_argument("--no-callbacks", action="store_true")
     parser.add_argument("--save-model", type=str2bool, nargs="?", const=True, default=True)
-    parser.add_argument("--use-causal-loss", action="store_true", default=True)
+    parser.add_argument("--use-causal-loss", action="store_true", default=False)
     parser.add_argument("--causal-num-chunks", type=int, default=16)
     parser.add_argument("--causal-tol", type=float, default=0.1)
     parser.add_argument("--causal-time-index", type=int, default=-1)
