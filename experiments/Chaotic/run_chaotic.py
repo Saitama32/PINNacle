@@ -383,7 +383,7 @@ def parse_args():
     parser.add_argument("--iterations", type=int, default=10000)
     parser.add_argument("--lr", type=float, default=5e-4)
     parser.add_argument("--bc-loss-weight", type=float, default=100.0)
-    parser.add_argument("--seed", type=int, default=1234)
+    parser.add_argument("--seed", type=int, default=12345)
     parser.add_argument("--out", type=str, default="runs_plain")
     parser.add_argument("--log-every", type=int, default=100)
     parser.add_argument("--plot-every", type=int, default=100)
