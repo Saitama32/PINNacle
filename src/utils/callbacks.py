@@ -10,6 +10,7 @@ from deepxde.callbacks import Callback
 from src.utils import plot
 import scipy.interpolate
 import deepxde as dde
+from src.pde.chaotic import KuramotoSivashinskyEquation
 
 logger = logging.getLogger(__name__)
 
@@ -159,6 +160,364 @@ class CausalDiagnosticsCallback(Callback):
                 f"{key}={row[i + 1]:.10e}" for i, key in enumerate(self.keys)
             )
             print(f"Causal diagnostics: step={row[0]}, {summary}")
+
+    def on_train_end(self):
+        if not self.rows:
+            return
+        header = "step, " + ", ".join(self.keys)
+        np.savetxt(self.save_path, np.asarray(self.rows, dtype=float), header=header)
+
+
+class KSDiagnosticsCallback(Callback):
+    def __init__(self, log_every=None, chunk_every=1000, verbose=False):
+        super().__init__()
+        self.log_every = log_every
+        self.chunk_every = chunk_every
+        self.verbose = verbose
+        self.rows = []
+        self.keys = [
+            "train_pde_mse",
+            "validation_pde_mse",
+            "grid_pde_mse",
+            "ic_mse",
+            "rms_u",
+            "rms_u_t",
+            "rms_alpha_u_u_x",
+            "rms_beta_u_xx",
+            "rms_gamma_u_xxxx",
+            "rms_residual",
+            "cancellation_ratio",
+            "p99_abs_u_xxxx",
+            "max_abs_u_xxxx",
+            "max_u_xxxx_x",
+            "max_u_xxxx_t",
+            "periodic_gap_u",
+            "periodic_gap_u_x",
+            "periodic_gap_u_xx",
+            "periodic_gap_u_xxx",
+        ]
+        self.chunk_keys = [
+            "step",
+            "chunk_id",
+            "t_min",
+            "t_max",
+            "num_points",
+            "raw_residual_mse",
+            "raw_residual_rms",
+            "rms_u",
+            "rms_u_t",
+            "rms_alpha_u_u_x",
+            "rms_beta_u_xx",
+            "rms_gamma_u_xxxx",
+            "max_abs_u_xxxx",
+        ]
+        self.epochs_since_last_log = 0
+        self.epochs_since_last_chunk = 0
+        self.chunk_header_written = False
+        self.eval_ready = False
+
+    def on_train_begin(self):
+        if self.log_every is None:
+            self.log_every = self.model.display_every
+        if self.chunk_every is None or self.chunk_every <= 0:
+            self.chunk_every = 1000
+        self.save_path = self.model.model_save_path + "/ks_diagnostics.txt"
+        self.chunk_save_path = self.model.model_save_path + "/ks_time_chunks.csv"
+        self.pde = self.model.pde
+        self.eval_ready = isinstance(self.pde, KuramotoSivashinskyEquation)
+        if not self.eval_ready:
+            return
+        self._prepare_fixed_points()
+        self.chunk_header_written = False
+
+    @staticmethod
+    def _rms(value):
+        detached = value.detach()
+        return torch.sqrt(torch.mean(detached ** 2))
+
+    @staticmethod
+    def _mse(value):
+        detached = value.detach()
+        return torch.mean(detached ** 2)
+
+    @staticmethod
+    def _slice_pde_points(model):
+        x_train = getattr(model.train_state, "X_train", None)
+        if x_train is None:
+            return None
+        bc_count = int(sum(getattr(model.data, "num_bcs", []) or []))
+        if bc_count >= len(x_train):
+            return None
+        return x_train[bc_count:]
+
+    @staticmethod
+    def _derivative_column(value, points, column):
+        if not value.requires_grad:
+            return torch.zeros(
+                (points.shape[0], 1),
+                dtype=points.dtype,
+                device=points.device,
+            )
+        grad = torch.autograd.grad(
+            value,
+            points,
+            grad_outputs=torch.ones_like(value),
+            create_graph=True,
+            retain_graph=True,
+            allow_unused=True,
+            materialize_grads=True,
+        )[0]
+        if grad is None:
+            return torch.zeros(
+                (points.shape[0], 1),
+                dtype=points.dtype,
+                device=points.device,
+            )
+        return grad[:, column : column + 1]
+
+    def _prepare_fixed_points(self):
+        bbox = self.pde.bbox
+        x_min, x_max, t_min, t_max = bbox
+        x_grid = np.linspace(x_min, x_max, 128, dtype=np.float32)
+        t_grid = np.linspace(t_min, t_max, 64, dtype=np.float32)
+        xx, tt = np.meshgrid(x_grid, t_grid, indexing="ij")
+        self.grid_points = np.stack((xx.reshape(-1), tt.reshape(-1)), axis=1).astype(np.float32)
+
+        if getattr(self.pde.geomtime, "random_points", None) is not None:
+            self.validation_points = self.pde.geomtime.random_points(4096, random="pseudo").astype(np.float32)
+        else:
+            rng = np.random.default_rng(12345)
+            self.validation_points = np.column_stack(
+                (
+                    rng.uniform(x_min, x_max, size=4096),
+                    rng.uniform(t_min, t_max, size=4096),
+                )
+            ).astype(np.float32)
+
+        x_ic = np.linspace(x_min, x_max, 512, dtype=np.float32)
+        self.ic_points = np.column_stack((x_ic, np.full_like(x_ic, t_min))).astype(np.float32)
+
+        boundary_t = np.linspace(t_min, t_max, 512, dtype=np.float32)
+        self.left_boundary_points = np.column_stack(
+            (np.full_like(boundary_t, x_min), boundary_t)
+        ).astype(np.float32)
+        self.right_boundary_points = np.column_stack(
+            (np.full_like(boundary_t, x_max), boundary_t)
+        ).astype(np.float32)
+
+        ref_data = getattr(self.pde, "ref_data", None)
+        self.ic_ref = None
+        if ref_data is not None:
+            nan_mask = np.isnan(ref_data).any(axis=1)
+            clean_ref = ref_data[~nan_mask]
+            if len(clean_ref) > 0:
+                x_ref = clean_ref[:, : self.pde.input_dim]
+                y_ref = clean_ref[:, self.pde.input_dim :]
+                self._ref_interp = scipy.interpolate.NearestNDInterpolator(x_ref, y_ref)
+                self.ic_ref = np.asarray(self._ref_interp(self.ic_points), dtype=np.float32)
+
+        self.chunk_bounds = np.linspace(t_min, t_max, 17, dtype=np.float32)
+
+    def _points_to_tensor(self, x_numpy):
+        param = next(self.model.net.parameters())
+        return torch.as_tensor(x_numpy, dtype=param.dtype, device=param.device).clone().detach().requires_grad_(True)
+
+    def _evaluate_terms(self, x_numpy):
+        with torch.enable_grad():
+            was_training = self.model.net.training
+            self.model.net.train(False)
+            try:
+                x = self._points_to_tensor(x_numpy)
+                u = self.model.net(x)
+                u_x = self._derivative_column(u, x, 0)
+                u_t = self._derivative_column(u, x, 1)
+                u_xx = self._derivative_column(u_x, x, 0)
+                u_xxx = self._derivative_column(u_xx, x, 0)
+                u_xxxx = self._derivative_column(u_xxx, x, 0)
+                terms = self.pde.build_terms(u, u_t, u_x, u_xx, u_xxxx)
+                terms["x"] = x
+                terms["u_xxx"] = u_xxx
+                return terms
+            finally:
+                self.model.net.train(was_training)
+
+    def _basic_stats(self, terms):
+        sum_term_rms = (
+            self._rms(terms["term_t"])
+            + self._rms(terms["term_adv"])
+            + self._rms(terms["term_diff"])
+            + self._rms(terms["term_hyper"])
+        )
+        abs_u4 = torch.abs(terms["u_xxxx"].detach()).reshape(-1)
+        max_index = int(torch.argmax(abs_u4).item())
+        return {
+            "rms_u": float(self._rms(terms["u"]).detach().cpu().item()),
+            "rms_u_t": float(self._rms(terms["u_t"]).detach().cpu().item()),
+            "rms_alpha_u_u_x": float(self._rms(terms["term_adv"]).detach().cpu().item()),
+            "rms_beta_u_xx": float(self._rms(terms["term_diff"]).detach().cpu().item()),
+            "rms_gamma_u_xxxx": float(self._rms(terms["term_hyper"]).detach().cpu().item()),
+            "rms_residual": float(self._rms(terms["residual"]).detach().cpu().item()),
+            "cancellation_ratio": float(
+                (self._rms(terms["residual"]) / (sum_term_rms + 1e-14)).detach().cpu().item()
+            ),
+            "p99_abs_u_xxxx": float(torch.quantile(abs_u4, 0.99).detach().cpu().item()),
+            "max_abs_u_xxxx": float(abs_u4[max_index].detach().cpu().item()),
+            "max_u_xxxx_x": float(terms["x"][max_index, 0].detach().cpu().item()),
+            "max_u_xxxx_t": float(terms["x"][max_index, 1].detach().cpu().item()),
+        }
+
+    def _residual_mse(self, x_numpy):
+        terms = self._evaluate_terms(x_numpy)
+        return float(self._mse(terms["residual"]).detach().cpu().item())
+
+    def _ic_mse(self):
+        if self.ic_ref is None:
+            return np.nan
+        pred = self.model.predict(self.ic_points)
+        return float(np.mean((pred - self.ic_ref) ** 2))
+
+    def _periodic_gaps(self):
+        left = self._evaluate_terms(self.left_boundary_points)
+        right = self._evaluate_terms(self.right_boundary_points)
+        return {
+            "periodic_gap_u": float(self._rms(left["u"] - right["u"]).detach().cpu().item()),
+            "periodic_gap_u_x": float(self._rms(left["u_x"] - right["u_x"]).detach().cpu().item()),
+            "periodic_gap_u_xx": float(self._rms(left["u_xx"] - right["u_xx"]).detach().cpu().item()),
+            "periodic_gap_u_xxx": float(self._rms(left["u_xxx"] - right["u_xxx"]).detach().cpu().item()),
+        }
+
+    def _global_stats(self, train_points):
+        train_mse = self._residual_mse(train_points)
+        validation_mse = self._residual_mse(self.validation_points)
+        grid_terms = self._evaluate_terms(self.grid_points)
+        stats = {
+            "train_pde_mse": train_mse,
+            "validation_pde_mse": validation_mse,
+            "grid_pde_mse": float(self._mse(grid_terms["residual"]).detach().cpu().item()),
+            "ic_mse": self._ic_mse(),
+        }
+        stats.update(self._basic_stats(grid_terms))
+        stats.update(self._periodic_gaps())
+        return stats, grid_terms
+
+    def _write_chunk_rows(self, rows):
+        array = np.asarray(rows, dtype=float)
+        header = ",".join(self.chunk_keys)
+        mode = "ab" if self.chunk_header_written else "wb"
+        with open(self.chunk_save_path, mode) as handle:
+            np.savetxt(handle, array, delimiter=",", header="" if self.chunk_header_written else header, comments="")
+        self.chunk_header_written = True
+
+    def _chunk_diagnostics(self, step, grid_terms):
+        rows = []
+        residual_rms = []
+        for chunk_id in range(16):
+            t_left = float(self.chunk_bounds[chunk_id])
+            t_right = float(self.chunk_bounds[chunk_id + 1])
+            if chunk_id == 15:
+                mask = (self.grid_points[:, 1] >= t_left) & (self.grid_points[:, 1] <= t_right)
+            else:
+                mask = (self.grid_points[:, 1] >= t_left) & (self.grid_points[:, 1] < t_right)
+            indices = np.where(mask)[0]
+            if len(indices) == 0:
+                continue
+
+            idx = torch.as_tensor(indices, device=grid_terms["u"].device, dtype=torch.long)
+            chunk_terms = {key: value.index_select(0, idx) for key, value in grid_terms.items() if torch.is_tensor(value)}
+            row = [
+                step,
+                chunk_id,
+                t_left,
+                t_right,
+                len(indices),
+                float(self._mse(chunk_terms["residual"]).detach().cpu().item()),
+                float(self._rms(chunk_terms["residual"]).detach().cpu().item()),
+                float(self._rms(chunk_terms["u"]).detach().cpu().item()),
+                float(self._rms(chunk_terms["u_t"]).detach().cpu().item()),
+                float(self._rms(chunk_terms["term_adv"]).detach().cpu().item()),
+                float(self._rms(chunk_terms["term_diff"]).detach().cpu().item()),
+                float(self._rms(chunk_terms["term_hyper"]).detach().cpu().item()),
+                float(torch.max(torch.abs(chunk_terms["u_xxxx"].detach())).cpu().item()),
+            ]
+            rows.append(row)
+            residual_rms.append(row[6])
+
+        if rows:
+            self._write_chunk_rows(rows)
+
+        if self.verbose and rows:
+            worst_idx = int(np.argmax(residual_rms))
+            worst = rows[worst_idx]
+            print(
+                "KS chunk diagnostics: "
+                f"step={step} "
+                f"chunk_residual_rms_min={np.min(residual_rms):.10e} "
+                f"chunk_residual_rms_mean={np.mean(residual_rms):.10e} "
+                f"chunk_residual_rms_max={np.max(residual_rms):.10e} "
+                f"worst_chunk_id={int(worst[1])} "
+                f"worst_chunk_t_min={worst[2]:.10e} "
+                f"worst_chunk_t_max={worst[3]:.10e}"
+            )
+
+    def _save_heatmaps(self, step, grid_terms):
+        x = self.grid_points[:, 0]
+        t = self.grid_points[:, 1]
+        residual = grid_terms["residual"].detach().cpu().numpy().reshape(-1)
+        abs_u4 = torch.abs(grid_terms["u_xxxx"].detach()).cpu().numpy().reshape(-1)
+        plot.plot_heatmap(
+            x,
+            t,
+            residual,
+            path=f"{self.model.model_save_path}/ks_residual_heatmap_step_{step}.png",
+            title=f"KS residual step {step}",
+            xlabel="x",
+            ylabel="t",
+            pde=self.pde,
+        )
+        plot.plot_heatmap(
+            x,
+            t,
+            np.log10(1.0 + abs_u4),
+            path=f"{self.model.model_save_path}/ks_log_u_xxxx_heatmap_step_{step}.png",
+            title=f"KS log10(1 + abs(u_xxxx)) step {step}",
+            xlabel="x",
+            ylabel="t",
+            pde=self.pde,
+        )
+
+    def on_epoch_end(self):
+        if not self.eval_ready:
+            return
+
+        self.epochs_since_last_log += 1
+        self.epochs_since_last_chunk += 1
+        do_global = self.log_every is not None and self.epochs_since_last_log >= self.log_every
+        do_chunk = self.chunk_every is not None and self.epochs_since_last_chunk >= self.chunk_every
+        if not do_global and not do_chunk:
+            return
+
+        x_pde = self._slice_pde_points(self.model)
+        if x_pde is None or len(x_pde) == 0:
+            return
+
+        step = self.model.train_state.step
+        stats = None
+        grid_terms = None
+        if do_global or do_chunk:
+            stats, grid_terms = self._global_stats(x_pde)
+
+        if do_global:
+            self.epochs_since_last_log = 0
+            row = [step] + [stats[key] for key in self.keys]
+            self.rows.append(row)
+            if self.verbose:
+                summary = ", ".join(f"{key}={stats[key]:.10e}" for key in self.keys)
+                print(f"KS diagnostics: step={step}, {summary}")
+
+        if do_chunk:
+            self.epochs_since_last_chunk = 0
+            self._chunk_diagnostics(step, grid_terms)
+            self._save_heatmaps(step, grid_terms)
 
     def on_train_end(self):
         if not self.rows:

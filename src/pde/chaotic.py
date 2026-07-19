@@ -4,6 +4,28 @@ import deepxde as dde
 from . import baseclass
 
 
+def build_ks_terms(u, u_t, u_x, u_xx, u_xxxx, alpha, beta, gamma):
+    raw_adv = u * u_x
+    term_t = u_t
+    term_adv = alpha * raw_adv
+    term_diff = beta * u_xx
+    term_hyper = gamma * u_xxxx
+    residual = term_t + term_adv + term_diff + term_hyper
+    return {
+        "u": u,
+        "u_t": u_t,
+        "u_x": u_x,
+        "u_xx": u_xx,
+        "u_xxxx": u_xxxx,
+        "raw_u_u_x": raw_adv,
+        "term_t": term_t,
+        "term_adv": term_adv,
+        "term_diff": term_diff,
+        "term_hyper": term_hyper,
+        "residual": residual,
+    }
+
+
 class GrayScottEquation(baseclass.BaseTimePDE):
 
     def __init__(self, datapath="ref/grayscott.dat", bbox=[-1, 1, -1, 1, 0, 200], b=0.04, d=0.1, epsilon=(1e-5, 5e-6)):
@@ -73,6 +95,9 @@ class KuramotoSivashinskyEquation(baseclass.BaseTimePDE):
         super().__init__()
         # output dim
         self.output_dim = 1
+        self.alpha = alpha
+        self.beta = beta
+        self.gamma = gamma
 
         # geom
         self.bbox = bbox
@@ -86,8 +111,7 @@ class KuramotoSivashinskyEquation(baseclass.BaseTimePDE):
             u_t = dde.grad.jacobian(u, x, i=0, j=1)
             u_xx = dde.grad.hessian(u, x, i=0, j=0)
             u_xxxx = dde.grad.hessian(u_xx, x, i=0, j=0)
-
-            return u_t + alpha * u * u_x + beta * u_xx + gamma * u_xxxx
+            return self.build_terms(u, u_t, u_x, u_xx, u_xxxx)["residual"]
 
         self.pde = pde
         self.set_pdeloss(num=1)
@@ -104,3 +128,15 @@ class KuramotoSivashinskyEquation(baseclass.BaseTimePDE):
 
         # training point
         self.training_points()
+
+    def build_terms(self, u, u_t, u_x, u_xx, u_xxxx):
+        return build_ks_terms(
+            u=u,
+            u_t=u_t,
+            u_x=u_x,
+            u_xx=u_xx,
+            u_xxxx=u_xxxx,
+            alpha=self.alpha,
+            beta=self.beta,
+            gamma=self.gamma,
+        )

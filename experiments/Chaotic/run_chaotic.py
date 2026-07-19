@@ -19,6 +19,7 @@ from src.pde.chaotic import GrayScottEquation, KuramotoSivashinskyEquation
 from src.utils.args import parse_hidden_layers
 from src.utils.callbacks import (
     CausalDiagnosticsCallback,
+    KSDiagnosticsCallback,
     LossCallback,
     PlotCallback,
     TesterCallback,
@@ -250,7 +251,7 @@ def apply_causal_loss_options(model, args):
         }
 
 
-def make_callbacks(args):
+def make_callbacks(args, equation_name):
     if args.no_callbacks:
         return None
 
@@ -259,6 +260,14 @@ def make_callbacks(args):
         LossCallback(verbose=args.loss_verbose),
         PlotCallback(log_every=args.plot_every, fast=args.fast_plot),
     ]
+    if equation_name in {"ks", "kuramoto-sivashinsky"}:
+        callbacks.append(
+            KSDiagnosticsCallback(
+                log_every=args.log_every,
+                chunk_every=args.ks_diagnostics_chunk_every,
+                verbose=args.ks_diagnostics_verbose,
+            )
+        )
     if args.use_causal_loss:
         callbacks.append(
             CausalDiagnosticsCallback(
@@ -314,7 +323,7 @@ def run_one(equation_name, args):
         f"Training {equation_name} with {args.net} PINN optimizer={args.optimizer} "
         f"sampling={args.sampling_method} for {args.iterations} iterations."
     )
-    callbacks = make_callbacks(args)
+    callbacks = make_callbacks(args, equation_name)
     if args.sampling_method == "none":
         losshistory, train_state = model.train(
             iterations=args.iterations,
@@ -389,6 +398,14 @@ def parse_args():
     parser.add_argument("--plot-every", type=int, default=100)
     parser.add_argument("--fast-plot", type=str2bool, nargs="?", const=True, default=True)
     parser.add_argument("--loss-verbose", type=str2bool, nargs="?", const=True, default=True)
+    parser.add_argument(
+        "--ks-diagnostics-verbose",
+        type=str2bool,
+        nargs="?",
+        const=True,
+        default=False,
+    )
+    parser.add_argument("--ks-diagnostics-chunk-every", type=int, default=1000)
     parser.add_argument("--no-callbacks", action="store_true")
     parser.add_argument("--save-model", type=str2bool, nargs="?", const=True, default=True)
     parser.add_argument("--use-causal-loss", action="store_true", default=False)
@@ -407,7 +424,7 @@ def parse_args():
     parser.add_argument(
         "--sampling-method",
         choices=["none", "fam-w", "famaw-w"],
-        default="fam-w",
+        default="none",
     )
     parser.add_argument("--sampling-refresh-every", type=int, default=1000)
     parser.add_argument("--fam-alpha", type=float, default=0.6)
@@ -442,7 +459,7 @@ def parse_args():
             "SSBroyden",
             "adam",
         ],
-        default="soap",
+        default="adam",
     )
     parser.add_argument("--weight-decay", type=float, default=0)
 
