@@ -655,10 +655,14 @@ class FAMTrainer:
 
     def _theta_closure(self, skip_backward=False):
         weighted_losses = self._compute_weighted_losses_tensor()
-        theta_loss = torch.sum(weighted_losses)
+        deepxde_loss_sum = torch.sum(weighted_losses)
+        theta_loss = deepxde_loss_sum
         if self.integral_loss is not None:
             step = self.model.train_state.step
-            integral_weighted_loss = self.integral_loss.compute_weighted_loss(step)
+            integral_weighted_loss = self.integral_loss.compute_weighted_loss(
+                step,
+                deepxde_loss_sum=deepxde_loss_sum,
+            )
             diagnostics = self.integral_loss.last_diagnostics
             self.last_integral_raw_loss = diagnostics["integral_loss_raw"]
             self.last_integral_weight = diagnostics["integral_weight"]

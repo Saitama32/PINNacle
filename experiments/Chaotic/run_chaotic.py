@@ -289,6 +289,10 @@ def maybe_attach_integral_loss(model, args):
         model.integral_loss = None
         model.integral_loss_diagnostics = None
         return None
+    if args.sampling_method != "none":
+        model.integral_loss = None
+        model.integral_loss_diagnostics = None
+        return None
     integral_loss = GlobalIntegralLoss(
         model=model,
         pde=model.pde,
@@ -301,8 +305,7 @@ def maybe_attach_integral_loss(model, args):
     )
     model.integral_loss = integral_loss
     model.integral_loss_diagnostics = None
-    if args.sampling_method == "none":
-        attach_integral_loss_train_step(model, integral_loss)
+    attach_integral_loss_train_step(model, integral_loss)
     return integral_loss
 
 
@@ -494,19 +497,20 @@ def parse_args():
     )
     parser.add_argument(
         "--use-integral-loss",
-        action="store_true",
-        default=True,
+        action=argparse.BooleanOptionalAction,
+        default=False,
     )
-    parser.add_argument("--integral-loss-weight", type=float, default=100.00)
+    parser.add_argument("--integral-loss-weight", type=float, default=0.01)
     parser.add_argument("--integral-batch-size", type=int, default=64)
-    parser.add_argument("--integral-warmup-steps", type=int, default=4000)
+    parser.add_argument("--integral-warmup-steps", type=int, default=1500)
+    # Lower bound for endpoint sampling only. The integral always starts at the PDE initial time.
     parser.add_argument("--integral-t-min", type=float, default=0.0)
     parser.add_argument("--integral-resample-every", type=int, default=1)
     parser.add_argument("--integral-seed", type=int, default=None)
     parser.add_argument(
         "--sampling-method",
         choices=["none", "fam-w", "famaw-w"],
-        default="none",
+        default="fam-w",
     )
     parser.add_argument("--sampling-refresh-every", type=int, default=1000)
     parser.add_argument("--fam-alpha", type=float, default=0.6)

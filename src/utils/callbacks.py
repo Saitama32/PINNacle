@@ -176,9 +176,11 @@ class IntegralDiagnosticsCallback(Callback):
         self.rows = []
         self.epochs_since_last_log = 0
         self.keys = [
+            "deepxde_loss_sum",
             "integral_loss_raw",
             "integral_weight",
             "integral_loss_weighted",
+            "actual_total_loss",
             "integral_residual_rms",
             "integral_residual_abs_mean",
             "integral_residual_abs_max",
@@ -217,9 +219,11 @@ class IntegralDiagnosticsCallback(Callback):
             print(
                 "[Integral loss] "
                 f"step={row[0]} "
+                f"deepxde={values['deepxde_loss_sum']:.10e} "
                 f"raw={values['integral_loss_raw']:.10e} "
                 f"weight={values['integral_weight']:.10e} "
                 f"weighted={values['integral_loss_weighted']:.10e} "
+                f"total={values['actual_total_loss']:.10e} "
                 f"rms={values['integral_residual_rms']:.10e} "
                 f"early/middle/late="
                 f"{values['integral_loss_early']:.10e}/"

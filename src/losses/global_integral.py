@@ -143,7 +143,8 @@ class GlobalIntegralLoss:
 
     def quadrature_times(self, t):
         nodes, _ = self._quadrature_constants(t.device, t.dtype)
-        return 0.5 * t * (1.0 + nodes.view(1, 4))
+        span = t - self.domain_t_min
+        return 0.5 * (self.domain_t_min + t) + 0.5 * span * nodes.view(1, 4)
 
     def quadrature_points(self, x, t):
         times = self.quadrature_times(t)
@@ -168,26 +169,30 @@ class GlobalIntegralLoss:
         g_quad = self.pde.ks_spatial_operator(quad_points, u_quad).reshape(x.shape[0], 4)
         _, weights = self._quadrature_constants(quad_points.device, quad_points.dtype)
         weighted_sum = torch.sum(weights.view(1, 4) * g_quad, dim=1, keepdim=True)
-        integral = 0.5 * t * weighted_sum
-        dde.grad.clear()
+        span = t - self.domain_t_min
+        integral = 0.5 * span * weighted_sum
         return u_end - u0 + integral
 
-    def compute_raw_loss(self, step=None, endpoints=None):
+    def compute_raw_loss(self, step=None, endpoints=None, deepxde_loss_sum=None):
         residual = self.integral_residual(step=step, endpoints=endpoints)
         raw_loss = torch.mean(torch.square(residual))
-        self.last_diagnostics = self._build_diagnostics(raw_loss, residual)
+        self.last_diagnostics = self._build_diagnostics(raw_loss, residual, deepxde_loss_sum=deepxde_loss_sum)
         return raw_loss
 
-    def compute_weighted_loss(self, step):
-        raw_loss = self.compute_raw_loss(step=step)
+    def compute_weighted_loss(self, step, deepxde_loss_sum=None):
+        raw_loss = self.compute_raw_loss(step=step, deepxde_loss_sum=deepxde_loss_sum)
         weight = self.current_weight(step)
         weighted_loss = raw_loss * weight
         self.last_diagnostics["integral_weight"] = weight
         self.last_diagnostics["integral_loss_weighted"] = weighted_loss.detach()
+        if deepxde_loss_sum is not None:
+            deepxde_loss_sum = deepxde_loss_sum.detach()
+            self.last_diagnostics["deepxde_loss_sum"] = deepxde_loss_sum
+            self.last_diagnostics["actual_total_loss"] = deepxde_loss_sum + weighted_loss.detach()
         self.model.integral_loss_diagnostics = self.last_diagnostics
         return weighted_loss
 
-    def _build_diagnostics(self, raw_loss, residual):
+    def _build_diagnostics(self, raw_loss, residual, deepxde_loss_sum=None):
         residual_detached = residual.detach()
         abs_residual = torch.abs(residual_detached)
         t = self.cached_t.detach() if self.cached_t is not None else None
@@ -202,6 +207,9 @@ class GlobalIntegralLoss:
             "integral_loss_middle": self._bucket_loss(residual_detached, t, 1),
             "integral_loss_late": self._bucket_loss(residual_detached, t, 2),
         }
+        if deepxde_loss_sum is not None:
+            diagnostics["deepxde_loss_sum"] = deepxde_loss_sum.detach()
+            diagnostics["actual_total_loss"] = deepxde_loss_sum.detach()
         return diagnostics
 
     def _bucket_loss(self, residual, t, bucket):
@@ -233,7 +241,11 @@ def attach_integral_loss_train_step(model, integral_loss):
             if ic_loss is not None:
                 losses = torch.cat([losses, ic_loss.reshape(1)])
         model.opt.losses = losses
-        total_loss = torch.sum(losses) + integral_loss.compute_weighted_loss(model.train_state.step)
+        deepxde_loss_sum = torch.sum(losses)
+        total_loss = deepxde_loss_sum + integral_loss.compute_weighted_loss(
+            model.train_state.step,
+            deepxde_loss_sum=deepxde_loss_sum,
+        )
         if not skip_backward:
             model.opt.zero_grad()
             total_loss.backward()
