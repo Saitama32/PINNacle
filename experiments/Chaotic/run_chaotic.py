@@ -1,4 +1,5 @@
 import argparse
+import json
 import os
 import sys
 import time
@@ -343,6 +344,13 @@ def make_callbacks(args, equation_name):
     return callbacks
 
 
+def save_run_configuration(save_path, args, equation_name):
+    config = dict(vars(args))
+    config["resolved_equation"] = equation_name
+    with open(os.path.join(save_path, "run_config.json"), "w", encoding="utf-8") as file_obj:
+        json.dump(config, file_obj, indent=2, sort_keys=True)
+
+
 def run_one(equation_name, args):
     if args.seed is not None:
         dde.config.set_random_seed(args.seed)
@@ -385,6 +393,7 @@ def run_one(equation_name, args):
         f"{timestamp}-{run_name}-pinn-{args.net}-{args.optimizer.lower()}-{args.sampling_method}{causal_tag}",
     )
     os.makedirs(save_path, exist_ok=True)
+    save_run_configuration(save_path, args, equation_name)
 
     print(
         f"Training {equation_name} with {args.net} PINN optimizer={args.optimizer} "
