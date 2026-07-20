@@ -506,7 +506,7 @@ def parse_args():
     )
     parser.add_argument(
         "--use-integral-loss",
-        action=argparse.BooleanOptionalAction,
+        action="store_true",
         default=False,
     )
     parser.add_argument("--integral-loss-weight", type=float, default=0.01)
