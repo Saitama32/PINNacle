@@ -15,10 +15,15 @@ import torch
 import deepxde as dde
 
 from src.model import PeriodicFourierFeatures, ResNet
+from src.losses.global_integral import (
+    GlobalIntegralLoss,
+    attach_integral_loss_train_step,
+)
 from src.pde.chaotic import GrayScottEquation, KuramotoSivashinskyEquation
 from src.utils.args import parse_hidden_layers
 from src.utils.callbacks import (
     CausalDiagnosticsCallback,
+    IntegralDiagnosticsCallback,
     KSDiagnosticsCallback,
     LossCallback,
     PlotCallback,
@@ -237,6 +242,34 @@ def validate_args(args):
         raise ValueError("--fourier-sigma must be positive and finite.")
     if args.causal_num_chunks <= 0:
         raise ValueError("--causal-num-chunks must be positive.")
+    if args.use_integral_loss:
+        if args.equation not in {"ks", "kuramoto-sivashinsky"}:
+            raise ValueError("--use-integral-loss is currently supported only with --equation ks.")
+        if args.integral_loss_weight < 0 or not np.isfinite(args.integral_loss_weight):
+            raise ValueError("--integral-loss-weight must be finite and non-negative.")
+        if args.integral_batch_size <= 0:
+            raise ValueError("--integral-batch-size must be positive.")
+        if args.integral_warmup_steps < 0:
+            raise ValueError("--integral-warmup-steps must be non-negative.")
+        if args.integral_resample_every <= 0:
+            raise ValueError("--integral-resample-every must be positive.")
+        if not np.isfinite(args.integral_t_min):
+            raise ValueError("--integral-t-min must be finite.")
+
+
+def validate_integral_loss_geometry(pde, args):
+    if not args.use_integral_loss:
+        return
+    bbox = np.asarray(pde.bbox, dtype=np.float64)
+    if bbox.shape[0] != 4:
+        raise ValueError("--use-integral-loss expects a KS bbox [x_min, x_max, t_min, t_max].")
+    domain_t_min = float(bbox[2])
+    domain_t_max = float(bbox[3])
+    if not domain_t_min <= args.integral_t_min < domain_t_max:
+        raise ValueError(
+            "--integral-t-min must satisfy geometry_t_min <= integral_t_min < geometry_t_max "
+            f"({domain_t_min} <= {args.integral_t_min} < {domain_t_max})."
+        )
 
 
 def apply_causal_loss_options(model, args):
@@ -249,6 +282,28 @@ def apply_causal_loss_options(model, args):
             "include_ic_in_weights": args.causal_include_ic,
             "ic_weight_in_causal": args.causal_ic_weight,
         }
+
+
+def maybe_attach_integral_loss(model, args):
+    if not args.use_integral_loss:
+        model.integral_loss = None
+        model.integral_loss_diagnostics = None
+        return None
+    integral_loss = GlobalIntegralLoss(
+        model=model,
+        pde=model.pde,
+        batch_size=args.integral_batch_size,
+        weight=args.integral_loss_weight,
+        warmup_steps=args.integral_warmup_steps,
+        t_min=args.integral_t_min,
+        seed=args.integral_seed if args.integral_seed is not None else args.seed,
+        resample_every=args.integral_resample_every,
+    )
+    model.integral_loss = integral_loss
+    model.integral_loss_diagnostics = None
+    if args.sampling_method == "none":
+        attach_integral_loss_train_step(model, integral_loss)
+    return integral_loss
 
 
 def make_callbacks(args, equation_name):
@@ -273,6 +328,13 @@ def make_callbacks(args, equation_name):
             CausalDiagnosticsCallback(
                 log_every=args.log_every,
                 verbose=args.causal_diagnostics_verbose,
+            )
+        )
+    if args.use_integral_loss:
+        callbacks.append(
+            IntegralDiagnosticsCallback(
+                log_every=args.log_every,
+                verbose=args.loss_verbose,
             )
         )
     return callbacks
@@ -300,6 +362,7 @@ def run_one(equation_name, args):
         fourier_include_raw_x=args.fourier_include_raw_x,
         fourier_include_bias=args.fourier_include_bias,
     )
+    validate_integral_loss_geometry(model.pde, args)
     apply_causal_loss_options(model, args)
     if args.weight_decay > 0:
         model.net.regularizer = ("l2", args.weight_decay)
@@ -309,6 +372,7 @@ def run_one(equation_name, args):
     else:
         loss_weight_adapter = LossWeightAdapter(np.ones_like(loss_weights))
         model.compile(args.optimizer, lr=args.lr, loss_weights=loss_weight_adapter)
+    maybe_attach_integral_loss(model, args)
 
     run_name = equation_name.replace("-", "_")
     timestamp = time.strftime("%m.%d-%H.%M.%S", time.localtime())
@@ -359,6 +423,13 @@ def run_one(equation_name, args):
             causal_log_brightness=args.famaw_causal_log_brightness,
             pde_point_weighting_enabled=args.fam_pde_point_weighting,
             pde_point_weight_coeff=args.fam_pde_point_weight_coeff,
+            integral_loss_enabled=args.use_integral_loss,
+            integral_loss_weight=args.integral_loss_weight,
+            integral_batch_size=args.integral_batch_size,
+            integral_warmup_steps=args.integral_warmup_steps,
+            integral_t_min=args.integral_t_min,
+            integral_resample_every=args.integral_resample_every,
+            integral_seed=args.integral_seed,
         )
         trainer = FAMTrainer(
             model,
@@ -421,6 +492,17 @@ def parse_args():
         const=True,
         default=False,
     )
+    parser.add_argument(
+        "--use-integral-loss",
+        action="store_true",
+        default=True,
+    )
+    parser.add_argument("--integral-loss-weight", type=float, default=100.00)
+    parser.add_argument("--integral-batch-size", type=int, default=64)
+    parser.add_argument("--integral-warmup-steps", type=int, default=4000)
+    parser.add_argument("--integral-t-min", type=float, default=0.0)
+    parser.add_argument("--integral-resample-every", type=int, default=1)
+    parser.add_argument("--integral-seed", type=int, default=None)
     parser.add_argument(
         "--sampling-method",
         choices=["none", "fam-w", "famaw-w"],

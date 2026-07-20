@@ -107,11 +107,9 @@ class KuramotoSivashinskyEquation(baseclass.BaseTimePDE):
 
         # PDE
         def pde(x, u):
-            u_x = dde.grad.jacobian(u, x, i=0, j=0)
             u_t = dde.grad.jacobian(u, x, i=0, j=1)
-            u_xx = dde.grad.hessian(u, x, i=0, j=0)
-            u_xxxx = dde.grad.hessian(u_xx, x, i=0, j=0)
-            return self.build_terms(u, u_t, u_x, u_xx, u_xxxx)["residual"]
+            spatial = self.spatial_terms(x, u)
+            return u_t + spatial["g"]
 
         self.pde = pde
         self.set_pdeloss(num=1)
@@ -140,3 +138,28 @@ class KuramotoSivashinskyEquation(baseclass.BaseTimePDE):
             beta=self.beta,
             gamma=self.gamma,
         )
+
+    def spatial_terms(self, x, u):
+        u_x = dde.grad.jacobian(u, x, i=0, j=0)
+        u_xx = dde.grad.hessian(u, x, i=0, j=0)
+        u_xxxx = dde.grad.hessian(u_xx, x, i=0, j=0)
+        terms = self.build_terms(
+            u=u,
+            u_t=0.0,
+            u_x=u_x,
+            u_xx=u_xx,
+            u_xxxx=u_xxxx,
+        )
+        return {
+            "u_x": u_x,
+            "u_xx": u_xx,
+            "u_xxxx": u_xxxx,
+            "raw_u_u_x": terms["raw_u_u_x"],
+            "term_adv": terms["term_adv"],
+            "term_diff": terms["term_diff"],
+            "term_hyper": terms["term_hyper"],
+            "g": terms["term_adv"] + terms["term_diff"] + terms["term_hyper"],
+        }
+
+    def ks_spatial_operator(self, x, u):
+        return self.spatial_terms(x, u)["g"]

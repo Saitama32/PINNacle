@@ -12,6 +12,8 @@ import deepxde as dde
 from deepxde import display
 from deepxde.callbacks import CallbackList
 
+from src.losses.global_integral import GlobalIntegralLoss
+
 
 def split_fixed_movable_points(points, num_fixed, num_movable, rng=None, shuffle=True):
     points = np.asarray(points, dtype=np.float32)
@@ -192,6 +194,13 @@ class FAMTrainConfig:
     causal_log_brightness: bool = False
     pde_point_weighting_enabled: bool = False
     pde_point_weight_coeff: float = 1.0
+    integral_loss_enabled: bool = False
+    integral_loss_weight: float = 0.01
+    integral_batch_size: int = 64
+    integral_warmup_steps: int = 1500
+    integral_t_min: Optional[float] = None
+    integral_resample_every: int = 1
+    integral_seed: Optional[int] = None
 
 
 class FAMTrainer:
@@ -261,9 +270,14 @@ class FAMTrainer:
         self.last_causal_move_state = None
         self.last_pde_point_brightness_norm = None
         self.last_pde_point_weight_state = None
+        self.integral_loss = None
+        self.last_integral_raw_loss = None
+        self.last_integral_weight = 0.0
+        self.last_integral_weighted_loss = None
         if self.causal_window_enabled:
             self._validate_causal_window_config()
         self._validate_pde_point_weighting_config()
+        self._initialize_integral_loss()
 
     def _time_bounds(self):
         timedomain = getattr(self.data.geom, "timedomain", None)
@@ -297,6 +311,22 @@ class FAMTrainer:
             raise ValueError("pde_point_weighting_enabled is only supported for fam-w or famaw-w mode.")
         if self.config.pde_point_weight_coeff < 0 or not np.isfinite(self.config.pde_point_weight_coeff):
             raise ValueError("pde_point_weight_coeff must be finite and non-negative.")
+
+    def _initialize_integral_loss(self):
+        self.model.integral_loss_diagnostics = None
+        if not self.config.integral_loss_enabled:
+            return
+        self.integral_loss = GlobalIntegralLoss(
+            model=self.model,
+            pde=self.pde,
+            batch_size=self.config.integral_batch_size,
+            weight=self.config.integral_loss_weight,
+            warmup_steps=self.config.integral_warmup_steps,
+            t_min=self.config.integral_t_min,
+            seed=self.config.integral_seed,
+            resample_every=self.config.integral_resample_every,
+        )
+        self.model.integral_loss = self.integral_loss
 
     def _causal_window_weights(self, points):
         times = np.asarray(points, dtype=np.float64)[:, -1]
@@ -626,6 +656,14 @@ class FAMTrainer:
     def _theta_closure(self, skip_backward=False):
         weighted_losses = self._compute_weighted_losses_tensor()
         theta_loss = torch.sum(weighted_losses)
+        if self.integral_loss is not None:
+            step = self.model.train_state.step
+            integral_weighted_loss = self.integral_loss.compute_weighted_loss(step)
+            diagnostics = self.integral_loss.last_diagnostics
+            self.last_integral_raw_loss = diagnostics["integral_loss_raw"]
+            self.last_integral_weight = diagnostics["integral_weight"]
+            self.last_integral_weighted_loss = diagnostics["integral_loss_weighted"]
+            theta_loss = theta_loss + integral_weighted_loss
         if not skip_backward:
             self.model.opt.zero_grad()
             theta_loss.backward()
@@ -827,7 +865,7 @@ class FAMTrainer:
             )
 
     def _train_theta_step(self):
-        if not self.config.pde_point_weighting_enabled:
+        if not self.config.pde_point_weighting_enabled and self.integral_loss is None:
             self.model._train_step(
                 self.model.train_state.X_train,
                 self.model.train_state.y_train,

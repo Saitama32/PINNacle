@@ -168,6 +168,78 @@ class CausalDiagnosticsCallback(Callback):
         np.savetxt(self.save_path, np.asarray(self.rows, dtype=float), header=header)
 
 
+class IntegralDiagnosticsCallback(Callback):
+    def __init__(self, log_every=None, verbose=False):
+        super().__init__()
+        self.log_every = log_every
+        self.verbose = verbose
+        self.rows = []
+        self.epochs_since_last_log = 0
+        self.keys = [
+            "integral_loss_raw",
+            "integral_weight",
+            "integral_loss_weighted",
+            "integral_residual_rms",
+            "integral_residual_abs_mean",
+            "integral_residual_abs_max",
+            "integral_loss_early",
+            "integral_loss_middle",
+            "integral_loss_late",
+        ]
+
+    def on_train_begin(self):
+        if self.log_every is None:
+            self.log_every = self.model.display_every
+        self.save_path = self.model.model_save_path + "/integral_diagnostics.csv"
+
+    def _value_to_float(self, value):
+        if torch.is_tensor(value):
+            return float(value.detach().cpu().item())
+        return float(value)
+
+    def on_epoch_end(self):
+        self.epochs_since_last_log += 1
+        if self.log_every is None or self.epochs_since_last_log < self.log_every:
+            return
+        self.epochs_since_last_log = 0
+
+        diagnostics = getattr(self.model, "integral_loss_diagnostics", None)
+        if not diagnostics:
+            return
+
+        row = [self.model.train_state.step]
+        for key in self.keys:
+            row.append(self._value_to_float(diagnostics.get(key, np.nan)))
+        self.rows.append(row)
+
+        if self.verbose:
+            values = dict(zip(self.keys, row[1:]))
+            print(
+                "[Integral loss] "
+                f"step={row[0]} "
+                f"raw={values['integral_loss_raw']:.10e} "
+                f"weight={values['integral_weight']:.10e} "
+                f"weighted={values['integral_loss_weighted']:.10e} "
+                f"rms={values['integral_residual_rms']:.10e} "
+                f"early/middle/late="
+                f"{values['integral_loss_early']:.10e}/"
+                f"{values['integral_loss_middle']:.10e}/"
+                f"{values['integral_loss_late']:.10e}"
+            )
+
+    def on_train_end(self):
+        if not self.rows:
+            return
+        header = "step," + ",".join(self.keys)
+        np.savetxt(
+            self.save_path,
+            np.asarray(self.rows, dtype=float),
+            delimiter=",",
+            header=header,
+            comments="",
+        )
+
+
 class KSDiagnosticsCallback(Callback):
     def __init__(self, log_every=None, chunk_every=1000, verbose=False):
         super().__init__()
