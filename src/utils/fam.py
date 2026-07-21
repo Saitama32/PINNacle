@@ -201,6 +201,7 @@ class FAMTrainConfig:
     integral_warmup_steps: int = 1500
     integral_start_step: int = 0
     integral_quadrature_order: int = 4
+    integral_t0_fraction: float = 0.1
     integral_t_min: Optional[float] = None
     integral_resample_every: int = 1
     integral_seed: Optional[int] = None
@@ -328,6 +329,7 @@ class FAMTrainer:
             warmup_steps=self.config.integral_warmup_steps,
             start_step=self.config.integral_start_step,
             quadrature_order=self.config.integral_quadrature_order,
+            t0_fraction=self.config.integral_t0_fraction,
             t_min=self.config.integral_t_min,
             seed=self.config.integral_seed,
             resample_every=self.config.integral_resample_every,

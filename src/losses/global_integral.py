@@ -64,6 +64,7 @@ class GlobalIntegralLoss:
         warmup_steps,
         start_step=0,
         quadrature_order=4,
+        t0_fraction=0.1,
         t_min=None,
         seed=None,
         resample_every=1,
@@ -76,6 +77,7 @@ class GlobalIntegralLoss:
         self.warmup_steps = int(warmup_steps)
         self.start_step = int(start_step)
         self.quadrature_order = int(quadrature_order)
+        self.t0_fraction = float(t0_fraction)
         self.resample_every = int(resample_every)
         self.initial_condition_fn = initial_condition_fn or ks_initial_condition_torch
 
@@ -90,6 +92,8 @@ class GlobalIntegralLoss:
         if self.quadrature_order not in GAUSS_LEGENDRE_RULES:
             supported = ", ".join(str(order) for order in sorted(GAUSS_LEGENDRE_RULES))
             raise ValueError(f"integral quadrature_order must be one of {{{supported}}}.")
+        if not math.isfinite(self.t0_fraction) or not 0.0 <= self.t0_fraction <= 1.0:
+            raise ValueError("integral t0_fraction must be finite and satisfy 0 <= t0_fraction <= 1.")
         if self.resample_every <= 0:
             raise ValueError("integral resample_every must be positive.")
         if getattr(pde, "input_dim", 2) != 2:
@@ -180,6 +184,10 @@ class GlobalIntegralLoss:
             device=device,
             dtype=dtype,
         )
+        num_t0 = int(round(self.t0_fraction * self.batch_size))
+        num_t0 = min(num_t0, self.batch_size)
+        if num_t0 > 0:
+            t[:num_t0] = self.domain_t_min
         self.cached_x = x
         self.cached_t = t
         self.last_sample_step = current_step
