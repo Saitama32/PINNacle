@@ -258,6 +258,14 @@ def validate_args(args):
             raise ValueError("--integral-start-step must be non-negative.")
         if args.integral_quadrature_order not in {4, 10}:
             raise ValueError("--integral-quadrature-order must be one of {4, 10}.")
+        if args.integral_local_weight < 0 or not np.isfinite(args.integral_local_weight):
+            raise ValueError("--integral-local-weight must be finite and non-negative.")
+        if args.integral_local_quadrature_order <= 0:
+            raise ValueError("--integral-local-quadrature-order must be positive.")
+        if args.integral_local_hmax <= 0 or not np.isfinite(args.integral_local_hmax):
+            raise ValueError("--integral-local-hmax must be positive and finite.")
+        if args.integral_local_segment_batch_size <= 0:
+            raise ValueError("--integral-local-segment-batch-size must be positive.")
         if not np.isfinite(args.integral_t0_fraction) or not 0.0 <= args.integral_t0_fraction <= 1.0:
             raise ValueError("--integral-t0-fraction must be finite and satisfy 0 <= value <= 1.")
         if args.integral_resample_every <= 0:
@@ -310,6 +318,11 @@ def maybe_attach_integral_loss(model, args):
         warmup_steps=args.integral_warmup_steps,
         start_step=args.integral_start_step,
         quadrature_order=args.integral_quadrature_order,
+        local_enabled=args.integral_local_enabled,
+        local_weight=args.integral_local_weight,
+        local_quadrature_order=args.integral_local_quadrature_order,
+        local_hmax=args.integral_local_hmax,
+        local_segment_batch_size=args.integral_local_segment_batch_size,
         t0_fraction=args.integral_t0_fraction,
         t_min=args.integral_t_min,
         seed=args.integral_seed if args.integral_seed is not None else args.seed,
@@ -453,6 +466,11 @@ def run_one(equation_name, args):
             integral_warmup_steps=args.integral_warmup_steps,
             integral_start_step=args.integral_start_step,
             integral_quadrature_order=args.integral_quadrature_order,
+            integral_local_enabled=args.integral_local_enabled,
+            integral_local_weight=args.integral_local_weight,
+            integral_local_quadrature_order=args.integral_local_quadrature_order,
+            integral_local_hmax=args.integral_local_hmax,
+            integral_local_segment_batch_size=args.integral_local_segment_batch_size,
             integral_t0_fraction=args.integral_t0_fraction,
             integral_t_min=args.integral_t_min,
             integral_resample_every=args.integral_resample_every,
@@ -522,14 +540,19 @@ def parse_args():
     parser.add_argument(
         "--use-integral-loss",
         action="store_true",
-        default=True,
+        default=False,
     )
-    parser.add_argument("--integral-only", action="store_true", default=True)
+    parser.add_argument("--integral-only", action="store_true", default=False)
     parser.add_argument("--integral-loss-weight", type=float, default=1.00)
     parser.add_argument("--integral-batch-size", type=int, default=1000)
     parser.add_argument("--integral-warmup-steps", type=int, default=1000)
     parser.add_argument("--integral-start-step", type=int, default=0)
     parser.add_argument("--integral-quadrature-order", type=int, default=10)
+    parser.add_argument("--integral-local-enabled", type=str2bool, nargs="?", const=True, default=True)
+    parser.add_argument("--integral-local-weight", type=float, default=1.0)
+    parser.add_argument("--integral-local-quadrature-order", type=int, default=4)
+    parser.add_argument("--integral-local-hmax", type=float, default=0.05)
+    parser.add_argument("--integral-local-segment-batch-size", type=int, default=256)
     parser.add_argument("--integral-t0-fraction", type=float, default=0.1)
     # Lower bound for endpoint sampling only. The integral always starts at the PDE initial time.
     parser.add_argument("--integral-t-min", type=float, default=0.0)

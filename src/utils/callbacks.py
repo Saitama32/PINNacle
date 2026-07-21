@@ -178,7 +178,20 @@ class IntegralDiagnosticsCallback(Callback):
         self.keys = [
             "deepxde_loss_sum",
             "integral_loss_raw",
+            "global_integral_loss",
+            "global_integral_rms",
+            "local_integral_loss",
+            "local_integral_rms",
+            "local_integral_mae",
+            "local_integral_max",
+            "local_num_segments",
+            "local_mean_segments_per_point",
+            "local_max_segments_per_point",
+            "local_mean_segment_length",
+            "local_max_segment_length",
             "integral_weight",
+            "weighted_global_integral_loss",
+            "weighted_local_integral_loss",
             "integral_loss_weighted",
             "actual_total_loss",
             "integral_residual_rms",
@@ -187,6 +200,9 @@ class IntegralDiagnosticsCallback(Callback):
             "integral_loss_early",
             "integral_loss_middle",
             "integral_loss_late",
+            "local_integral_loss_early",
+            "local_integral_loss_middle",
+            "local_integral_loss_late",
         ]
 
     def on_train_begin(self):
@@ -221,10 +237,13 @@ class IntegralDiagnosticsCallback(Callback):
                 f"step={row[0]} "
                 f"deepxde={values['deepxde_loss_sum']:.10e} "
                 f"raw={values['integral_loss_raw']:.10e} "
+                f"global={values['global_integral_loss']:.10e} "
+                f"local={values['local_integral_loss']:.10e} "
                 f"weight={values['integral_weight']:.10e} "
                 f"weighted={values['integral_loss_weighted']:.10e} "
                 f"total={values['actual_total_loss']:.10e} "
-                f"rms={values['integral_residual_rms']:.10e} "
+                f"global_rms={values['global_integral_rms']:.10e} "
+                f"local_rms={values['local_integral_rms']:.10e} "
                 f"early/middle/late="
                 f"{values['integral_loss_early']:.10e}/"
                 f"{values['integral_loss_middle']:.10e}/"

@@ -50,8 +50,196 @@ GAUSS_LEGENDRE_RULES = {
 }
 
 
+_GAUSS_LEGENDRE_TENSOR_CACHE = {}
+
+
+def get_gauss_legendre(order, device, dtype):
+    key = (int(order), str(device), str(dtype))
+    if key not in _GAUSS_LEGENDRE_TENSOR_CACHE:
+        rule = GAUSS_LEGENDRE_RULES.get(int(order))
+        if rule is None:
+            nodes_np, weights_np = np.polynomial.legendre.leggauss(int(order))
+        else:
+            nodes_np = np.asarray(rule["nodes"], dtype=np.float64)
+            weights_np = np.asarray(rule["weights"], dtype=np.float64)
+        _GAUSS_LEGENDRE_TENSOR_CACHE[key] = (
+            torch.tensor(nodes_np, dtype=dtype, device=device),
+            torch.tensor(weights_np, dtype=dtype, device=device),
+        )
+    return _GAUSS_LEGENDRE_TENSOR_CACHE[key]
+
+
 def ks_initial_condition_torch(x):
     return torch.cos(x) * (1.0 + torch.sin(x))
+
+
+def compute_ks_spatial_operator(model, inputs, equation, create_graph=True):
+    del create_graph
+    if not hasattr(equation, "ks_spatial_operator"):
+        raise ValueError("Local/global integral loss requires equation.ks_spatial_operator(inputs, u).")
+    if not inputs.requires_grad:
+        inputs = inputs.requires_grad_(True)
+    outputs = model(inputs)
+    return equation.ks_spatial_operator(inputs, outputs)
+
+
+def _uses_pcgrad_task_projection(opt_name=None, opt=None):
+    names = []
+    if opt_name is not None:
+        names.append(str(opt_name).lower())
+    if opt is not None:
+        base_optimizer_name = getattr(opt, "base_optimizer_name", None)
+        if base_optimizer_name is not None:
+            names.append(str(base_optimizer_name).lower())
+        class_name = getattr(opt.__class__, "__name__", None)
+        if class_name is not None:
+            names.append(str(class_name).lower())
+    return any("pcgrad" in name for name in names)
+
+
+def compose_optimizer_task_losses(base_losses, integral_weighted_loss, integral_only=False, opt_name=None, opt=None):
+    integral_task_loss = integral_weighted_loss.reshape(1)
+    if integral_only or base_losses is None:
+        return integral_task_loss
+    if base_losses.ndim == 0:
+        base_losses = base_losses.reshape(1)
+    if _uses_pcgrad_task_projection(opt_name=opt_name, opt=opt) and base_losses.numel() > 0:
+        return torch.cat([base_losses, integral_task_loss])
+    return base_losses
+
+
+def _zero_local_diagnostics(device, dtype):
+    zero = torch.zeros((), dtype=dtype, device=device)
+    return {
+        "num_local_intervals": 0,
+        "mean_intervals_per_point": 0.0,
+        "max_intervals_per_point": 0,
+        "local_residual_rms": zero,
+        "local_residual_mae": zero,
+        "local_residual_max": zero,
+        "mean_interval_length": zero,
+        "max_interval_length": zero,
+        "local_loss_early": zero,
+        "local_loss_middle": zero,
+        "local_loss_late": zero,
+    }
+
+
+def _bucketed_segment_loss(residual, midpoint_t, t_min, t_max, bucket):
+    span = float(t_max - t_min)
+    left = t_min + bucket * span / 3.0
+    right = t_min + (bucket + 1) * span / 3.0
+    flat_mid = midpoint_t.reshape(-1)
+    if bucket == 2:
+        mask = flat_mid >= left
+    else:
+        mask = (flat_mid >= left) & (flat_mid < right)
+    if not torch.any(mask):
+        return torch.tensor(float("nan"), dtype=residual.dtype, device=residual.device)
+    return torch.mean(torch.square(residual.reshape(-1)[mask])).detach()
+
+
+def compute_local_integral_loss(
+    model,
+    x,
+    t,
+    equation,
+    hmax=0.05,
+    quadrature_order=4,
+    segment_batch_size=None,
+    t_min=0.0,
+    t_max=1.0,
+):
+    if x.ndim == 1:
+        x = x[:, None]
+    if t.ndim == 1:
+        t = t[:, None]
+
+    eps = torch.finfo(t.dtype).eps
+    active = t[:, 0] > eps
+    x_active = x[active]
+    t_active = t[active]
+
+    if x_active.shape[0] == 0:
+        zero = torch.zeros((), dtype=x.dtype, device=x.device)
+        diagnostics = _zero_local_diagnostics(x.device, x.dtype)
+        return zero, diagnostics
+
+    num_sections = torch.ceil(t_active[:, 0] / float(hmax)).to(torch.long)
+    num_sections = torch.clamp(num_sections, min=1)
+
+    segment_x = []
+    segment_a = []
+    segment_b = []
+    for i in range(x_active.shape[0]):
+        k_i = int(num_sections[i].item())
+        section_length = t_active[i : i + 1] / float(k_i)
+        boundaries = torch.arange(
+            k_i + 1,
+            device=t.device,
+            dtype=t.dtype,
+        ).unsqueeze(1) * section_length
+        segment_x.append(x_active[i : i + 1].expand(k_i, -1))
+        segment_a.append(boundaries[:-1])
+        segment_b.append(boundaries[1:])
+
+    segment_x = torch.cat(segment_x, dim=0)
+    segment_a = torch.cat(segment_a, dim=0)
+    segment_b = torch.cat(segment_b, dim=0)
+    segment_mid = 0.5 * (segment_a + segment_b)
+
+    if segment_batch_size is None or segment_batch_size <= 0:
+        segment_batch_size = int(segment_x.shape[0])
+
+    nodes, weights = get_gauss_legendre(quadrature_order, x.device, x.dtype)
+    loss_sum = torch.zeros((), dtype=x.dtype, device=x.device)
+    residual_chunks = []
+
+    total_segments = int(segment_x.shape[0])
+    for start in range(0, total_segments, int(segment_batch_size)):
+        stop = min(start + int(segment_batch_size), total_segments)
+        chunk_x = segment_x[start:stop]
+        chunk_a = segment_a[start:stop]
+        chunk_b = segment_b[start:stop]
+
+        inputs_a = torch.cat([chunk_x, chunk_a], dim=1)
+        inputs_b = torch.cat([chunk_x, chunk_b], dim=1)
+        u_a = model(inputs_a)
+        u_b = model(inputs_b)
+
+        midpoint = 0.5 * (chunk_a + chunk_b)
+        half_width = 0.5 * (chunk_b - chunk_a)
+        quad_t = midpoint[:, None, :] + half_width[:, None, :] * nodes.view(1, quadrature_order, 1)
+        quad_x = chunk_x[:, None, :].expand(-1, quadrature_order, -1)
+        quad_inputs = torch.cat([quad_x, quad_t], dim=-1).reshape(-1, 2).requires_grad_(True)
+        g_values = compute_ks_spatial_operator(
+            model=model,
+            inputs=quad_inputs,
+            equation=equation,
+            create_graph=True,
+        ).reshape(stop - start, quadrature_order, -1)
+        integral = half_width * torch.sum(weights.view(1, quadrature_order, 1) * g_values, dim=1)
+        local_residual = u_b - u_a + integral
+        loss_sum = loss_sum + local_residual.square().sum()
+        residual_chunks.append(local_residual.reshape(-1))
+
+    local_loss = loss_sum / max(total_segments, 1)
+    residual_all = torch.cat(residual_chunks, dim=0)
+    interval_lengths = segment_b - segment_a
+    diagnostics = {
+        "num_local_intervals": total_segments,
+        "mean_intervals_per_point": float(num_sections.float().mean().detach().cpu().item()),
+        "max_intervals_per_point": int(num_sections.max().detach().cpu().item()),
+        "local_residual_rms": torch.sqrt(torch.mean(residual_all.square())),
+        "local_residual_mae": torch.mean(torch.abs(residual_all)),
+        "local_residual_max": torch.max(torch.abs(residual_all)),
+        "mean_interval_length": torch.mean(interval_lengths).detach(),
+        "max_interval_length": torch.max(interval_lengths).detach(),
+        "local_loss_early": _bucketed_segment_loss(residual_all, segment_mid, t_min, t_max, 0),
+        "local_loss_middle": _bucketed_segment_loss(residual_all, segment_mid, t_min, t_max, 1),
+        "local_loss_late": _bucketed_segment_loss(residual_all, segment_mid, t_min, t_max, 2),
+    }
+    return local_loss, diagnostics
 
 
 class GlobalIntegralLoss:
@@ -64,6 +252,11 @@ class GlobalIntegralLoss:
         warmup_steps,
         start_step=0,
         quadrature_order=4,
+        local_enabled=True,
+        local_weight=1.0,
+        local_quadrature_order=4,
+        local_hmax=0.05,
+        local_segment_batch_size=256,
         t0_fraction=0.1,
         t_min=None,
         seed=None,
@@ -77,6 +270,13 @@ class GlobalIntegralLoss:
         self.warmup_steps = int(warmup_steps)
         self.start_step = int(start_step)
         self.quadrature_order = int(quadrature_order)
+        self.local_enabled = bool(local_enabled)
+        self.local_weight = float(local_weight)
+        self.local_quadrature_order = int(local_quadrature_order)
+        self.local_hmax = float(local_hmax)
+        self.local_segment_batch_size = (
+            None if local_segment_batch_size is None else int(local_segment_batch_size)
+        )
         self.t0_fraction = float(t0_fraction)
         self.resample_every = int(resample_every)
         self.initial_condition_fn = initial_condition_fn or ks_initial_condition_torch
@@ -92,6 +292,14 @@ class GlobalIntegralLoss:
         if self.quadrature_order not in GAUSS_LEGENDRE_RULES:
             supported = ", ".join(str(order) for order in sorted(GAUSS_LEGENDRE_RULES))
             raise ValueError(f"integral quadrature_order must be one of {{{supported}}}.")
+        if self.local_weight < 0 or not math.isfinite(self.local_weight):
+            raise ValueError("integral local_weight must be finite and non-negative.")
+        if self.local_quadrature_order <= 0:
+            raise ValueError("integral local_quadrature_order must be positive.")
+        if self.local_hmax <= 0 or not math.isfinite(self.local_hmax):
+            raise ValueError("integral local_hmax must be positive and finite.")
+        if self.local_segment_batch_size is not None and self.local_segment_batch_size <= 0:
+            raise ValueError("integral local_segment_batch_size must be positive.")
         if not math.isfinite(self.t0_fraction) or not 0.0 <= self.t0_fraction <= 1.0:
             raise ValueError("integral t0_fraction must be finite and satisfy 0 <= t0_fraction <= 1.")
         if self.resample_every <= 0:
@@ -115,8 +323,6 @@ class GlobalIntegralLoss:
         self.seed = seed
         self._generator = None
         self._generator_device = None
-        self._gl_nodes = None
-        self._gl_weights = None
         self.cached_x = None
         self.cached_t = None
         self.last_sample_step = None
@@ -138,16 +344,10 @@ class GlobalIntegralLoss:
         self._generator_device = device
         return self._generator
 
-    def _quadrature_constants(self, device, dtype):
-        if (
-            self._gl_nodes is None
-            or self._gl_nodes.device != device
-            or self._gl_nodes.dtype != dtype
-        ):
-            rule = GAUSS_LEGENDRE_RULES[self.quadrature_order]
-            self._gl_nodes = torch.tensor(rule["nodes"], dtype=dtype, device=device)
-            self._gl_weights = torch.tensor(rule["weights"], dtype=dtype, device=device)
-        return self._gl_nodes, self._gl_weights
+    def _quadrature_constants(self, device, dtype, order=None):
+        if order is None:
+            order = self.quadrature_order
+        return get_gauss_legendre(order, device, dtype)
 
     def current_weight(self, step):
         if step is None:
@@ -204,7 +404,7 @@ class GlobalIntegralLoss:
         points = torch.stack((x_quad, times), dim=-1).reshape(-1, 2)
         return points.requires_grad_(True)
 
-    def integral_residual(self, step=None, endpoints=None):
+    def global_integral_residual(self, step=None, endpoints=None):
         if endpoints is None:
             x, t = self.sample_endpoints(step=step)
         else:
@@ -231,10 +431,47 @@ class GlobalIntegralLoss:
         integral = 0.5 * span * weighted_sum
         return u_end - u0 + integral
 
+    def integral_residual(self, step=None, endpoints=None):
+        return self.global_integral_residual(step=step, endpoints=endpoints)
+
+    def compute_local_raw_loss(self, step=None, endpoints=None):
+        if endpoints is None:
+            x, t = self.sample_endpoints(step=step)
+        else:
+            x, t = endpoints
+            self.cached_x = x
+            self.cached_t = t
+        return compute_local_integral_loss(
+            model=self.model.net,
+            x=x,
+            t=t,
+            equation=self.pde,
+            hmax=self.local_hmax,
+            quadrature_order=self.local_quadrature_order,
+            segment_batch_size=self.local_segment_batch_size,
+            t_min=self.t_min,
+            t_max=self.t_max,
+        )
+
     def compute_raw_loss(self, step=None, endpoints=None, deepxde_loss_sum=None):
-        residual = self.integral_residual(step=step, endpoints=endpoints)
-        raw_loss = torch.mean(torch.square(residual))
-        self.last_diagnostics = self._build_diagnostics(raw_loss, residual, deepxde_loss_sum=deepxde_loss_sum)
+        global_residual = self.global_integral_residual(step=step, endpoints=endpoints)
+        global_raw_loss = torch.mean(torch.square(global_residual))
+        local_raw_loss, local_diagnostics = self.compute_local_raw_loss(
+            step=step,
+            endpoints=(self.cached_x, self.cached_t),
+        ) if self.local_enabled else (
+            torch.zeros((), dtype=global_raw_loss.dtype, device=global_raw_loss.device),
+            _zero_local_diagnostics(global_raw_loss.device, global_raw_loss.dtype),
+        )
+        raw_loss = global_raw_loss + self.local_weight * local_raw_loss
+        self.last_diagnostics = self._build_diagnostics(
+            raw_loss=raw_loss,
+            global_raw_loss=global_raw_loss,
+            global_residual=global_residual,
+            local_raw_loss=local_raw_loss,
+            local_diagnostics=local_diagnostics,
+            deepxde_loss_sum=deepxde_loss_sum,
+        )
         return raw_loss
 
     def compute_weighted_loss(self, step, deepxde_loss_sum=None):
@@ -243,6 +480,12 @@ class GlobalIntegralLoss:
         weighted_loss = raw_loss * weight
         self.last_diagnostics["integral_weight"] = weight
         self.last_diagnostics["integral_loss_weighted"] = weighted_loss.detach()
+        self.last_diagnostics["weighted_global_integral_loss"] = (
+            self.last_diagnostics["global_integral_loss"] * weight
+        )
+        self.last_diagnostics["weighted_local_integral_loss"] = (
+            self.last_diagnostics["local_integral_loss"] * self.local_weight * weight
+        )
         if deepxde_loss_sum is not None:
             deepxde_loss_sum = deepxde_loss_sum.detach()
             self.last_diagnostics["deepxde_loss_sum"] = deepxde_loss_sum
@@ -250,12 +493,33 @@ class GlobalIntegralLoss:
         self.model.integral_loss_diagnostics = self.last_diagnostics
         return weighted_loss
 
-    def _build_diagnostics(self, raw_loss, residual, deepxde_loss_sum=None):
-        residual_detached = residual.detach()
+    def _build_diagnostics(
+        self,
+        raw_loss,
+        global_raw_loss,
+        global_residual,
+        local_raw_loss,
+        local_diagnostics,
+        deepxde_loss_sum=None,
+    ):
+        residual_detached = global_residual.detach()
         abs_residual = torch.abs(residual_detached)
         t = self.cached_t.detach() if self.cached_t is not None else None
         diagnostics = {
             "integral_loss_raw": raw_loss.detach(),
+            "global_integral_loss": global_raw_loss.detach(),
+            "global_integral_rms": torch.sqrt(torch.mean(residual_detached**2)),
+            "local_integral_loss": local_raw_loss.detach(),
+            "local_integral_rms": local_diagnostics["local_residual_rms"].detach(),
+            "local_integral_mae": local_diagnostics["local_residual_mae"].detach(),
+            "local_integral_max": local_diagnostics["local_residual_max"].detach(),
+            "local_num_segments": float(local_diagnostics["num_local_intervals"]),
+            "local_mean_segments_per_point": float(local_diagnostics["mean_intervals_per_point"]),
+            "local_max_segments_per_point": float(local_diagnostics["max_intervals_per_point"]),
+            "local_mean_segment_length": local_diagnostics["mean_interval_length"],
+            "local_max_segment_length": local_diagnostics["max_interval_length"],
+            "weighted_global_integral_loss": global_raw_loss.detach() * 0.0,
+            "weighted_local_integral_loss": local_raw_loss.detach() * 0.0,
             "integral_weight": 0.0,
             "integral_loss_weighted": raw_loss.detach() * 0.0,
             "integral_residual_rms": torch.sqrt(torch.mean(residual_detached**2)),
@@ -264,6 +528,9 @@ class GlobalIntegralLoss:
             "integral_loss_early": self._bucket_loss(residual_detached, t, 0),
             "integral_loss_middle": self._bucket_loss(residual_detached, t, 1),
             "integral_loss_late": self._bucket_loss(residual_detached, t, 2),
+            "local_integral_loss_early": local_diagnostics["local_loss_early"],
+            "local_integral_loss_middle": local_diagnostics["local_loss_middle"],
+            "local_integral_loss_late": local_diagnostics["local_loss_late"],
         }
         if deepxde_loss_sum is not None:
             diagnostics["deepxde_loss_sum"] = deepxde_loss_sum.detach()
@@ -299,7 +566,13 @@ def attach_integral_loss_train_step(model, integral_loss, integral_only=False):
                 model.train_state.step,
                 deepxde_loss_sum=None,
             )
-            model.opt.losses = integral_weighted_loss.reshape(1)
+            model.opt.losses = compose_optimizer_task_losses(
+                base_losses=None,
+                integral_weighted_loss=integral_weighted_loss,
+                integral_only=True,
+                opt_name=getattr(model, "opt_name", None),
+                opt=model.opt,
+            )
             integral_loss.last_diagnostics["actual_total_loss"] = integral_weighted_loss.detach()
             integral_loss.last_diagnostics["deepxde_loss_sum"] = torch.zeros_like(integral_weighted_loss.detach())
             model.integral_loss_diagnostics = integral_loss.last_diagnostics
@@ -310,11 +583,17 @@ def attach_integral_loss_train_step(model, integral_loss, integral_only=False):
                 ic_loss = model.opt.window_ic_loss()
                 if ic_loss is not None:
                     losses = torch.cat([losses, ic_loss.reshape(1)])
-            model.opt.losses = losses
             deepxde_loss_sum = torch.sum(losses)
             integral_weighted_loss = integral_loss.compute_weighted_loss(
                 model.train_state.step,
                 deepxde_loss_sum=deepxde_loss_sum,
+            )
+            model.opt.losses = compose_optimizer_task_losses(
+                base_losses=losses,
+                integral_weighted_loss=integral_weighted_loss,
+                integral_only=False,
+                opt_name=getattr(model, "opt_name", None),
+                opt=model.opt,
             )
             total_loss = deepxde_loss_sum + integral_weighted_loss
             integral_loss.last_diagnostics["actual_total_loss"] = total_loss.detach()
