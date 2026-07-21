@@ -254,6 +254,8 @@ def validate_args(args):
             raise ValueError("--integral-warmup-steps must be non-negative.")
         if args.integral_start_step < 0:
             raise ValueError("--integral-start-step must be non-negative.")
+        if args.integral_quadrature_order not in {4, 10}:
+            raise ValueError("--integral-quadrature-order must be one of {4, 10}.")
         if args.integral_resample_every <= 0:
             raise ValueError("--integral-resample-every must be positive.")
         if not np.isfinite(args.integral_t_min):
@@ -303,6 +305,7 @@ def maybe_attach_integral_loss(model, args):
         weight=args.integral_loss_weight,
         warmup_steps=args.integral_warmup_steps,
         start_step=args.integral_start_step,
+        quadrature_order=args.integral_quadrature_order,
         t_min=args.integral_t_min,
         seed=args.integral_seed if args.integral_seed is not None else args.seed,
         resample_every=args.integral_resample_every,
@@ -443,6 +446,7 @@ def run_one(equation_name, args):
             integral_batch_size=args.integral_batch_size,
             integral_warmup_steps=args.integral_warmup_steps,
             integral_start_step=args.integral_start_step,
+            integral_quadrature_order=args.integral_quadrature_order,
             integral_t_min=args.integral_t_min,
             integral_resample_every=args.integral_resample_every,
             integral_seed=args.integral_seed,
@@ -515,8 +519,9 @@ def parse_args():
     )
     parser.add_argument("--integral-loss-weight", type=float, default=1.00)
     parser.add_argument("--integral-batch-size", type=int, default=1000)
-    parser.add_argument("--integral-warmup-steps", type=int, default=7000)
-    parser.add_argument("--integral-start-step", type=int, default=7000)
+    parser.add_argument("--integral-warmup-steps", type=int, default=1500)
+    parser.add_argument("--integral-start-step", type=int, default=5000)
+    parser.add_argument("--integral-quadrature-order", type=int, default=10)
     # Lower bound for endpoint sampling only. The integral always starts at the PDE initial time.
     parser.add_argument("--integral-t-min", type=float, default=0.0)
     parser.add_argument("--integral-resample-every", type=int, default=1)

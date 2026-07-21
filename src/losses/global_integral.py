@@ -6,19 +6,48 @@ import deepxde as dde
 from torch.nn.utils import parameters_to_vector, vector_to_parameters
 
 
-GL4_NODES = (
-    -0.8611363115940526,
-    -0.3399810435848563,
-    0.3399810435848563,
-    0.8611363115940526,
-)
-
-GL4_WEIGHTS = (
-    0.3478548451374538,
-    0.6521451548625461,
-    0.6521451548625461,
-    0.3478548451374538,
-)
+GAUSS_LEGENDRE_RULES = {
+    4: {
+        "nodes": (
+            -0.8611363115940526,
+            -0.3399810435848563,
+            0.3399810435848563,
+            0.8611363115940526,
+        ),
+        "weights": (
+            0.3478548451374538,
+            0.6521451548625461,
+            0.6521451548625461,
+            0.3478548451374538,
+        ),
+    },
+    10: {
+        "nodes": (
+            -0.9739065285171717,
+            -0.8650633666889845,
+            -0.6794095682990244,
+            -0.4333953941292472,
+            -0.1488743389816312,
+            0.1488743389816312,
+            0.4333953941292472,
+            0.6794095682990244,
+            0.8650633666889845,
+            0.9739065285171717,
+        ),
+        "weights": (
+            0.0666713443086881,
+            0.1494513491505806,
+            0.2190863625159820,
+            0.2692667193099963,
+            0.2955242247147529,
+            0.2955242247147529,
+            0.2692667193099963,
+            0.2190863625159820,
+            0.1494513491505806,
+            0.0666713443086881,
+        ),
+    },
+}
 
 
 def ks_initial_condition_torch(x):
@@ -34,6 +63,7 @@ class GlobalIntegralLoss:
         weight,
         warmup_steps,
         start_step=0,
+        quadrature_order=4,
         t_min=None,
         seed=None,
         resample_every=1,
@@ -45,6 +75,7 @@ class GlobalIntegralLoss:
         self.max_weight = float(weight)
         self.warmup_steps = int(warmup_steps)
         self.start_step = int(start_step)
+        self.quadrature_order = int(quadrature_order)
         self.resample_every = int(resample_every)
         self.initial_condition_fn = initial_condition_fn or ks_initial_condition_torch
 
@@ -56,6 +87,9 @@ class GlobalIntegralLoss:
             raise ValueError("integral warmup_steps must be non-negative.")
         if self.start_step < 0:
             raise ValueError("integral start_step must be non-negative.")
+        if self.quadrature_order not in GAUSS_LEGENDRE_RULES:
+            supported = ", ".join(str(order) for order in sorted(GAUSS_LEGENDRE_RULES))
+            raise ValueError(f"integral quadrature_order must be one of {{{supported}}}.")
         if self.resample_every <= 0:
             raise ValueError("integral resample_every must be positive.")
         if getattr(pde, "input_dim", 2) != 2:
@@ -106,8 +140,9 @@ class GlobalIntegralLoss:
             or self._gl_nodes.device != device
             or self._gl_nodes.dtype != dtype
         ):
-            self._gl_nodes = torch.tensor(GL4_NODES, dtype=dtype, device=device)
-            self._gl_weights = torch.tensor(GL4_WEIGHTS, dtype=dtype, device=device)
+            rule = GAUSS_LEGENDRE_RULES[self.quadrature_order]
+            self._gl_nodes = torch.tensor(rule["nodes"], dtype=dtype, device=device)
+            self._gl_weights = torch.tensor(rule["weights"], dtype=dtype, device=device)
         return self._gl_nodes, self._gl_weights
 
     def current_weight(self, step):
@@ -153,11 +188,11 @@ class GlobalIntegralLoss:
     def quadrature_times(self, t):
         nodes, _ = self._quadrature_constants(t.device, t.dtype)
         span = t - self.domain_t_min
-        return 0.5 * (self.domain_t_min + t) + 0.5 * span * nodes.view(1, 4)
+        return 0.5 * (self.domain_t_min + t) + 0.5 * span * nodes.view(1, self.quadrature_order)
 
     def quadrature_points(self, x, t):
         times = self.quadrature_times(t)
-        x_quad = x.expand(-1, 4)
+        x_quad = x.expand(-1, self.quadrature_order)
         points = torch.stack((x_quad, times), dim=-1).reshape(-1, 2)
         return points.requires_grad_(True)
 
@@ -175,9 +210,15 @@ class GlobalIntegralLoss:
 
         quad_points = self.quadrature_points(x, t)
         u_quad = self.model.net(quad_points)
-        g_quad = self.pde.ks_spatial_operator(quad_points, u_quad).reshape(x.shape[0], 4)
+        g_quad = self.pde.ks_spatial_operator(quad_points, u_quad).reshape(
+            x.shape[0], self.quadrature_order
+        )
         _, weights = self._quadrature_constants(quad_points.device, quad_points.dtype)
-        weighted_sum = torch.sum(weights.view(1, 4) * g_quad, dim=1, keepdim=True)
+        weighted_sum = torch.sum(
+            weights.view(1, self.quadrature_order) * g_quad,
+            dim=1,
+            keepdim=True,
+        )
         span = t - self.domain_t_min
         integral = 0.5 * span * weighted_sum
         return u_end - u0 + integral
