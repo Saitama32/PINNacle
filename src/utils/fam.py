@@ -195,6 +195,7 @@ class FAMTrainConfig:
     pde_point_weighting_enabled: bool = False
     pde_point_weight_coeff: float = 1.0
     integral_loss_enabled: bool = False
+    integral_only: bool = False
     integral_loss_weight: float = 0.01
     integral_batch_size: int = 64
     integral_warmup_steps: int = 1500
@@ -276,6 +277,7 @@ class FAMTrainer:
         self.last_integral_raw_loss = None
         self.last_integral_weight = 0.0
         self.last_integral_weighted_loss = None
+        self.integral_only = bool(config.integral_only)
         if self.causal_window_enabled:
             self._validate_causal_window_config()
         self._validate_pde_point_weighting_config()
@@ -647,6 +649,11 @@ class FAMTrainer:
         return torch.stack(replaced)
 
     def _compute_weighted_losses_tensor(self):
+        if self.integral_only:
+            param = next(self.model.net.parameters(), None)
+            device = param.device if param is not None else torch.device("cpu")
+            dtype = param.dtype if param is not None else torch.float32
+            return torch.zeros(0, dtype=dtype, device=device)
         self.model.net.auxiliary_vars = self.model.train_state.train_aux_vars
         try:
             _, weighted_losses = self.model.outputs_losses_train(
@@ -665,13 +672,21 @@ class FAMTrainer:
             step = self.model.train_state.step
             integral_weighted_loss = self.integral_loss.compute_weighted_loss(
                 step,
-                deepxde_loss_sum=deepxde_loss_sum,
+                deepxde_loss_sum=None if self.integral_only else deepxde_loss_sum,
             )
             diagnostics = self.integral_loss.last_diagnostics
             self.last_integral_raw_loss = diagnostics["integral_loss_raw"]
             self.last_integral_weight = diagnostics["integral_weight"]
             self.last_integral_weighted_loss = diagnostics["integral_loss_weighted"]
-            theta_loss = theta_loss + integral_weighted_loss
+            if self.integral_only:
+                weighted_losses = integral_weighted_loss.reshape(1)
+                theta_loss = integral_weighted_loss
+            else:
+                theta_loss = theta_loss + integral_weighted_loss
+            diagnostics["actual_total_loss"] = theta_loss.detach()
+            if self.integral_only:
+                diagnostics["deepxde_loss_sum"] = torch.zeros_like(theta_loss.detach())
+                self.model.integral_loss_diagnostics = diagnostics
         if not skip_backward:
             self.model.opt.zero_grad()
             theta_loss.backward()
@@ -735,6 +750,8 @@ class FAMTrainer:
         return weighted_losses.detach() / torch.clamp(weights.detach(), min=1e-12)
 
     def _train_weight_step(self):
+        if self.integral_only:
+            return
         self.weight_optimizer.zero_grad()
         unweighted_losses = self._compute_unweighted_losses_for_weights()
         grouped_losses = self._get_group_losses(unweighted_losses)
@@ -748,6 +765,8 @@ class FAMTrainer:
 
     def _supports_joint_theta_weight_step(self):
         return (
+            (not self.integral_only)
+            and
             self.config.mode == "famaw-w"
             and self.weight_optimizer is not None
             and self.model.opt_name in self.joint_weight_update_optimizers
@@ -883,6 +902,9 @@ class FAMTrainer:
         self._step_theta_optimizer()
 
     def _train_joint_theta_weight_step(self):
+        if self.integral_only:
+            self._step_theta_optimizer()
+            return
         self.weight_optimizer.zero_grad()
         self._step_theta_optimizer()
         weighted_losses = self._compute_weighted_losses_tensor()

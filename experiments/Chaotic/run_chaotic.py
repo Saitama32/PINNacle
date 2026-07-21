@@ -243,6 +243,8 @@ def validate_args(args):
         raise ValueError("--fourier-sigma must be positive and finite.")
     if args.causal_num_chunks <= 0:
         raise ValueError("--causal-num-chunks must be positive.")
+    if args.integral_only and not args.use_integral_loss:
+        raise ValueError("--integral-only requires --use-integral-loss.")
     if args.use_integral_loss:
         if args.equation not in {"ks", "kuramoto-sivashinsky"}:
             raise ValueError("--use-integral-loss is currently supported only with --equation ks.")
@@ -312,7 +314,7 @@ def maybe_attach_integral_loss(model, args):
     )
     model.integral_loss = integral_loss
     model.integral_loss_diagnostics = None
-    attach_integral_loss_train_step(model, integral_loss)
+    attach_integral_loss_train_step(model, integral_loss, integral_only=args.integral_only)
     return integral_loss
 
 
@@ -442,6 +444,7 @@ def run_one(equation_name, args):
             pde_point_weighting_enabled=args.fam_pde_point_weighting,
             pde_point_weight_coeff=args.fam_pde_point_weight_coeff,
             integral_loss_enabled=args.use_integral_loss,
+            integral_only=args.integral_only,
             integral_loss_weight=args.integral_loss_weight,
             integral_batch_size=args.integral_batch_size,
             integral_warmup_steps=args.integral_warmup_steps,
@@ -499,7 +502,7 @@ def parse_args():
     parser.add_argument("--ks-diagnostics-chunk-every", type=int, default=1000)
     parser.add_argument("--no-callbacks", action="store_true")
     parser.add_argument("--save-model", type=str2bool, nargs="?", const=True, default=True)
-    parser.add_argument("--use-causal-loss", action="store_true", default=True)
+    parser.add_argument("--use-causal-loss", action="store_true", default=False)
     parser.add_argument("--causal-num-chunks", type=int, default=16)
     parser.add_argument("--causal-tol", type=float, default=0.01)
     parser.add_argument("--causal-time-index", type=int, default=-1)
@@ -515,12 +518,13 @@ def parse_args():
     parser.add_argument(
         "--use-integral-loss",
         action="store_true",
-        default=True,
+        default=False,
     )
+    parser.add_argument("--integral-only", action="store_true", default=False)
     parser.add_argument("--integral-loss-weight", type=float, default=1.00)
     parser.add_argument("--integral-batch-size", type=int, default=1000)
-    parser.add_argument("--integral-warmup-steps", type=int, default=1500)
-    parser.add_argument("--integral-start-step", type=int, default=5000)
+    parser.add_argument("--integral-warmup-steps", type=int, default=1000)
+    parser.add_argument("--integral-start-step", type=int, default=0)
     parser.add_argument("--integral-quadrature-order", type=int, default=10)
     # Lower bound for endpoint sampling only. The integral always starts at the PDE initial time.
     parser.add_argument("--integral-t-min", type=float, default=0.0)
@@ -529,7 +533,7 @@ def parse_args():
     parser.add_argument(
         "--sampling-method",
         choices=["none", "fam-w", "famaw-w"],
-        default="fam-w",
+        default="none",
     )
     parser.add_argument("--sampling-refresh-every", type=int, default=1000)
     parser.add_argument("--fam-alpha", type=float, default=0.6)

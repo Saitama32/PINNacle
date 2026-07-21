@@ -277,25 +277,40 @@ class GlobalIntegralLoss:
         return torch.mean(torch.square(residual.reshape(-1)[mask])).detach()
 
 
-def attach_integral_loss_train_step(model, integral_loss):
+def attach_integral_loss_train_step(model, integral_loss, integral_only=False):
     if dde.backend.backend_name != "pytorch":
         raise ValueError("Integral loss train-step attachment currently supports only the PyTorch backend.")
 
     model.integral_loss = integral_loss
     model.integral_loss_diagnostics = None
+    integral_only = bool(integral_only)
 
     def _compute_total_loss(active_inputs, active_targets, skip_backward=False):
-        losses = model.outputs_losses_train(active_inputs, active_targets)[1]
-        if hasattr(model.opt, "window_ic_loss"):
-            ic_loss = model.opt.window_ic_loss()
-            if ic_loss is not None:
-                losses = torch.cat([losses, ic_loss.reshape(1)])
-        model.opt.losses = losses
-        deepxde_loss_sum = torch.sum(losses)
-        total_loss = deepxde_loss_sum + integral_loss.compute_weighted_loss(
-            model.train_state.step,
-            deepxde_loss_sum=deepxde_loss_sum,
-        )
+        if integral_only:
+            integral_weighted_loss = integral_loss.compute_weighted_loss(
+                model.train_state.step,
+                deepxde_loss_sum=None,
+            )
+            model.opt.losses = integral_weighted_loss.reshape(1)
+            integral_loss.last_diagnostics["actual_total_loss"] = integral_weighted_loss.detach()
+            integral_loss.last_diagnostics["deepxde_loss_sum"] = torch.zeros_like(integral_weighted_loss.detach())
+            model.integral_loss_diagnostics = integral_loss.last_diagnostics
+            total_loss = integral_weighted_loss
+        else:
+            losses = model.outputs_losses_train(active_inputs, active_targets)[1]
+            if hasattr(model.opt, "window_ic_loss"):
+                ic_loss = model.opt.window_ic_loss()
+                if ic_loss is not None:
+                    losses = torch.cat([losses, ic_loss.reshape(1)])
+            model.opt.losses = losses
+            deepxde_loss_sum = torch.sum(losses)
+            integral_weighted_loss = integral_loss.compute_weighted_loss(
+                model.train_state.step,
+                deepxde_loss_sum=deepxde_loss_sum,
+            )
+            total_loss = deepxde_loss_sum + integral_weighted_loss
+            integral_loss.last_diagnostics["actual_total_loss"] = total_loss.detach()
+            model.integral_loss_diagnostics = integral_loss.last_diagnostics
         if not skip_backward:
             model.opt.zero_grad()
             total_loss.backward()
