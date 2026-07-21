@@ -33,6 +33,7 @@ class GlobalIntegralLoss:
         batch_size,
         weight,
         warmup_steps,
+        start_step=0,
         t_min=None,
         seed=None,
         resample_every=1,
@@ -43,6 +44,7 @@ class GlobalIntegralLoss:
         self.batch_size = int(batch_size)
         self.max_weight = float(weight)
         self.warmup_steps = int(warmup_steps)
+        self.start_step = int(start_step)
         self.resample_every = int(resample_every)
         self.initial_condition_fn = initial_condition_fn or ks_initial_condition_torch
 
@@ -52,6 +54,8 @@ class GlobalIntegralLoss:
             raise ValueError("integral loss weight must be finite and non-negative.")
         if self.warmup_steps < 0:
             raise ValueError("integral warmup_steps must be non-negative.")
+        if self.start_step < 0:
+            raise ValueError("integral start_step must be non-negative.")
         if self.resample_every <= 0:
             raise ValueError("integral resample_every must be positive.")
         if getattr(pde, "input_dim", 2) != 2:
@@ -107,9 +111,14 @@ class GlobalIntegralLoss:
         return self._gl_nodes, self._gl_weights
 
     def current_weight(self, step):
+        if step is None:
+            step = 0
+        step = float(step)
+        if step < float(self.start_step):
+            return 0.0
         if self.warmup_steps <= 0:
             return self.max_weight
-        progress = min(max(float(step), 0.0) / float(self.warmup_steps), 1.0)
+        progress = min(max(step - float(self.start_step), 0.0) / float(self.warmup_steps), 1.0)
         return self.max_weight * progress
 
     def sample_endpoints(self, step=None, force=False):
