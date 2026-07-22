@@ -256,8 +256,8 @@ def validate_args(args):
             raise ValueError("--integral-warmup-steps must be non-negative.")
         if args.integral_start_step < 0:
             raise ValueError("--integral-start-step must be non-negative.")
-        if args.integral_quadrature_order not in {4, 10}:
-            raise ValueError("--integral-quadrature-order must be one of {4, 10}.")
+        if args.integral_quadrature_order <= 0:
+            raise ValueError("--integral-quadrature-order must be positive.")
         if args.integral_local_weight < 0 or not np.isfinite(args.integral_local_weight):
             raise ValueError("--integral-local-weight must be finite and non-negative.")
         if args.integral_local_quadrature_order <= 0:
@@ -553,7 +553,7 @@ def parse_args():
     parser.add_argument("--integral-local-quadrature-order", type=int, default=4)
     parser.add_argument("--integral-local-hmax", type=float, default=0.05)
     parser.add_argument("--integral-local-segment-batch-size", type=int, default=256)
-    parser.add_argument("--integral-t0-fraction", type=float, default=0.1)
+    parser.add_argument("--integral-t0-fraction", type=float, default=0.2)
     # Lower bound for endpoint sampling only. The integral always starts at the PDE initial time.
     parser.add_argument("--integral-t-min", type=float, default=0.0)
     parser.add_argument("--integral-resample-every", type=int, default=1)

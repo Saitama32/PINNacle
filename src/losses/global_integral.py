@@ -73,8 +73,7 @@ def ks_initial_condition_torch(x):
     return torch.cos(x) * (1.0 + torch.sin(x))
 
 
-def compute_ks_spatial_operator(model, inputs, equation, create_graph=True):
-    del create_graph
+def compute_ks_spatial_operator(model, inputs, equation):
     if not hasattr(equation, "ks_spatial_operator"):
         raise ValueError("Local/global integral loss requires equation.ks_spatial_operator(inputs, u).")
     if not inputs.requires_grad:
@@ -149,6 +148,7 @@ def compute_local_integral_loss(
     segment_batch_size=None,
     t_min=0.0,
     t_max=1.0,
+    generator=None,
 ):
     if x.ndim == 1:
         x = x[:, None]
@@ -174,14 +174,23 @@ def compute_local_integral_loss(
     for i in range(x_active.shape[0]):
         k_i = int(num_sections[i].item())
         section_length = t_active[i : i + 1] / float(k_i)
-        boundaries = torch.arange(
-            k_i + 1,
-            device=t.device,
-            dtype=t.dtype,
-        ).unsqueeze(1) * section_length
         segment_x.append(x_active[i : i + 1].expand(k_i, -1))
-        segment_a.append(boundaries[:-1])
-        segment_b.append(boundaries[1:])
+        max_start = torch.clamp(
+            torch.full_like(section_length, float(t_max)) - section_length,
+            min=float(t_min),
+        )
+        if max_start.item() <= float(t_min):
+            starts = torch.full((k_i, 1), float(t_min), dtype=t.dtype, device=t.device)
+        else:
+            starts = float(t_min) + (max_start - float(t_min)) * torch.rand(
+                k_i,
+                1,
+                generator=generator,
+                device=t.device,
+                dtype=t.dtype,
+            )
+        segment_a.append(starts)
+        segment_b.append(starts + section_length.expand(k_i, 1))
 
     segment_x = torch.cat(segment_x, dim=0)
     segment_a = torch.cat(segment_a, dim=0)
@@ -216,12 +225,11 @@ def compute_local_integral_loss(
             model=model,
             inputs=quad_inputs,
             equation=equation,
-            create_graph=True,
         ).reshape(stop - start, quadrature_order, -1)
         integral = half_width * torch.sum(weights.view(1, quadrature_order, 1) * g_values, dim=1)
         local_residual = u_b - u_a + integral
         loss_sum = loss_sum + local_residual.square().sum()
-        residual_chunks.append(local_residual.reshape(-1))
+        residual_chunks.append(local_residual.detach().reshape(-1))
 
     local_loss = loss_sum / max(total_segments, 1)
     residual_all = torch.cat(residual_chunks, dim=0)
@@ -289,9 +297,8 @@ class GlobalIntegralLoss:
             raise ValueError("integral warmup_steps must be non-negative.")
         if self.start_step < 0:
             raise ValueError("integral start_step must be non-negative.")
-        if self.quadrature_order not in GAUSS_LEGENDRE_RULES:
-            supported = ", ".join(str(order) for order in sorted(GAUSS_LEGENDRE_RULES))
-            raise ValueError(f"integral quadrature_order must be one of {{{supported}}}.")
+        if self.quadrature_order <= 0:
+            raise ValueError("integral quadrature_order must be positive.")
         if self.local_weight < 0 or not math.isfinite(self.local_weight):
             raise ValueError("integral local_weight must be finite and non-negative.")
         if self.local_quadrature_order <= 0:
@@ -451,6 +458,7 @@ class GlobalIntegralLoss:
             segment_batch_size=self.local_segment_batch_size,
             t_min=self.t_min,
             t_max=self.t_max,
+            generator=self._rand_generator(x.device),
         )
 
     def compute_raw_loss(self, step=None, endpoints=None, deepxde_loss_sum=None):
