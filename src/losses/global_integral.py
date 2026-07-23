@@ -117,10 +117,17 @@ def _zero_local_diagnostics(device, dtype):
         "local_residual_mae": zero,
         "local_residual_max": zero,
         "mean_interval_length": zero,
+        "min_interval_length": zero,
         "max_interval_length": zero,
         "local_loss_early": zero,
         "local_loss_middle": zero,
         "local_loss_late": zero,
+        "local_raw_mse": zero,
+        "local_normalized_mse": zero,
+        "local_mean_abs_raw_residual": zero,
+        "local_mean_abs_normalized_residual": zero,
+        "local_chain_coverage_error": zero,
+        "local_chain_contiguity_error": zero,
     }
 
 
@@ -138,17 +145,14 @@ def _bucketed_segment_loss(residual, midpoint_t, t_min, t_max, bucket):
     return torch.mean(torch.square(residual.reshape(-1)[mask])).detach()
 
 
-def compute_local_integral_loss(
-    model,
+def build_local_interval_cache(
     x,
     t,
-    equation,
     hmax=0.05,
-    quadrature_order=4,
-    segment_batch_size=None,
     t_min=0.0,
     t_max=1.0,
     generator=None,
+    contiguous_chain=False,
 ):
     if x.ndim == 1:
         x = x[:, None]
@@ -156,53 +160,106 @@ def compute_local_integral_loss(
         t = t[:, None]
 
     eps = torch.finfo(t.dtype).eps
-    active = t[:, 0] > eps
+    active = (t[:, 0] - float(t_min)) > eps
     x_active = x[active]
     t_active = t[active]
 
     if x_active.shape[0] == 0:
-        zero = torch.zeros((), dtype=x.dtype, device=x.device)
-        diagnostics = _zero_local_diagnostics(x.device, x.dtype)
-        return zero, diagnostics
+        return {
+            "segment_x": x_active.new_zeros((0, x.shape[1])),
+            "segment_a": t_active.new_zeros((0, 1)),
+            "segment_b": t_active.new_zeros((0, 1)),
+            "point_num_segments": torch.zeros((0,), dtype=torch.long, device=t.device),
+            "point_spans": t_active.new_zeros((0,)),
+            "point_endpoints": t_active.new_zeros((0,)),
+            "num_local_intervals": 0,
+            "mean_intervals_per_point": 0.0,
+            "max_intervals_per_point": 0,
+        }
 
-    num_sections = torch.ceil(t_active[:, 0] / float(hmax)).to(torch.long)
+    spans = t_active[:, 0] - float(t_min)
+    num_sections = torch.ceil(spans / float(hmax)).to(torch.long)
     num_sections = torch.clamp(num_sections, min=1)
 
-    segment_x = []
-    segment_a = []
-    segment_b = []
+    segment_x_parts = []
+    segment_a_parts = []
+    segment_b_parts = []
     for i in range(x_active.shape[0]):
         k_i = int(num_sections[i].item())
-        section_length = t_active[i : i + 1] / float(k_i)
-        segment_x.append(x_active[i : i + 1].expand(k_i, -1))
-        max_start = torch.clamp(
-            torch.full_like(section_length, float(t_max)) - section_length,
-            min=float(t_min),
-        )
-        if max_start.item() <= float(t_min):
-            starts = torch.full((k_i, 1), float(t_min), dtype=t.dtype, device=t.device)
-        else:
-            starts = float(t_min) + (max_start - float(t_min)) * torch.rand(
+        section_length = spans[i : i + 1, None] / float(k_i)
+        segment_x_parts.append(x_active[i : i + 1].expand(k_i, -1))
+        if contiguous_chain:
+            starts = float(t_min) + torch.arange(
                 k_i,
-                1,
-                generator=generator,
                 device=t.device,
                 dtype=t.dtype,
-            )
-        segment_a.append(starts)
-        segment_b.append(starts + section_length.expand(k_i, 1))
+            ).unsqueeze(1) * section_length
+        else:
+            start_upper = torch.full_like(section_length, float(t_max)) - section_length
+            start_lower = torch.full_like(section_length, float(t_min))
+            if start_upper.item() <= start_lower.item():
+                starts = torch.full((k_i, 1), float(start_upper.item()), dtype=t.dtype, device=t.device)
+            else:
+                starts = start_lower + (start_upper - start_lower) * torch.rand(
+                    k_i,
+                    1,
+                    generator=generator,
+                    device=t.device,
+                    dtype=t.dtype,
+                )
+        segment_a_parts.append(starts)
+        segment_b_parts.append(starts + section_length.expand(k_i, 1))
 
-    segment_x = torch.cat(segment_x, dim=0)
-    segment_a = torch.cat(segment_a, dim=0)
-    segment_b = torch.cat(segment_b, dim=0)
+    return {
+        "segment_x": torch.cat(segment_x_parts, dim=0),
+        "segment_a": torch.cat(segment_a_parts, dim=0),
+        "segment_b": torch.cat(segment_b_parts, dim=0),
+        "point_num_segments": num_sections,
+        "point_spans": spans,
+        "point_endpoints": t_active[:, 0],
+        "num_local_intervals": int(sum(int(k.item()) for k in num_sections)),
+        "mean_intervals_per_point": float(num_sections.float().mean().detach().cpu().item()),
+        "max_intervals_per_point": int(num_sections.max().detach().cpu().item()),
+    }
+
+
+def compute_local_integral_loss(
+    model,
+    segment_x,
+    segment_a,
+    segment_b,
+    equation,
+    quadrature_order=4,
+    segment_batch_size=None,
+    t_min=0.0,
+    t_max=1.0,
+    point_num_segments=None,
+    point_spans=None,
+    point_endpoints=None,
+    normalize_by_length=False,
+):
+    if segment_x.ndim == 1:
+        segment_x = segment_x[:, None]
+    if segment_a.ndim == 1:
+        segment_a = segment_a[:, None]
+    if segment_b.ndim == 1:
+        segment_b = segment_b[:, None]
+
+    if segment_x.shape[0] == 0:
+        zero = torch.zeros((), dtype=segment_x.dtype, device=segment_x.device)
+        diagnostics = _zero_local_diagnostics(segment_x.device, segment_x.dtype)
+        return zero, diagnostics
+
     segment_mid = 0.5 * (segment_a + segment_b)
 
     if segment_batch_size is None or segment_batch_size <= 0:
         segment_batch_size = int(segment_x.shape[0])
 
-    nodes, weights = get_gauss_legendre(quadrature_order, x.device, x.dtype)
-    loss_sum = torch.zeros((), dtype=x.dtype, device=x.device)
+    nodes, weights = get_gauss_legendre(quadrature_order, segment_x.device, segment_x.dtype)
     residual_chunks = []
+    normalized_residual_chunks = []
+    residual_terms = []
+    interval_length_terms = []
 
     total_segments = int(segment_x.shape[0])
     for start in range(0, total_segments, int(segment_batch_size)):
@@ -228,24 +285,75 @@ def compute_local_integral_loss(
         ).reshape(stop - start, quadrature_order, -1)
         integral = half_width * torch.sum(weights.view(1, quadrature_order, 1) * g_values, dim=1)
         local_residual = u_b - u_a + integral
-        loss_sum = loss_sum + local_residual.square().sum()
+        interval_length = torch.clamp(chunk_b - chunk_a, min=torch.finfo(chunk_b.dtype).eps)
+        normalized_residual = local_residual / interval_length
+        residual_terms.append(local_residual.reshape(-1, 1))
+        interval_length_terms.append(interval_length.reshape(-1, 1))
         residual_chunks.append(local_residual.detach().reshape(-1))
+        normalized_residual_chunks.append(normalized_residual.detach().reshape(-1))
 
-    local_loss = loss_sum / max(total_segments, 1)
+    residual_graph = torch.cat(residual_terms, dim=0)
+    interval_lengths_graph = torch.cat(interval_length_terms, dim=0)
+    normalized_residual_graph = residual_graph / interval_lengths_graph
+
+    if normalize_by_length and point_num_segments is not None and point_spans is not None:
+        span_denom = torch.clamp(point_spans, min=torch.finfo(point_spans.dtype).eps)
+        offset = 0
+        chain_losses = []
+        for seg_count, span in zip(point_num_segments.tolist(), span_denom):
+            seg_count = int(seg_count)
+            residual_chain = residual_graph[offset : offset + seg_count]
+            interval_chain = interval_lengths_graph[offset : offset + seg_count]
+            normalized_chain = residual_chain / interval_chain
+            chain_loss = (interval_chain * normalized_chain.square()).sum() / span
+            chain_losses.append(chain_loss.reshape(()))
+            offset += seg_count
+        local_loss = (
+            torch.stack(chain_losses).mean()
+            if chain_losses
+            else torch.zeros((), dtype=segment_x.dtype, device=segment_x.device)
+        )
+    elif normalize_by_length:
+        local_loss = torch.mean(normalized_residual_graph.square())
+    else:
+        local_loss = torch.mean(residual_graph.square())
+
     residual_all = torch.cat(residual_chunks, dim=0)
+    normalized_residual_all = torch.cat(normalized_residual_chunks, dim=0)
     interval_lengths = segment_b - segment_a
+    coverage_error = torch.zeros((), dtype=segment_x.dtype, device=segment_x.device)
+    contiguity_error = torch.zeros((), dtype=segment_x.dtype, device=segment_x.device)
+    if point_num_segments is not None and point_endpoints is not None and point_num_segments.numel() > 0:
+        offset = 0
+        coverage_errors = []
+        contiguity_errors = []
+        for seg_count, endpoint in zip(point_num_segments.tolist(), point_endpoints):
+            seg_count = int(seg_count)
+            final_b = segment_b[offset + seg_count - 1]
+            coverage_errors.append(torch.abs(final_b - endpoint.reshape_as(final_b)))
+            if seg_count > 1:
+                contiguity_errors.append(torch.abs(segment_b[offset : offset + seg_count - 1] - segment_a[offset + 1 : offset + seg_count]))
+            offset += seg_count
+        if coverage_errors:
+            coverage_error = torch.max(torch.cat(coverage_errors).reshape(-1)).detach()
+        if contiguity_errors:
+            contiguity_error = torch.max(torch.cat(contiguity_errors).reshape(-1)).detach()
     diagnostics = {
-        "num_local_intervals": total_segments,
-        "mean_intervals_per_point": float(num_sections.float().mean().detach().cpu().item()),
-        "max_intervals_per_point": int(num_sections.max().detach().cpu().item()),
         "local_residual_rms": torch.sqrt(torch.mean(residual_all.square())),
         "local_residual_mae": torch.mean(torch.abs(residual_all)),
         "local_residual_max": torch.max(torch.abs(residual_all)),
         "mean_interval_length": torch.mean(interval_lengths).detach(),
+        "min_interval_length": torch.min(interval_lengths).detach(),
         "max_interval_length": torch.max(interval_lengths).detach(),
         "local_loss_early": _bucketed_segment_loss(residual_all, segment_mid, t_min, t_max, 0),
         "local_loss_middle": _bucketed_segment_loss(residual_all, segment_mid, t_min, t_max, 1),
         "local_loss_late": _bucketed_segment_loss(residual_all, segment_mid, t_min, t_max, 2),
+        "local_raw_mse": torch.mean(residual_all.square()).detach(),
+        "local_normalized_mse": torch.mean(normalized_residual_all.square()).detach(),
+        "local_mean_abs_raw_residual": torch.mean(torch.abs(residual_all)).detach(),
+        "local_mean_abs_normalized_residual": torch.mean(torch.abs(normalized_residual_all)).detach(),
+        "local_chain_coverage_error": coverage_error,
+        "local_chain_contiguity_error": contiguity_error,
     }
     return local_loss, diagnostics
 
@@ -265,6 +373,8 @@ class GlobalIntegralLoss:
         local_quadrature_order=4,
         local_hmax=0.05,
         local_segment_batch_size=256,
+        local_normalize_by_length=False,
+        local_contiguous_chain=False,
         t0_fraction=0.1,
         t_min=None,
         seed=None,
@@ -285,6 +395,8 @@ class GlobalIntegralLoss:
         self.local_segment_batch_size = (
             None if local_segment_batch_size is None else int(local_segment_batch_size)
         )
+        self.local_normalize_by_length = bool(local_normalize_by_length)
+        self.local_contiguous_chain = bool(local_contiguous_chain)
         self.t0_fraction = float(t0_fraction)
         self.resample_every = int(resample_every)
         self.initial_condition_fn = initial_condition_fn or ks_initial_condition_torch
@@ -333,6 +445,9 @@ class GlobalIntegralLoss:
         self.cached_x = None
         self.cached_t = None
         self.last_sample_step = None
+        self.cached_local_segments = None
+        self.last_local_segment_step = None
+        self._cached_local_endpoint_ptrs = None
         self.last_diagnostics = {}
 
     def _device_dtype(self):
@@ -395,10 +510,58 @@ class GlobalIntegralLoss:
         num_t0 = min(num_t0, self.batch_size)
         if num_t0 > 0:
             t[:num_t0] = self.domain_t_min
+        self._set_cached_endpoints(x, t, current_step)
+        return x, t
+
+    def _endpoint_ptrs(self, x, t):
+        return (
+            x.data_ptr(),
+            t.data_ptr(),
+            tuple(x.shape),
+            tuple(t.shape),
+            str(x.device),
+            str(t.device),
+            str(x.dtype),
+            str(t.dtype),
+        )
+
+    def _invalidate_local_segment_cache(self):
+        self.cached_local_segments = None
+        self.last_local_segment_step = None
+        self._cached_local_endpoint_ptrs = None
+
+    def _set_cached_endpoints(self, x, t, step):
+        old_ptrs = None if self.cached_x is None or self.cached_t is None else self._endpoint_ptrs(self.cached_x, self.cached_t)
+        new_ptrs = self._endpoint_ptrs(x, t)
         self.cached_x = x
         self.cached_t = t
-        self.last_sample_step = current_step
-        return x, t
+        self.last_sample_step = step
+        if old_ptrs != new_ptrs:
+            self._invalidate_local_segment_cache()
+
+    def _get_local_segments(self, x, t, step=None):
+        current_step = None if step is None else int(step)
+        endpoint_ptrs = self._endpoint_ptrs(x, t)
+        if (
+            self.cached_local_segments is not None
+            and self.last_local_segment_step == current_step
+            and self._cached_local_endpoint_ptrs == endpoint_ptrs
+        ):
+            return self.cached_local_segments
+
+        cache = build_local_interval_cache(
+            x=x,
+            t=t,
+            hmax=self.local_hmax,
+            t_min=self.t_min,
+            t_max=self.t_max,
+            generator=self._rand_generator(x.device),
+            contiguous_chain=self.local_contiguous_chain,
+        )
+        self.cached_local_segments = cache
+        self.last_local_segment_step = current_step
+        self._cached_local_endpoint_ptrs = endpoint_ptrs
+        return cache
 
     def quadrature_times(self, t):
         nodes, _ = self._quadrature_constants(t.device, t.dtype)
@@ -416,8 +579,7 @@ class GlobalIntegralLoss:
             x, t = self.sample_endpoints(step=step)
         else:
             x, t = endpoints
-            self.cached_x = x
-            self.cached_t = t
+            self._set_cached_endpoints(x, t, None if step is None else int(step))
 
         endpoints_tensor = torch.cat((x, t), dim=1)
         u_end = self.model.net(endpoints_tensor)
@@ -446,30 +608,40 @@ class GlobalIntegralLoss:
             x, t = self.sample_endpoints(step=step)
         else:
             x, t = endpoints
-            self.cached_x = x
-            self.cached_t = t
+            self._set_cached_endpoints(x, t, None if step is None else int(step))
+        local_segments = self._get_local_segments(x, t, step=step)
         return compute_local_integral_loss(
             model=self.model.net,
-            x=x,
-            t=t,
+            segment_x=local_segments["segment_x"],
+            segment_a=local_segments["segment_a"],
+            segment_b=local_segments["segment_b"],
             equation=self.pde,
-            hmax=self.local_hmax,
             quadrature_order=self.local_quadrature_order,
             segment_batch_size=self.local_segment_batch_size,
             t_min=self.t_min,
             t_max=self.t_max,
-            generator=self._rand_generator(x.device),
-        )
+            point_num_segments=local_segments["point_num_segments"],
+            point_spans=local_segments["point_spans"],
+            point_endpoints=local_segments["point_endpoints"],
+            normalize_by_length=self.local_normalize_by_length,
+        ), local_segments
 
     def compute_raw_loss(self, step=None, endpoints=None, deepxde_loss_sum=None):
         global_residual = self.global_integral_residual(step=step, endpoints=endpoints)
         global_raw_loss = torch.mean(torch.square(global_residual))
-        local_raw_loss, local_diagnostics = self.compute_local_raw_loss(
+        (local_raw_loss, local_diagnostics), local_segments = self.compute_local_raw_loss(
             step=step,
             endpoints=(self.cached_x, self.cached_t),
         ) if self.local_enabled else (
-            torch.zeros((), dtype=global_raw_loss.dtype, device=global_raw_loss.device),
-            _zero_local_diagnostics(global_raw_loss.device, global_raw_loss.dtype),
+            (
+                torch.zeros((), dtype=global_raw_loss.dtype, device=global_raw_loss.device),
+                _zero_local_diagnostics(global_raw_loss.device, global_raw_loss.dtype),
+            ),
+            {
+                "num_local_intervals": 0,
+                "mean_intervals_per_point": 0.0,
+                "max_intervals_per_point": 0,
+            },
         )
         raw_loss = global_raw_loss + self.local_weight * local_raw_loss
         self.last_diagnostics = self._build_diagnostics(
@@ -478,6 +650,7 @@ class GlobalIntegralLoss:
             global_residual=global_residual,
             local_raw_loss=local_raw_loss,
             local_diagnostics=local_diagnostics,
+            local_segments=local_segments,
             deepxde_loss_sum=deepxde_loss_sum,
         )
         return raw_loss
@@ -508,6 +681,7 @@ class GlobalIntegralLoss:
         global_residual,
         local_raw_loss,
         local_diagnostics,
+        local_segments,
         deepxde_loss_sum=None,
     ):
         residual_detached = global_residual.detach()
@@ -521,11 +695,20 @@ class GlobalIntegralLoss:
             "local_integral_rms": local_diagnostics["local_residual_rms"].detach(),
             "local_integral_mae": local_diagnostics["local_residual_mae"].detach(),
             "local_integral_max": local_diagnostics["local_residual_max"].detach(),
-            "local_num_segments": float(local_diagnostics["num_local_intervals"]),
-            "local_mean_segments_per_point": float(local_diagnostics["mean_intervals_per_point"]),
-            "local_max_segments_per_point": float(local_diagnostics["max_intervals_per_point"]),
+            "local_raw_mse": local_diagnostics["local_raw_mse"].detach(),
+            "local_normalized_mse": local_diagnostics["local_normalized_mse"].detach(),
+            "local_mean_abs_raw_residual": local_diagnostics["local_mean_abs_raw_residual"].detach(),
+            "local_mean_abs_normalized_residual": local_diagnostics["local_mean_abs_normalized_residual"].detach(),
+            "local_num_segments": float(local_segments["num_local_intervals"]),
+            "local_mean_segments_per_point": float(local_segments["mean_intervals_per_point"]),
+            "local_max_segments_per_point": float(local_segments["max_intervals_per_point"]),
+            "local_mean_num_segments": float(local_segments["mean_intervals_per_point"]),
+            "local_max_num_segments": float(local_segments["max_intervals_per_point"]),
             "local_mean_segment_length": local_diagnostics["mean_interval_length"],
+            "local_min_segment_length": local_diagnostics["min_interval_length"],
             "local_max_segment_length": local_diagnostics["max_interval_length"],
+            "local_chain_coverage_error": local_diagnostics["local_chain_coverage_error"],
+            "local_chain_contiguity_error": local_diagnostics["local_chain_contiguity_error"],
             "weighted_global_integral_loss": global_raw_loss.detach() * 0.0,
             "weighted_local_integral_loss": local_raw_loss.detach() * 0.0,
             "integral_weight": 0.0,

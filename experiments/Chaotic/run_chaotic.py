@@ -266,6 +266,11 @@ def validate_args(args):
             raise ValueError("--integral-local-hmax must be positive and finite.")
         if args.integral_local_segment_batch_size <= 0:
             raise ValueError("--integral-local-segment-batch-size must be positive.")
+        if args.integral_local_normalize_by_length and args.integral_local_weight > 0.1:
+            print(
+                "Warning: normalized local integral loss usually needs a much smaller "
+                "--integral-local-weight; a starting point like 0.025 is recommended."
+            )
         if not np.isfinite(args.integral_t0_fraction) or not 0.0 <= args.integral_t0_fraction <= 1.0:
             raise ValueError("--integral-t0-fraction must be finite and satisfy 0 <= value <= 1.")
         if args.integral_resample_every <= 0:
@@ -323,6 +328,8 @@ def maybe_attach_integral_loss(model, args):
         local_quadrature_order=args.integral_local_quadrature_order,
         local_hmax=args.integral_local_hmax,
         local_segment_batch_size=args.integral_local_segment_batch_size,
+        local_normalize_by_length=args.integral_local_normalize_by_length,
+        local_contiguous_chain=args.integral_local_contiguous_chain,
         t0_fraction=args.integral_t0_fraction,
         t_min=args.integral_t_min,
         seed=args.integral_seed if args.integral_seed is not None else args.seed,
@@ -471,6 +478,8 @@ def run_one(equation_name, args):
             integral_local_quadrature_order=args.integral_local_quadrature_order,
             integral_local_hmax=args.integral_local_hmax,
             integral_local_segment_batch_size=args.integral_local_segment_batch_size,
+            integral_local_normalize_by_length=args.integral_local_normalize_by_length,
+            integral_local_contiguous_chain=args.integral_local_contiguous_chain,
             integral_t0_fraction=args.integral_t0_fraction,
             integral_t_min=args.integral_t_min,
             integral_resample_every=args.integral_resample_every,
@@ -553,9 +562,18 @@ def parse_args():
     parser.add_argument("--integral-local-quadrature-order", type=int, default=4)
     parser.add_argument("--integral-local-hmax", type=float, default=0.05)
     parser.add_argument("--integral-local-segment-batch-size", type=int, default=256)
+    parser.add_argument("--integral-local-normalize-by-length", type=str2bool, nargs="?", const=True, default=False)
+    parser.add_argument("--integral-local-contiguous-chain", type=str2bool, nargs="?", const=True, default=False)
     parser.add_argument("--integral-t0-fraction", type=float, default=0.2)
-    # Lower bound for endpoint sampling only. The integral always starts at the PDE initial time.
-    parser.add_argument("--integral-t-min", type=float, default=0.0)
+    parser.add_argument(
+        "--integral-t-min",
+        type=float,
+        default=0.0,
+        help=(
+            "Lower bound for sampled integral endpoints and, when feasible, for local interval starts. "
+            "The global integral itself still starts at the PDE initial time."
+        ),
+    )
     parser.add_argument("--integral-resample-every", type=int, default=1)
     parser.add_argument("--integral-seed", type=int, default=None)
     parser.add_argument(

@@ -206,6 +206,8 @@ class FAMTrainConfig:
     integral_local_quadrature_order: int = 4
     integral_local_hmax: float = 0.05
     integral_local_segment_batch_size: int = 256
+    integral_local_normalize_by_length: bool = False
+    integral_local_contiguous_chain: bool = False
     integral_t0_fraction: float = 0.1
     integral_t_min: Optional[float] = None
     integral_resample_every: int = 1
@@ -339,6 +341,8 @@ class FAMTrainer:
             local_quadrature_order=self.config.integral_local_quadrature_order,
             local_hmax=self.config.integral_local_hmax,
             local_segment_batch_size=self.config.integral_local_segment_batch_size,
+            local_normalize_by_length=self.config.integral_local_normalize_by_length,
+            local_contiguous_chain=self.config.integral_local_contiguous_chain,
             t0_fraction=self.config.integral_t0_fraction,
             t_min=self.config.integral_t_min,
             seed=self.config.integral_seed,
