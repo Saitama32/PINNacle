@@ -109,6 +109,7 @@ def compose_optimizer_task_losses(base_losses, integral_weighted_loss, integral_
 
 def _zero_local_diagnostics(device, dtype):
     zero = torch.zeros((), dtype=dtype, device=device)
+    nan = torch.tensor(float("nan"), dtype=dtype, device=device)
     return {
         "num_local_intervals": 0,
         "mean_intervals_per_point": 0.0,
@@ -116,18 +117,24 @@ def _zero_local_diagnostics(device, dtype):
         "local_residual_rms": zero,
         "local_residual_mae": zero,
         "local_residual_max": zero,
+        "local_normalized_rms": zero,
+        "local_normalized_mae": zero,
+        "local_normalized_max": zero,
         "mean_interval_length": zero,
         "min_interval_length": zero,
         "max_interval_length": zero,
         "local_loss_early": zero,
         "local_loss_middle": zero,
         "local_loss_late": zero,
+        "local_normalized_loss_early": zero,
+        "local_normalized_loss_middle": zero,
+        "local_normalized_loss_late": zero,
         "local_raw_mse": zero,
         "local_normalized_mse": zero,
         "local_mean_abs_raw_residual": zero,
         "local_mean_abs_normalized_residual": zero,
-        "local_chain_coverage_error": zero,
-        "local_chain_contiguity_error": zero,
+        "local_chain_coverage_error": nan,
+        "local_chain_contiguity_error": nan,
     }
 
 
@@ -237,6 +244,7 @@ def compute_local_integral_loss(
     point_spans=None,
     point_endpoints=None,
     normalize_by_length=False,
+    contiguous_chain=False,
 ):
     if segment_x.ndim == 1:
         segment_x = segment_x[:, None]
@@ -321,9 +329,9 @@ def compute_local_integral_loss(
     residual_all = torch.cat(residual_chunks, dim=0)
     normalized_residual_all = torch.cat(normalized_residual_chunks, dim=0)
     interval_lengths = segment_b - segment_a
-    coverage_error = torch.zeros((), dtype=segment_x.dtype, device=segment_x.device)
-    contiguity_error = torch.zeros((), dtype=segment_x.dtype, device=segment_x.device)
-    if point_num_segments is not None and point_endpoints is not None and point_num_segments.numel() > 0:
+    coverage_error = torch.tensor(float("nan"), dtype=segment_x.dtype, device=segment_x.device)
+    contiguity_error = torch.tensor(float("nan"), dtype=segment_x.dtype, device=segment_x.device)
+    if contiguous_chain and point_num_segments is not None and point_endpoints is not None and point_num_segments.numel() > 0:
         offset = 0
         coverage_errors = []
         contiguity_errors = []
@@ -342,12 +350,18 @@ def compute_local_integral_loss(
         "local_residual_rms": torch.sqrt(torch.mean(residual_all.square())),
         "local_residual_mae": torch.mean(torch.abs(residual_all)),
         "local_residual_max": torch.max(torch.abs(residual_all)),
+        "local_normalized_rms": torch.sqrt(torch.mean(normalized_residual_all.square())),
+        "local_normalized_mae": torch.mean(torch.abs(normalized_residual_all)),
+        "local_normalized_max": torch.max(torch.abs(normalized_residual_all)),
         "mean_interval_length": torch.mean(interval_lengths).detach(),
         "min_interval_length": torch.min(interval_lengths).detach(),
         "max_interval_length": torch.max(interval_lengths).detach(),
         "local_loss_early": _bucketed_segment_loss(residual_all, segment_mid, t_min, t_max, 0),
         "local_loss_middle": _bucketed_segment_loss(residual_all, segment_mid, t_min, t_max, 1),
         "local_loss_late": _bucketed_segment_loss(residual_all, segment_mid, t_min, t_max, 2),
+        "local_normalized_loss_early": _bucketed_segment_loss(normalized_residual_all, segment_mid, t_min, t_max, 0),
+        "local_normalized_loss_middle": _bucketed_segment_loss(normalized_residual_all, segment_mid, t_min, t_max, 1),
+        "local_normalized_loss_late": _bucketed_segment_loss(normalized_residual_all, segment_mid, t_min, t_max, 2),
         "local_raw_mse": torch.mean(residual_all.square()).detach(),
         "local_normalized_mse": torch.mean(normalized_residual_all.square()).detach(),
         "local_mean_abs_raw_residual": torch.mean(torch.abs(residual_all)).detach(),
@@ -624,6 +638,7 @@ class GlobalIntegralLoss:
             point_spans=local_segments["point_spans"],
             point_endpoints=local_segments["point_endpoints"],
             normalize_by_length=self.local_normalize_by_length,
+            contiguous_chain=self.local_contiguous_chain,
         ), local_segments
 
     def compute_raw_loss(self, step=None, endpoints=None, deepxde_loss_sum=None):
@@ -695,6 +710,9 @@ class GlobalIntegralLoss:
             "local_integral_rms": local_diagnostics["local_residual_rms"].detach(),
             "local_integral_mae": local_diagnostics["local_residual_mae"].detach(),
             "local_integral_max": local_diagnostics["local_residual_max"].detach(),
+            "local_normalized_rms": local_diagnostics["local_normalized_rms"].detach(),
+            "local_normalized_mae": local_diagnostics["local_normalized_mae"].detach(),
+            "local_normalized_max": local_diagnostics["local_normalized_max"].detach(),
             "local_raw_mse": local_diagnostics["local_raw_mse"].detach(),
             "local_normalized_mse": local_diagnostics["local_normalized_mse"].detach(),
             "local_mean_abs_raw_residual": local_diagnostics["local_mean_abs_raw_residual"].detach(),
@@ -722,6 +740,9 @@ class GlobalIntegralLoss:
             "local_integral_loss_early": local_diagnostics["local_loss_early"],
             "local_integral_loss_middle": local_diagnostics["local_loss_middle"],
             "local_integral_loss_late": local_diagnostics["local_loss_late"],
+            "local_normalized_loss_early": local_diagnostics["local_normalized_loss_early"],
+            "local_normalized_loss_middle": local_diagnostics["local_normalized_loss_middle"],
+            "local_normalized_loss_late": local_diagnostics["local_normalized_loss_late"],
         }
         if deepxde_loss_sum is not None:
             diagnostics["deepxde_loss_sum"] = deepxde_loss_sum.detach()

@@ -184,6 +184,9 @@ class IntegralDiagnosticsCallback(Callback):
             "local_integral_rms",
             "local_integral_mae",
             "local_integral_max",
+            "local_normalized_rms",
+            "local_normalized_mae",
+            "local_normalized_max",
             "local_raw_mse",
             "local_normalized_mse",
             "local_mean_abs_raw_residual",
@@ -212,6 +215,9 @@ class IntegralDiagnosticsCallback(Callback):
             "local_integral_loss_early",
             "local_integral_loss_middle",
             "local_integral_loss_late",
+            "local_normalized_loss_early",
+            "local_normalized_loss_middle",
+            "local_normalized_loss_late",
         ]
 
     def on_train_begin(self):
@@ -253,6 +259,7 @@ class IntegralDiagnosticsCallback(Callback):
                 f"total={values['actual_total_loss']:.10e} "
                 f"global_rms={values['global_integral_rms']:.10e} "
                 f"local_rms={values['local_integral_rms']:.10e} "
+                f"local_norm_rms={values['local_normalized_rms']:.10e} "
                 f"early/middle/late="
                 f"{values['integral_loss_early']:.10e}/"
                 f"{values['integral_loss_middle']:.10e}/"
