@@ -165,6 +165,8 @@ class DQNAgent:
         total = st['loss_total'].to(self.device)
         oper  = st['loss_oper'].to(self.device)
         bnd   = st['loss_bnd'].to(self.device)
+        if 'loss_ic' in st:
+            bnd = bnd + st['loss_ic'].to(self.device)
 
         if 'delta' in st:
             delta = st['delta'].to(self.device)
@@ -711,7 +713,7 @@ class DQNAgent:
         state_tensor = torch.stack([
             state["loss_total"],
             state["loss_oper"],
-            state["loss_bnd"],
+            state["loss_bnd"] + state.get("loss_ic", torch.zeros_like(state["loss_bnd"])),
             delta
         ], dim=0).to(self.device)
 

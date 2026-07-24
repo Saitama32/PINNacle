@@ -41,6 +41,9 @@ def reinit_torch_weights(module):
             torch.nn.init.zeros_(module.bias)
 
 def get_state_shape(loss_surface_params):
+    if loss_surface_params.get("state_type") == "raw_loss":
+        return (int(loss_surface_params.get("raw_loss_state_len", 10)),)
+
     min_x, max_x, xnum = loss_surface_params["x_range"]
     step_size = (max_x - min_x) / xnum
     latent_dim = int(loss_surface_params.get("latent_dim", 2))

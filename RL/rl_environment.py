@@ -8,6 +8,7 @@ from typing import List, Union
 from landscape_visualization._aux.plot_loss_surface import PlotLossSurface
 from landscape_visualization._aux.visualization_model import VisualizationModel
 from landscape_visualization._aux.early_stopping_plot import EarlyStopping
+from RL.rl_utils.raw_loss_state import build_raw_loss_state_from_solver_models
 
 # from tedeous.optimizers.optimizer import Optimizer
 # from tedeous.callbacks.callback_list import CallbackList
@@ -58,11 +59,14 @@ class EnvRLOptimizer(gym.Env):
         self.AE_model_params = AE_model_params
         self.AE_train_params = AE_train_params
         self.loss_surface_params = loss_surface_params
+        self.state_type = (loss_surface_params or {}).get("state_type", "loss_surface")
         self.equation_params = equation_params
         self.reward_method = reward_method
         self.callbacks = callbacks
 
-        self.visualization_model = VisualizationModel(**self.AE_model_params)
+        self.visualization_model = None
+        if self.state_type != "raw_loss":
+            self.visualization_model = VisualizationModel(**self.AE_model_params)
         self.plot_loss_surface = None
 
         # Размерность нужно вытягивать из кода loss landscape, она будет постоянной,
@@ -77,7 +81,7 @@ class EnvRLOptimizer(gym.Env):
         # self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=self.visualization_model.latent_dim,
         #                                     dtype=np.float32)
         # observation_space = 3
-        self.observation_space = self.visualization_model.latent_dim + 1
+        self.observation_space = self.AE_model_params.get("latent_dim", 1) + 1
 
         self.current_reward = None
         self.reward_history = []
@@ -115,6 +119,79 @@ class EnvRLOptimizer(gym.Env):
 
     def step(self):
         """Applying an action (optimizer selection) and updating the state."""
+
+        if self.state_type == "raw_loss":
+            self.raw_states_dict = build_raw_loss_state_from_solver_models(
+                self.solver_models,
+                dde_pde_model=self.loss_surface_params["dde_pde_model"],
+                state_len=self.loss_surface_params.get("raw_loss_state_len", self.n_save_models),
+                log_key=self.loss_surface_params.get("raw_loss_log_state", False),
+            )
+
+            prev_reward_env = 0 if len(self.reward_history) == 0 else self.reward_history[-1]
+            base_reward = compute_reward(self.reward_params, prev_reward_env, method=self.reward_method) + self.rl_penalty
+
+            self.current_reward = base_reward
+            self.reward_history.append(self.current_reward)
+            self.reward_history = self.reward_history[-5:]
+
+            current_reward_scalar = (
+                float(self.current_reward.item())
+                if hasattr(self.current_reward, "item")
+                else float(self.current_reward)
+            )
+            success = abs(current_reward_scalar) < self.tolerance
+            if self.rl_penalty == -1:
+                done = -1
+            elif success:
+                done = 1
+            else:
+                done = 0
+
+            if self._prev_state is not None and "loss_total" in self.raw_states_dict and "loss_total" in self._prev_state:
+                raw_delta = self.raw_states_dict["loss_total"] - self._prev_state["loss_total"]
+                delta = torch.sign(raw_delta) * torch.log1p(torch.abs(raw_delta))
+                delta = delta / (delta.abs().max() + 1e-6)
+                delta = delta.clamp(-1, 1)
+                self.raw_states_dict["delta"] = delta
+
+            ctx = self._ctx
+            reward_scalar = float(base_reward.item()) if hasattr(base_reward, "item") else float(base_reward)
+
+            prev_reward_scalar = ctx.get("prev_reward_scalar", None)
+            is_model = bool(ctx.get("is_model", False))
+            step_i = int(ctx.get("step_i", 0))
+            same_opt_streak = int(ctx.get("same_opt_streak", 0))
+            rl_opt_step = ctx.get("rl_opt_step", None)
+
+            opt_model_i = -1
+            if prev_reward_scalar is None:
+                reward_model_i = reward_scalar
+            else:
+                if is_model:
+                    opt_model_i = int(rl_opt_step) if rl_opt_step is not None else -1
+                reward_model_i = reward_scalar - float(prev_reward_scalar)
+
+            if same_opt_streak > self.repeat_k:
+                over = same_opt_streak - self.repeat_k
+                reward_model_i -= self.repeat_penalty * over
+
+            reward_model_i_raw = reward_model_i
+            reward_model_i -= self.time_penalty * step_i
+
+            if done == 1:
+                reward_model_i += self.done_bonus
+            elif done == -1:
+                reward_model_i = self.fail_penalty
+
+            info = {
+                "reward_scalar": reward_scalar,
+                "reward_model_raw": float(reward_model_i_raw),
+                "reward_model": float(reward_model_i),
+                "opt_model_i": int(opt_model_i),
+            }
+
+            return self.raw_states_dict, torch.tensor(reward_model_i), done, info
 
         finetune_AE_model = self.AE_train_params['finetune_AE_model']
         batch_size = self.AE_train_params['batch_size']
