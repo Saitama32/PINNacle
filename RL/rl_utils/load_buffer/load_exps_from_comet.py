@@ -401,13 +401,14 @@ def collect_comet_transition_entries(
         all_transitions.extend(result.transitions)
         _log_experiment_result(result, len(all_transitions))
 
-    if tolerance > 0.0 and prev_tol == 0.0 and new_tol:
+    use_explicit_keys = experiment_keys is not None
+    if not use_explicit_keys and tolerance > 0.0 and prev_tol == 0.0 and new_tol:
         all_transitions = truncate_failure_chains_by_tol(
             all_transitions,
             tol=tolerance,
             shift_reward=10.0,
         )
-    elif tolerance > prev_tol and prev_tol != 0.0:
+    elif not use_explicit_keys and tolerance > prev_tol and prev_tol != 0.0:
         all_transitions = truncate_success_chains(
             all_transitions,
             current_tol=tolerance,

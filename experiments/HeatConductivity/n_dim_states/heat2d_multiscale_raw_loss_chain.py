@@ -219,6 +219,13 @@ def rebuild_raw_loss_states(
     loss_time_total = 0.0
     loss_time_count = 0
 
+    def flush_rebuilt_sequence(rebuilt_sequence):
+        add_delta_to_sequence(rebuilt_sequence)
+        for rebuilt_entry in rebuilt_sequence:
+            rebuilt_entries.append(rebuilt_entry)
+            if on_rebuilt_entry is not None:
+                on_rebuilt_entry(rebuilt_entry, len(rebuilt_entries))
+
     for seq_i, sequence in enumerate(split_transition_sequences(transitions), 1):
         previous_next_state = None
         rebuilt_sequence = []
@@ -240,6 +247,9 @@ def rebuild_raw_loss_states(
                     "Skipping transition during raw-loss rebuild "
                     f"(sequence={seq_i}, index={transition_i}): {exc}"
                 )
+                flush_rebuilt_sequence(rebuilt_sequence)
+                rebuilt_sequence = []
+                previous_next_state = None
                 continue
 
             if previous_next_state is None:
@@ -254,11 +264,7 @@ def rebuild_raw_loss_states(
 
             previous_next_state = clone_state_dict(next_state)
 
-        add_delta_to_sequence(rebuilt_sequence)
-        for rebuilt_entry in rebuilt_sequence:
-            rebuilt_entries.append(rebuilt_entry)
-            if on_rebuilt_entry is not None:
-                on_rebuilt_entry(rebuilt_entry, len(rebuilt_entries))
+        flush_rebuilt_sequence(rebuilt_sequence)
 
     avg_loss_time = loss_time_total / loss_time_count if loss_time_count else 0.0
     print(
