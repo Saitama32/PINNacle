@@ -255,8 +255,71 @@ def _resolve_num_workers(num_workers, total_experiments):
     return max(1, min(int(num_workers), total_experiments))
 
 
-def collect_all_comet_transitions(
-    replay_buffer=None,
+def load_experiment_key_transitions(project_name, experiment_key, index, save_dir=None):
+    try:
+        exp = api.get_experiment(
+            workspace=WORKSPACE,
+            project_name=project_name,
+            experiment=experiment_key,
+        )
+        if exp is None:
+            return ExperimentLoadResult(
+                index=index,
+                exp_id=experiment_key,
+                exp_name=experiment_key,
+                transitions=[],
+                loaded_files=[],
+                skipped_files=[],
+                error="Comet experiment was not found",
+            )
+        return load_single_experiment_transitions(exp, index, save_dir=save_dir)
+    except Exception as exc:
+        return ExperimentLoadResult(
+            index=index,
+            exp_id=experiment_key,
+            exp_name=experiment_key,
+            transitions=[],
+            loaded_files=[],
+            skipped_files=[],
+            error=str(exc),
+        )
+
+
+def _load_transition_results(indexed_sources, num_workers, load_transition_fn):
+    worker_count = _resolve_num_workers(num_workers, len(indexed_sources))
+    if worker_count <= 1:
+        return [
+            load_transition_fn(index, source)
+            for index, source in indexed_sources
+        ]
+
+    print(f"Parallel loading with {worker_count} workers.")
+    experiment_results = []
+    with ThreadPoolExecutor(max_workers=worker_count) as executor:
+        future_to_index = {
+            executor.submit(load_transition_fn, index, source): index
+            for index, source in indexed_sources
+        }
+        for future in as_completed(future_to_index):
+            index = future_to_index[future]
+            try:
+                experiment_results.append(future.result())
+            except Exception as exc:
+                experiment_results.append(
+                    ExperimentLoadResult(
+                        index=index,
+                        exp_id="unknown",
+                        exp_name="unknown",
+                        transitions=[],
+                        loaded_files=[],
+                        skipped_files=[],
+                        error=str(exc),
+                    )
+                )
+    return experiment_results
+
+
+def collect_comet_transition_entries(
     max_exps_last=10,
     duration_grater_hours=1,
     save_dir=None,
@@ -264,84 +327,71 @@ def collect_all_comet_transitions(
     prev_tol=0.0,
     use_tol=True,
     new_tol=False,
-    use_log_state=False,
     proj_name=None,
     mark_states=None,
     num_workers=None,
-    rebuild_states_from_solver_models=False,
-    AE_model_params=None,
-    AE_train_params=None,
-    loss_surface_params=None,
-) -> PrioritizedReplayBuffer:
-    """Собирает все переходы из не-crashed экспериментов проекта и возвращает заполненный PrioritizedReplayBuffer."""
-    print("🔍 Получаем эксперименты из Comet...")
-    if proj_name is not None:
-        experiments = list(api.get_experiments(workspace=WORKSPACE, project_name=proj_name))
-    else:
-        experiments = list(api.get_experiments(workspace=WORKSPACE, project_name=PROJECT_NAME))
-    # valid_experiments = [exp for exp in experiments if not is_crashed(exp)]
-    experiments_sorted = sorted(experiments, key=get_end_time, reverse=True)
-    experiments_sorted_duration = [
-        exp for exp in experiments_sorted
-        if get_duration_hours(exp) >= duration_grater_hours
-    ]
-    # experiments_sorted = [api.get_experiment(workspace=WORKSPACE, project_name=PROJECT_NAME, experiment='751c7ca595dd4dafb22a0cfe61c26b6f')]
-
-    experiments_sorted_duration = experiments_sorted_duration[:max_exps_last]
-    if prev_tol > 0.0 and use_tol:
-        experiments_sorted_tol = [
-            exp for exp in experiments_sorted_duration
-            if float(get_param_value(exp, "tolerance", 0.0)) >= prev_tol
-        ]
-    elif prev_tol == 0 and use_tol:
-        experiments_sorted_tol = [
-            exp for exp in experiments_sorted_duration
-            if float(get_param_value(exp, "tolerance", 0.0)) >= tolerance
-        ]
-    else:
-        experiments_sorted_tol = experiments_sorted_duration
-
-
-    print(f"✅ Найдено {len(experiments_sorted_tol)} активных экспериментов для загрузки буферов.\n")
-
+    experiment_keys=None,
+):
+    """Collect raw transition dicts from explicit or filtered Comet experiments."""
+    project_name = proj_name if proj_name is not None else PROJECT_NAME
     if save_dir is not None:
         os.makedirs(save_dir, exist_ok=True)
         print(f"Local save enabled: {save_dir}")
 
-    all_transitions = []
-    worker_count = _resolve_num_workers(num_workers, len(experiments_sorted_tol))
-    indexed_experiments = list(enumerate(experiments_sorted_tol, 1))
-
-    if worker_count <= 1:
-        experiment_results = [
-            load_single_experiment_transitions(exp, index, save_dir=save_dir)
-            for index, exp in indexed_experiments
-        ]
+    if experiment_keys is not None:
+        selected_keys = [key for key in experiment_keys if key]
+        print(
+            "Loading explicitly selected Comet experiments: "
+            f"{len(selected_keys)} keys from project={project_name}."
+        )
+        indexed_sources = list(enumerate(selected_keys, 1))
+        experiment_results = _load_transition_results(
+            indexed_sources,
+            num_workers,
+            lambda index, key: load_experiment_key_transitions(
+                project_name,
+                key,
+                index,
+                save_dir=save_dir,
+            ),
+        )
     else:
-        print(f"Parallel loading with {worker_count} workers.")
-        experiment_results = []
-        with ThreadPoolExecutor(max_workers=worker_count) as executor:
-            future_to_index = {
-                executor.submit(load_single_experiment_transitions, exp, index, save_dir): index
-                for index, exp in indexed_experiments
-            }
-            for future in as_completed(future_to_index):
-                index = future_to_index[future]
-                try:
-                    experiment_results.append(future.result())
-                except Exception as exc:
-                    experiment_results.append(
-                        ExperimentLoadResult(
-                            index=index,
-                            exp_id="unknown",
-                            exp_name="unknown",
-                            transitions=[],
-                            loaded_files=[],
-                            skipped_files=[],
-                            error=str(exc),
-                        )
-                    )
+        print("Loading Comet experiments...")
+        experiments = list(api.get_experiments(workspace=WORKSPACE, project_name=project_name))
 
+        experiments_sorted = sorted(experiments, key=get_end_time, reverse=True)
+        experiments_sorted_duration = [
+            exp for exp in experiments_sorted
+            if get_duration_hours(exp) >= duration_grater_hours
+        ]
+        experiments_sorted_duration = experiments_sorted_duration[:max_exps_last]
+
+        if prev_tol > 0.0 and use_tol:
+            experiments_sorted_tol = [
+                exp for exp in experiments_sorted_duration
+                if float(get_param_value(exp, "tolerance", 0.0)) >= prev_tol
+            ]
+        elif prev_tol == 0 and use_tol:
+            experiments_sorted_tol = [
+                exp for exp in experiments_sorted_duration
+                if float(get_param_value(exp, "tolerance", 0.0)) >= tolerance
+            ]
+        else:
+            experiments_sorted_tol = experiments_sorted_duration
+
+        print(f"Found {len(experiments_sorted_tol)} experiments for transition loading.\n")
+        indexed_sources = list(enumerate(experiments_sorted_tol, 1))
+        experiment_results = _load_transition_results(
+            indexed_sources,
+            num_workers,
+            lambda index, exp: load_single_experiment_transitions(
+                exp,
+                index,
+                save_dir=save_dir,
+            ),
+        )
+
+    all_transitions = []
     experiment_results.sort(key=lambda result: result.index)
 
     for result in experiment_results:
@@ -367,11 +417,46 @@ def collect_all_comet_transitions(
     if mark_states:
         all_transitions = add_proj_mark(all_transitions, proj_name)
 
-    # --- Сдвиг наград для успешных переходов ---
     all_transitions = shift_done_rewards(all_transitions, done=-1, shift_value=-5)
+    return all_transitions
+
+
+def collect_all_comet_transitions(
+    replay_buffer=None,
+    max_exps_last=10,
+    duration_grater_hours=1,
+    save_dir=None,
+    tolerance=0.0,
+    prev_tol=0.0,
+    use_tol=True,
+    new_tol=False,
+    use_log_state=False,
+    proj_name=None,
+    mark_states=None,
+    num_workers=None,
+    experiment_keys=None,
+    rebuild_states_from_solver_models=False,
+    AE_model_params=None,
+    AE_train_params=None,
+    loss_surface_params=None,
+) -> PrioritizedReplayBuffer:
+    """Collect filtered Comet transitions and return a filled replay buffer."""
+    all_transitions = collect_comet_transition_entries(
+        max_exps_last=max_exps_last,
+        duration_grater_hours=duration_grater_hours,
+        save_dir=save_dir,
+        tolerance=tolerance,
+        prev_tol=prev_tol,
+        use_tol=use_tol,
+        new_tol=new_tol,
+        proj_name=proj_name,
+        mark_states=mark_states,
+        num_workers=num_workers,
+        experiment_keys=experiment_keys,
+    )
     # all_transitions = all_transitions[:10]
-    # print("len of all transitions",len(all_transitions))
-    # --- Добавление delta loss ---
+    # print("len of all transitions", len(all_transitions))
+
     if rebuild_states_from_solver_models:
         all_entries = rebuild_transitions_states_from_solver_models(
             all_transitions,
@@ -385,10 +470,9 @@ def collect_all_comet_transitions(
     if use_log_state and not rebuild_states_from_solver_models:
         apply_log_transform_to_transitions(all_entries)
 
-
-    print(f"\n🚀 Всего собрано {len(all_entries)} переходов из {len(experiments_sorted_duration)} экспериментов.")
+    print(f"\nCollected {len(all_entries)} transitions.")
     if not all_entries:
-        print("⚠️ Не найдено переходов для загрузки — возвращаем пустой буфер.")
+        print("No transitions found for replay buffer loading; returning an empty buffer.")
         return PrioritizedReplayBuffer(capacity=1)
 
     replay_buffer = load_transitions_to_replay_buffer(
@@ -398,7 +482,6 @@ def collect_all_comet_transitions(
         current_tol=tolerance,
     )
     return replay_buffer
-
 
 def compute_delta_map(loss_t, loss_t1, eps=1e-6):
     """
