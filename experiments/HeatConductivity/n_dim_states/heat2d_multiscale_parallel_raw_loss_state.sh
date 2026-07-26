@@ -2,7 +2,7 @@
 # Auto-run RL chain and distribute jobs across available GPUs.
 
 SCRIPT="experiments/HeatConductivity/n_dim_states/heat2d_multiscale_chain_raw_loss_state.py"
-SEEDS=(34 345)
+SEEDS=(234 2345)
 
 run_seed() {
     local gpu="$1"
