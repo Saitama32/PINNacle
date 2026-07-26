@@ -12,7 +12,7 @@ api_key = os.getenv("COMET_API_KEY")
 
 experiment = start(
   api_key=api_key,
-  project_name="rlpinn_heat2d_multiscale_optimization_raw_loss_improve_nn",
+  project_name="rlpinn_heat2d_multiscale_optimization_raw_loss_no_log_improve_nn",
   workspace="saitama32"
 )
 
@@ -209,7 +209,7 @@ def main():
         "lr": 1e-3,
         "exp": experiment,
         "log_key": False,
-        "proj_name": "rlpinn-heat2d-multiscale-rebuild-buffer-raw-loss"
+        "proj_name": "rlpinn-heat2d-multiscale-rebuild-buffer-raw-loss-no-log"
     }
 
     experiment.log_parameters(rl_agent_params)

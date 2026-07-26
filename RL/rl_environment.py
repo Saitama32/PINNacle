@@ -121,11 +121,12 @@ class EnvRLOptimizer(gym.Env):
         """Applying an action (optimizer selection) and updating the state."""
 
         if self.state_type == "raw_loss":
+            raw_loss_log_state = self.loss_surface_params.get("raw_loss_log_state", False)
             self.raw_states_dict = build_raw_loss_state_from_solver_models(
                 self.solver_models,
                 dde_pde_model=self.loss_surface_params["dde_pde_model"],
                 state_len=self.loss_surface_params.get("raw_loss_state_len", self.n_save_models),
-                log_key=self.loss_surface_params.get("raw_loss_log_state", False),
+                log_key=raw_loss_log_state,
             )
 
             prev_reward_env = 0 if len(self.reward_history) == 0 else self.reward_history[-1]
@@ -150,7 +151,10 @@ class EnvRLOptimizer(gym.Env):
 
             if self._prev_state is not None and "loss_total" in self.raw_states_dict and "loss_total" in self._prev_state:
                 raw_delta = self.raw_states_dict["loss_total"] - self._prev_state["loss_total"]
-                delta = torch.sign(raw_delta) * torch.log1p(torch.abs(raw_delta))
+                if raw_loss_log_state:
+                    delta = torch.sign(raw_delta) * torch.log1p(torch.abs(raw_delta))
+                else:
+                    delta = raw_delta
                 delta = delta / (delta.abs().max() + 1e-6)
                 delta = delta.clamp(-1, 1)
                 self.raw_states_dict["delta"] = delta
