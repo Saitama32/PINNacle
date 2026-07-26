@@ -34,9 +34,10 @@ from src.utils.args import parse_hidden_layers
 
 WORKSPACE = "saitama32"
 DEFAULT_SOURCE_PROJECT_NAME = "rlpinn-heat2d-multiscale-tolerance-with-models"
-TARGET_PROJECT_NAME = "rlpinn_heat2d_multiscale_rebuild_buffer_raw_loss"
+TARGET_PROJECT_NAME = "rlpinn_heat2d_multiscale_rebuild_buffer_raw_loss_no_log"
 LOCAL_OUTPUT_DIR = os.path.join("transitions_rebuilt", "heat2d_multiscale_raw_loss")
 LOSS_KEYS = ("loss_total", "loss_oper", "loss_bnd")
+LOG_LOSS = False
 DEFAULT_SOURCE_EXPERIMENT_KEYS = (
     "daaacfec31b948da937d2a59c58e690e",
     "ef910a5d5a52437a89ac65f597a1e80d",
@@ -153,6 +154,10 @@ def signed_log1p_abs(value):
     return torch.sign(value) * torch.log1p(torch.abs(value))
 
 
+def maybe_transform_loss(value, log_loss):
+    return signed_log1p_abs(value) if log_loss else value
+
+
 def make_zero_state_like(state):
     return {
         key: torch.zeros_like(state[key])
@@ -172,7 +177,7 @@ def build_loss_compute(get_model, device):
     return dde_model, PINNLossData(dde_model, cache_points=True, use_train=True)
 
 
-def compute_transformed_loss_state(solver_models, dde_model, loss_compute):
+def compute_transformed_loss_state(solver_models, dde_model, loss_compute, *, log_loss):
     state = {key: [] for key in LOSS_KEYS}
 
     for solver_model in solver_models:
@@ -181,7 +186,7 @@ def compute_transformed_loss_state(solver_models, dde_model, loss_compute):
 
         for key in LOSS_KEYS:
             loss_value = loss_dict[key].detach().cpu().float()
-            state[key].append(signed_log1p_abs(loss_value))
+            state[key].append(maybe_transform_loss(loss_value, log_loss))
 
     return {
         key: torch.stack(values).float()
@@ -210,6 +215,7 @@ def rebuild_raw_loss_states(
     *,
     get_model,
     device,
+    log_loss,
     on_rebuilt_entry=None,
 ):
     dde_model, loss_compute = build_loss_compute(get_model, device)
@@ -238,6 +244,7 @@ def rebuild_raw_loss_states(
                     solver_models,
                     dde_model,
                     loss_compute,
+                    log_loss=log_loss,
                 )
                 loss_time_total += time.perf_counter() - loss_started_at
                 loss_time_count += 1
@@ -284,6 +291,7 @@ def rebuild_single_comet_experiment_raw_loss_transitions(
     output_dir,
     get_model,
     device,
+    log_loss,
     workspace=WORKSPACE,
 ):
     if not source_project_name:
@@ -340,6 +348,7 @@ def rebuild_single_comet_experiment_raw_loss_transitions(
         load_result.transitions,
         get_model=get_model,
         device=device,
+        log_loss=log_loss,
         on_rebuilt_entry=log_rebuilt_entry,
     )
 
@@ -358,6 +367,7 @@ def rebuild_project_comet_raw_loss_transitions(
     output_dir,
     get_model,
     device,
+    log_loss,
     max_exps_last,
     duration_grater_hours,
     tolerance,
@@ -419,6 +429,7 @@ def rebuild_project_comet_raw_loss_transitions(
         transitions,
         get_model=get_model,
         device=device,
+        log_loss=log_loss,
         on_rebuilt_entry=log_rebuilt_entry,
     )
 
@@ -482,9 +493,10 @@ def main():
         "use_tol": not args.no_use_tol,
         "new_tol": args.new_tol,
         "num_workers": args.num_workers,
+        "log_loss": LOG_LOSS,
         "state_keys": "/".join([*LOSS_KEYS, "delta"]),
-        "loss_transform": "sign(x) * log1p(abs(x))",
-        "delta_source": "add_delta_to_sequence over transformed loss_total states",
+        "loss_transform": "sign(x) * log1p(abs(x))" if LOG_LOSS else "identity",
+        "delta_source": "add_delta_to_sequence over logged loss_total states" if LOG_LOSS else "add_delta_to_sequence over raw loss_total states",
         "cache_train_points": True,
         "device": device,
         "local_output_dir": output_dir,
@@ -504,6 +516,7 @@ def main():
             output_dir=output_dir,
             get_model=get_model,
             device=device,
+            log_loss=LOG_LOSS,
         )
     else:
         rebuild_project_comet_raw_loss_transitions(
@@ -512,6 +525,7 @@ def main():
             output_dir=output_dir,
             get_model=get_model,
             device=device,
+            log_loss=LOG_LOSS,
             max_exps_last=args.max_exps_last,
             duration_grater_hours=args.duration_grater_hours,
             tolerance=args.tolerance,
