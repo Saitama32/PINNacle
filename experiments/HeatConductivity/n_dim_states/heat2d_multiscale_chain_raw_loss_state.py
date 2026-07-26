@@ -161,7 +161,7 @@ def main():
     loss_surface_params = {
         "state_type": "raw_loss",
         "raw_loss_state_len": args.n_save_models,
-        "raw_loss_log_state": True,
+        "raw_loss_log_state": False,
         "loss_types": ["loss_total", "loss_oper", "loss_bnd"],
         "every_nth": 1,
         "num_of_layers": 3,
