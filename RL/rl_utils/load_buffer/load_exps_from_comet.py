@@ -446,7 +446,10 @@ def collect_all_comet_transitions(
             )
 
     if use_log_state and not rebuild_states_from_solver_models:
-        apply_log_transform_to_transitions(all_entries)
+        apply_log_transform_to_transitions(
+            all_entries,
+            state_keys=("loss_total", "loss_oper", "loss_bnd", "loss_ic"),
+        )
 
 
     print(f"\n🚀 Всего собрано {len(all_entries)} переходов из {len(experiments_sorted_duration)} экспериментов.")
