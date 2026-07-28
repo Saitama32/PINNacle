@@ -121,24 +121,34 @@ def main():
         "operator_coeff": 1,
         "bnd_coeff": 1,
     }
+
     optimizers = {
-        "PSO": {
-            "lr": [0.0, 1e-3, 1e-4],
-            "epochs": [100, 200, 300],
-        },
+        "Adam": {"lr": [1e-2, 1e-3, 1e-4], "epochs": [100, 1000, 2500]},
+        "LBFGS": {"lr": [1, 5e-1, 1e-1], "epochs": [100, 500, 1000]},
+        "PSO": {"lr": [0.0, 1e-3, 1e-4], "epochs": [100, 200, 300]},
         "SOAP": {
             "lr": [1e-3, 3e-4, 3e-5],
             "epochs": [100, 1000, 2500],
         },
-        "PCGrad": {
-            "lr": [1e-2, 1e-3, 1e-4],
-            "epochs": [100, 1000, 2000],
-        },
-        "SSBroyden": {
-            "lr": [1.0, 5e-1, 1e-1],
-            "epochs": [100, 500, 1000],
-        },
     }
+    # optimizers = {
+    #     "PSO": {
+    #         "lr": [0.0, 1e-3, 1e-4],
+    #         "epochs": [100, 200, 300],
+    #     },
+    #     "SOAP": {
+    #         "lr": [1e-3, 3e-4, 3e-5],
+    #         "epochs": [100, 1000, 2500],
+    #     },
+    #     "PCGrad": {
+    #         "lr": [1e-2, 1e-3, 1e-4],
+    #         "epochs": [100, 1000, 2000],
+    #     },
+    #     "SSBroyden": {
+    #         "lr": [1.0, 5e-1, 1e-1],
+    #         "epochs": [100, 500, 1000],
+    #     },
+    # }
 
     AE_model_params = {
         "mode": "NN",
