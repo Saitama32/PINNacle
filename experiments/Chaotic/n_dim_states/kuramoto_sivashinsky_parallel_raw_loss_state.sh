@@ -2,7 +2,7 @@
 # Auto-run RL chain and distribute jobs across available GPUs.
 
 SCRIPT="experiments/Chaotic/n_dim_states/kuramoto_sivashinsky_chain_raw_loss_state.py"
-SEEDS=(234 2345)
+SEEDS=(1234 12345)
 
 run_seed() {
     local gpu="$1"
