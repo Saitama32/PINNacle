@@ -16,7 +16,8 @@ import deepxde as dde
 from RL.rl_environment import EnvRLOptimizer
 from RL.rl_algorithms import DQNAgent
 from src.utils.callbacks import ModelSaverCallback  
-from deepxde.optimizers.config import set_LBFGS_options, set_PSO_options, LBFGS_options, PSO_options
+from deepxde.optimizers.config import set_LBFGS_options, set_MUON_options, set_PSO_options, LBFGS_options, PSO_options
+from deepxde.optimizers.pytorch.optimizers import get as get_pytorch_optimizer
 from deepxde.optimizers.pytorch.pcgrad import PCGrad
 from deepxde.optimizers.pytorch.soap import SOAP
 from deepxde.optimizers.pytorch.ssbroyden import SSBroyden
@@ -73,7 +74,7 @@ def _serialize_solver_models(solver_models):
     return serialized_models
 
 
-def _build_torch_optimizer(opt_name: str, params, action: Dict[str, Any]):
+def _build_torch_optimizer(opt_name: str, params, action: Dict[str, Any], model=None):
 
     name = (opt_name or "").lower()
     opt_params = action.get("params", {})
@@ -89,6 +90,21 @@ def _build_torch_optimizer(opt_name: str, params, action: Dict[str, Any]):
             params,
             lr=lr,
         )
+
+    if name == "muon":
+        lr = float(opt_params.get("lr", 2e-2))
+        set_MUON_options(
+            momentum=float(opt_params.get("momentum", 0.95)),
+            ns_steps=int(opt_params.get("ns_steps", 5)),
+            adam_lr=float(opt_params.get("adam_lr", 1e-3)),
+        )
+        opt, _ = get_pytorch_optimizer(
+            params,
+            "muon",
+            learning_rate=lr,
+            model=model,
+        )
+        return opt
 
     if name == "pcgrad":
         lr = float(opt_params.get("lr", 1e-3))
@@ -127,7 +143,7 @@ def _build_torch_optimizer(opt_name: str, params, action: Dict[str, Any]):
         )
         return "PSO"  # deepxde/optimizers/pytorch/pso.PSO
 
-    raise ValueError(f"Unknown optimizer type: {opt_name}. Expected Adam / SOAP / PCGrad / SSBroyden / LBFGS / PSO.")
+    raise ValueError(f"Unknown optimizer type: {opt_name}. Expected Adam / SOAP / Muon / PCGrad / SSBroyden / LBFGS / PSO.")
 
 
 def _extract_weighted_train_loss(model) -> float:
@@ -264,7 +280,7 @@ def run_deepxde_rl_training(
 
             # --- compile optimizer for this chunk ---
             chunk_iters = int(action["epochs"])
-            torch_opt = _build_torch_optimizer(action["type"], model.net.parameters(), action)
+            torch_opt = _build_torch_optimizer(action["type"], model.net.parameters(), action, model=model.net)
 
 
             model.compile(torch_opt, loss_weights=loss_weights)
