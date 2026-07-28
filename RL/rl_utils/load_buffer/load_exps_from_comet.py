@@ -291,6 +291,47 @@ def repair_equal_states_in_all_entries(entries, loss_key="loss_total"):
     return entries
 
 
+def drop_chains_longer_than(transitions, max_chain_len=10, block_label=None):
+    if max_chain_len is None or max_chain_len <= 0:
+        return transitions
+
+    cleaned = []
+    chain = []
+    dropped_chains = 0
+    dropped_transitions = 0
+    max_seen_len = 0
+
+    def flush_current_chain():
+        nonlocal dropped_chains, dropped_transitions, max_seen_len
+        if not chain:
+            return
+
+        chain_len = len(chain)
+        max_seen_len = max(max_seen_len, chain_len)
+        if chain_len > max_chain_len:
+            dropped_chains += 1
+            dropped_transitions += chain_len
+        else:
+            cleaned.extend(chain)
+
+    for tr in transitions:
+        chain.append(tr)
+        if _done_value(tr) in (1, -1):
+            flush_current_chain()
+            chain = []
+
+    flush_current_chain()
+
+    if dropped_chains:
+        label = f" in {block_label}" if block_label else ""
+        print(
+            f"Dropped {dropped_chains} chains{label} with length > {max_chain_len} "
+            f"({dropped_transitions} transitions dropped, max seen length {max_seen_len})."
+        )
+
+    return cleaned
+
+
 def collect_all_comet_transitions(
     replay_buffer=None,
     max_exps_last=10,
@@ -308,6 +349,7 @@ def collect_all_comet_transitions(
     AE_model_params=None,
     AE_train_params=None,
     loss_surface_params=None,
+    max_chain_len=10,
 ) -> PrioritizedReplayBuffer:
     """Собирает все переходы из не-crashed экспериментов проекта и возвращает заполненный PrioritizedReplayBuffer."""
     print("🔍 Получаем эксперименты из Comet...")
@@ -430,20 +472,12 @@ def collect_all_comet_transitions(
             block_entries = repair_equal_states_in_all_entries(block_transitions)
             block_entries = add_delta_to_all_entries(block_entries)
 
+        block_entries = drop_chains_longer_than(
+            block_entries,
+            max_chain_len=max_chain_len,
+            block_label=f"experiment block {block_index}",
+        )
         all_entries.extend(block_entries)
-
-        chain = []
-        max_chain_len = 0
-        for tr in block_entries:
-            chain.append(tr)
-            max_chain_len = max(max_chain_len, len(chain))
-            if _done_value(tr) in (1, -1):
-                chain = []
-        if max_chain_len > 12:
-            print(
-                f"Warning: experiment block {block_index} has chain length "
-                f"{max_chain_len}; check source transitions."
-            )
 
     if use_log_state and not rebuild_states_from_solver_models:
         apply_log_transform_to_transitions(
