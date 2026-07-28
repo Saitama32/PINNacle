@@ -198,7 +198,7 @@ def main():
         "lr": 1e-3,
         "exp": experiment,
         "log_key": False,
-        "proj_name": "rlpinn-ks-rebuild-buffer-raw-loss-no-log",
+        "proj_name": "rlpinn-burgers-1d-rebuild-buffer-raw-loss-no-log",
     }
 
     experiment.log_parameters(rl_agent_params)
