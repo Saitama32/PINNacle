@@ -4,6 +4,8 @@ __all__ = [
     "set_PSO_options",
     "set_ZOCGE_options",
     "set_SOAP_options",
+    "MUON_options",
+    "set_MUON_options",
     "set_PCGRAD_options",
     "set_SSBROYDEN_options",
     "set_CAUSAL_options",
@@ -18,6 +20,7 @@ NNCG_options = {}
 PSO_options = {}
 ZOCGE_options = {}
 SOAP_options = {}
+MUON_options = {}
 PCGRAD_options = {}
 SSBROYDEN_options = {}
 CAUSAL_options = {}
@@ -235,6 +238,45 @@ def set_SOAP_options(
     SOAP_options["bias_correction"] = bias_correction
 
 
+def set_MUON_options(
+    momentum=0.95,
+    nesterov=True,
+    ns_steps=5,
+    adam_lr=None,
+    adam_betas=(0.9, 0.95),
+    adam_eps=1e-8,
+    muon_weight_decay=0.0,
+    adam_weight_decay=0.0,
+):
+    """Sets the hyperparameters of MuonWithAuxAdam.
+
+    The PyTorch Muon integration applies Muon only to hidden ``Linear.weight``
+    matrices. Input/output layer weights, biases, external trainable variables,
+    and any non-linear-layer parameters are handled by the auxiliary Adam
+    branch.
+
+    Args:
+        momentum (float): Muon momentum coefficient.
+        nesterov (bool): Whether to use Nesterov momentum for Muon updates.
+        ns_steps (int): Number of Newton-Schulz iterations.
+        adam_lr (float): Auxiliary Adam learning rate. If ``None``, uses the
+            ``lr`` passed to ``Model.compile``.
+        adam_betas (tuple): Adam beta coefficients for auxiliary parameters.
+        adam_eps (float): Adam numerical stability constant.
+        muon_weight_decay (float): Decoupled weight decay for Muon parameters.
+        adam_weight_decay (float): Decoupled weight decay for auxiliary
+            parameters.
+    """
+    MUON_options["momentum"] = momentum
+    MUON_options["nesterov"] = nesterov
+    MUON_options["ns_steps"] = ns_steps
+    MUON_options["adam_lr"] = adam_lr
+    MUON_options["adam_betas"] = adam_betas
+    MUON_options["adam_eps"] = adam_eps
+    MUON_options["muon_weight_decay"] = muon_weight_decay
+    MUON_options["adam_weight_decay"] = adam_weight_decay
+
+
 def set_PCGRAD_options(base_optimizer="adam"):
     """Sets the hyperparameters of PCGrad optimizer wrapper.
 
@@ -287,7 +329,7 @@ def set_CAUSAL_options(
     """Sets the hyperparameters of causal optimizer wrapper.
 
     Args:
-        base_optimizer: One of "adam", "soap", "L-BFGS", "L-BFGS-B", "PSO".
+        base_optimizer: One of "adam", "soap", "muon", "L-BFGS", "L-BFGS-B", "PSO".
         n_time_bins: Number of temporal bins.
         start_bins: Number of initially active temporal bins.
         time_index: Column index of time in train_x. Usually -1.
@@ -357,6 +399,7 @@ set_LBFGS_options()
 set_NNCG_options()
 set_PSO_options()
 set_SOAP_options()
+set_MUON_options()
 set_PCGRAD_options()
 set_SSBROYDEN_options()
 set_CAUSAL_options()
