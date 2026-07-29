@@ -198,6 +198,7 @@ def rebuild_transitions_states_from_solver_models(
                     "Skipping transition during state rebuild "
                     f"(sequence={seq_i}, index={transition_i}): {exc}"
                 )
+                previous_next_state = None
                 continue
 
             if previous_next_state is None:
