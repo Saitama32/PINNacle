@@ -486,6 +486,10 @@ def run_deepxde_rl_training(
             if np.isfinite(train_loss):
                 print(f"Operator RMSE: {rmse}, Boundary RMSE: {b_rmse}")
                 print(f"Weighted train loss: {train_loss}")
+                old_raw_reward = float(
+                    (rmse if np.isfinite(rmse) else 0.0)
+                    + (b_rmse if np.isfinite(b_rmse) else 0.0)
+                )
 
                 env.solver_models = solver_models
                 env.reward_params = {
@@ -523,6 +527,7 @@ def run_deepxde_rl_training(
                     "opt_model_i": info["opt_model_i"],
                     "reward_scalar": float(info["reward_scalar"]),
                     "old_reward_model": float(reward_shaped.item()),
+                    "old_raw_reward": old_raw_reward,
                     "current_loss": float(train_loss),
                 })
                 trajectory_losses.append(float(train_loss))
@@ -608,6 +613,7 @@ def run_deepxde_rl_training(
                         'reward_model': chain_reward,
                         'reward_scheme': "env_chain_reward",
                         'old_reward_model': tr["old_reward_model"],
+                        'old_raw_reward': tr["old_raw_reward"],
                         'opt_model_i': tr["opt_model_i"],
                     }
                     torch.save(entry, file_path)
