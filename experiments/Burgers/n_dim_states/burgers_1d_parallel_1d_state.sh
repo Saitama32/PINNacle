@@ -2,7 +2,7 @@
 # Auto-run RL chain and distribute jobs across available GPUs.
 
 SCRIPT="experiments/Burgers/n_dim_states/burgers_1d_chain_1d_state.py"
-SEEDS=(1234 12345)
+SEEDS=(34 345)
 
 run_seed() {
     local gpu="$1"
