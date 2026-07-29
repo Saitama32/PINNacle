@@ -11,7 +11,7 @@ api_key = os.getenv("COMET_API_KEY")
 
 experiment = start(
     api_key=api_key,
-    project_name="rlpinn-burgers-1d-optimization-raw-log-loss-improve-nn",
+    project_name="rlpinn-burgers-1d-optimization-raw-loss-no-log-improve-nn",
     workspace="saitama32",
 )
 
@@ -150,7 +150,7 @@ def main():
     loss_surface_params = {
         "state_type": "raw_loss",
         "raw_loss_state_len": args.n_save_models,
-        "raw_loss_log_state": True,
+        "raw_loss_log_state": False,
         "loss_types": ["loss_total", "loss_oper", "loss_bnd"],
         "every_nth": 1,
         "num_of_layers": 3,
@@ -197,7 +197,7 @@ def main():
         "agent_update_iters": 5,
         "lr": 1e-3,
         "exp": experiment,
-        "log_key": True,
+        "log_key": False,
         "proj_name": "rlpinn-burgers-1d-rebuild-buffer-raw-loss-no-log",
     }
 
