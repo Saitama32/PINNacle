@@ -17,8 +17,10 @@ import deepxde as dde
 from RL.rl_environment import EnvRLOptimizer
 from RL.rl_algorithms import DQNAgent
 from src.utils.callbacks import ModelSaverCallback  
-from deepxde.optimizers.config import set_LBFGS_options, set_PSO_options, LBFGS_options, PSO_options
+from deepxde.optimizers.config import set_LBFGS_options, set_MUON_options, set_PSO_options, LBFGS_options, PSO_options
 from RL.rl_utils.load_buffer.load_model_from_comet import load_rl_agent_from_comet
+from deepxde.optimizers.pytorch.optimizers import get as get_pytorch_optimizer
+from deepxde.optimizers.pytorch.soap import SOAP
 
 # Enforce single-precision defaults before any model/layer creation.
 dde.config.set_default_float("float32")
@@ -91,6 +93,29 @@ def _build_torch_optimizer(opt_name: str, params, action: Dict[str, Any]):
         return torch.optim.Adam(
             params, lr=lr,
         )
+
+    if name == "soap":
+        lr = float(opt_params.get("lr", 3e-4))
+        return SOAP(
+            params,
+            lr=lr,
+        )
+
+    if name == "muon":
+        lr = float(opt_params.get("lr", 2e-2))
+        set_MUON_options(
+            momentum=float(opt_params.get("momentum", 0.95)),
+            ns_steps=int(opt_params.get("ns_steps", 5)),
+            adam_lr=float(opt_params.get("adam_lr", 3e-4)),
+        )
+        opt, _ = get_pytorch_optimizer(
+            params,
+            "muon",
+            learning_rate=lr,
+            model=model,
+        )
+        return opt
+
 
     if name in ["lbfgs", "l-bfgs", "l_bfgs", "LBFGS"]:
         # torch LBFGS (для pytorch backend DeepXDE норм)
