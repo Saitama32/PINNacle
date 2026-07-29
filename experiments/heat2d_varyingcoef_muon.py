@@ -30,7 +30,7 @@ def add_args(parser):
     parser.add_argument("--hidden-layers", type=str, default="100*5")
     parser.add_argument("--loss-weight", type=str, default="")
     parser.add_argument("--lr", type=float, default=2e-2)
-    parser.add_argument("--adam-lr", type=float, default=1e-3)
+    parser.add_argument("--adam-lr", type=float, default=3e-4)
     parser.add_argument("--muon-momentum", type=float, default=0.95)
     parser.add_argument("--muon-ns-steps", type=int, default=5)
     parser.add_argument("--iter", type=int, default=20000)

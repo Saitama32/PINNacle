@@ -242,9 +242,9 @@ def set_MUON_options(
     momentum=0.95,
     nesterov=True,
     ns_steps=5,
-    adam_lr=None,
+    adam_lr=3e-4,
     adam_betas=(0.9, 0.95),
-    adam_eps=1e-8,
+    adam_eps=1e-10,
     muon_weight_decay=0.0,
     adam_weight_decay=0.0,
 ):

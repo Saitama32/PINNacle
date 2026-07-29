@@ -96,7 +96,7 @@ def _build_torch_optimizer(opt_name: str, params, action: Dict[str, Any], model=
         set_MUON_options(
             momentum=float(opt_params.get("momentum", 0.95)),
             ns_steps=int(opt_params.get("ns_steps", 5)),
-            adam_lr=float(opt_params.get("adam_lr", 1e-3)),
+            adam_lr=float(opt_params.get("adam_lr", 3e-4)),
         )
         opt, _ = get_pytorch_optimizer(
             params,
