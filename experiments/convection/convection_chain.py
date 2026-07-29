@@ -10,7 +10,7 @@ sys.path.append(project_root)
 from comet_config import start_comet_experiment
 
 experiment = start_comet_experiment(
-    project_name="rlpinn-convection-beta50-tolerance",
+    project_name="rlpinn-convection-beta50-tolerance_defoult_set",
 )
 
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
@@ -126,29 +126,11 @@ def main():
         "Adam": {"lr": [1e-2, 1e-3, 1e-4], "epochs": [100, 1000, 2500]},
         "LBFGS": {"lr": [1, 5e-1, 1e-1], "epochs": [100, 500, 1000]},
         "PSO": {"lr": [0.0, 1e-3, 1e-4], "epochs": [100, 200, 300]},
-        "SOAP": {
-            "lr": [1e-3, 3e-4, 3e-5],
-            "epochs": [100, 1000, 2500],
-        },
+        # "SOAP": {
+        #     "lr": [1e-3, 3e-4, 3e-5],
+        #     "epochs": [100, 1000, 2500],
+        # },
     }
-    # optimizers = {
-    #     "PSO": {
-    #         "lr": [0.0, 1e-3, 1e-4],
-    #         "epochs": [100, 200, 300],
-    #     },
-    #     "SOAP": {
-    #         "lr": [1e-3, 3e-4, 3e-5],
-    #         "epochs": [100, 1000, 2500],
-    #     },
-    #     "PCGrad": {
-    #         "lr": [1e-2, 1e-3, 1e-4],
-    #         "epochs": [100, 1000, 2000],
-    #     },
-    #     "SSBroyden": {
-    #         "lr": [1.0, 5e-1, 1e-1],
-    #         "epochs": [100, 500, 1000],
-    #     },
-    # }
 
     AE_model_params = {
         "mode": "NN",
