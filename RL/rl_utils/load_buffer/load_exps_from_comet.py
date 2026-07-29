@@ -291,7 +291,7 @@ def repair_equal_states_in_all_entries(entries, loss_key="loss_total"):
     return entries
 
 
-def drop_chains_longer_than(transitions, max_chain_len=10, block_label=None):
+def drop_chains_longer_than(transitions, max_chain_len=12, block_label=None):
     if max_chain_len is None or max_chain_len <= 0:
         return transitions
 
@@ -349,7 +349,7 @@ def collect_all_comet_transitions(
     AE_model_params=None,
     AE_train_params=None,
     loss_surface_params=None,
-    max_chain_len=10,
+    max_chain_len=12,
 ) -> PrioritizedReplayBuffer:
     """Собирает все переходы из не-crashed экспериментов проекта и возвращает заполненный PrioritizedReplayBuffer."""
     print("🔍 Получаем эксперименты из Comet...")
