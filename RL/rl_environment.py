@@ -220,7 +220,12 @@ class EnvRLOptimizer(gym.Env):
         self.loss_surface_params['solver_models'] = self.solver_models
         self.loss_surface_params['AE_model'] = AEmodel
 
-        self.plot_loss_surface = PlotLossSurface(**self.loss_surface_params)
+        plot_loss_surface_params = {
+            key: value
+            for key, value in self.loss_surface_params.items()
+            if key not in ("state_type", "raw_loss_state_len", "raw_loss_log_state")
+        }
+        self.plot_loss_surface = PlotLossSurface(**plot_loss_surface_params)
         self.plot_loss_surface.counter = self.counter
 
         # 1) next_state + базовый reward (как было)
