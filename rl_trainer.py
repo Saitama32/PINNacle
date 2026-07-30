@@ -158,6 +158,67 @@ def _extract_weighted_train_loss(model) -> float:
     return loss_value
 
 
+def _log_replay_action_diagnostics(agent):
+    action_stats = {
+        action_idx: {
+            "count": 0,
+            "reward_sum": 0.0,
+            "success_nonterminal_count": 0,
+            "success_terminal_count": 0,
+        }
+        for action_idx in agent.i2opt
+    }
+
+    current_chain = []
+
+    def action_idx_of(transition):
+        action = transition.action
+        return int(action[0])
+
+    def record_success_chain(chain):
+        if not chain or int(chain[-1].done) != 1:
+            return
+        for transition in chain[:-1]:
+            action_stats[action_idx_of(transition)]["success_nonterminal_count"] += 1
+        action_stats[action_idx_of(chain[-1])]["success_terminal_count"] += 1
+
+    for transition in agent.replay_buffer.memory:
+        action_idx = action_idx_of(transition)
+        stats = action_stats[action_idx]
+        stats["count"] += 1
+        stats["reward_sum"] += float(transition.reward)
+
+        current_chain.append(transition)
+        if int(transition.done) != 0:
+            record_success_chain(current_chain)
+            current_chain = []
+
+    metrics = {}
+    print("\nPost-processed replay diagnostics:")
+    for action_idx, optim_name in agent.i2opt.items():
+        stats = action_stats[action_idx]
+        count = stats["count"]
+        reward_mean = stats["reward_sum"] / max(count, 1)
+        print(
+            f"  {action_idx} -> {optim_name}: count={count}, "
+            f"reward_mean={reward_mean:.6f}, "
+            f"success_nonterminal={stats['success_nonterminal_count']}, "
+            f"success_terminal={stats['success_terminal_count']}"
+        )
+        prefix = f"buffer_action/{optim_name}"
+        metrics[f"{prefix}/count"] = count
+        metrics[f"{prefix}/reward_mean"] = reward_mean
+        metrics[
+            f"{prefix}/success_nonterminal_count"
+        ] = stats["success_nonterminal_count"]
+        metrics[
+            f"{prefix}/success_terminal_count"
+        ] = stats["success_terminal_count"]
+
+    if agent.exp is not None:
+        agent.exp.log_metrics(metrics, step=agent.steps_done)
+
+
 def run_deepxde_rl_training(
     model,
     loss_weights,
@@ -228,6 +289,7 @@ def run_deepxde_rl_training(
                                                            reset_success_done_to_failure=rl_agent_params.get("reset_success_done_to_failure", False),
                                                            recompute_chain_rewards=rl_agent_params.get("recompute_chain_rewards", False),
                                                          set_reward_from_next_loss=rl_agent_params.get("set_reward_from_next_loss", False))
+    _log_replay_action_diagnostics(rl_agent)
 
     offline_pretrain_steps = int(rl_agent_params.get("offline_pretrain_steps", 0))
     offline_pretrain_iters = int(rl_agent_params.get("offline_pretrain_iters", 5))
