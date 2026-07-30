@@ -1,19 +1,21 @@
-# run_ns2d_liddriven_rl.py
-import os, sys
+import os
 os.environ["DDEBACKEND"] = "pytorch"
-
+os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
+import sys
+from dotenv import load_dotenv
 from comet_ml import start
-from comet_ml.integration.pytorch import log_model
+
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
+load_dotenv(os.path.join(PROJECT_ROOT, ".env"))
+api_key = os.getenv("COMET_API_KEY")
 
 experiment = start(
-  api_key="aP71fQTYPNqfsYWvudPPmoBl5",
-  project_name="rlpinn_ns2d_liddriven_optimization_2_dim_improve_nn",
-  workspace="saitama32"
+    api_key=api_key,
+    project_name="rlpinn_ns2d_liddriven_optimization_2_dim_improve_nn",
+    workspace="saitama32",
 )
 
-os.environ['KMP_DUPLICATE_LIB_OK'] = 'TRUE'
-project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
-sys.path.append(project_root)
+sys.path.append(PROJECT_ROOT)
 import time
 import argparse
 import dill
@@ -26,11 +28,13 @@ from src.utils.args import parse_hidden_layers
 from src.utils.callbacks import TesterCallback, PlotCallback, LossCallback
 from rl_trainer import train_process_rl
 
+
 experiment.log_parameters({
     "param": "v_1",
     "reward_function": "v_2",
-    "description": "optimization_ns2d_liddriven_2d_state"
+    "description": "optimization_ns2d_liddriven_2d_state",
 })
+
 
 def build_get_model_ns2d_liddriven(hidden_layers: str, datapath: str, a: float, nu: float):
     def get_model():
@@ -43,7 +47,7 @@ def build_get_model_ns2d_liddriven(hidden_layers: str, datapath: str, a: float, 
         loss_weights = np.ones(pde.num_loss, dtype=float)
         for i, c in enumerate(pde.loss_config):
             t = c.get("type", "")
-            if t in ("boundary", "initial"):
+            if t in ("boundary", "initial", "ic"):
                 loss_weights[i] = 100.0
             elif t == "pde":
                 loss_weights[i] = 1.0
@@ -61,19 +65,15 @@ def main():
     parser.add_argument("--name", type=str, default="ns2d_liddriven_rl")
     parser.add_argument("--device", type=str, default="0")
     parser.add_argument("--seed", type=int, default=1234)
-
     parser.add_argument("--datapath", type=str, default="ref/lid_driven_a4.dat")
     parser.add_argument("--a", type=float, default=4.0)
     parser.add_argument("--nu", type=float, default=1e-2)
-
     parser.add_argument("--hidden-layers", type=str, default="100*5")
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--log-every", type=int, default=100)
     parser.add_argument("--plot-every", type=int, default=2000)
-
     parser.add_argument("--n-trajectories", type=int, default=1000)
     parser.add_argument("--n-save-models", type=int, default=10)
-
     parser.add_argument("--out", type=str, default="runs_single")
 
     args = parser.parse_args()
@@ -102,18 +102,9 @@ def main():
     }
 
     optimizers = {
-        "Adam": {
-            "lr": [1e-2, 1e-3, 1e-4],
-            "epochs": [100, 1000, 2500],
-        },
-        "LBFGS": {
-            "lr": [1, 5e-1, 1e-1],
-            "epochs": [100, 500, 1000],
-        },
-        "PSO": {
-            "lr": [0.0, 1e-3, 1e-4],
-            "epochs": [100, 200, 300],
-        },
+        "Adam": {"lr": [1e-2, 1e-3, 1e-4], "epochs": [100, 1000, 2500]},
+        "LBFGS": {"lr": [1, 5e-1, 1e-1], "epochs": [100, 500, 1500]},
+        "PSO": {"lr": [0.0, 1e-3, 1e-4], "epochs": [100, 200, 300]},
     }
 
     latent_dim = 2
@@ -187,9 +178,9 @@ def main():
     rl_agent_params = {
         "n_save_models": args.n_save_models,
         "n_trajectories": args.n_trajectories,
-        "tolerance": 0.0101981672924011,
-        "use_tol": True,
-        "new_tol": False,
+        "tolerance": 0.00810541202508866,
+        "use_tol": False,
+        "new_tol": True,
         "prev_tol": 0.0,
         "stuck_threshold": 10,
         "min_loss_change": 1e-7,
@@ -206,17 +197,10 @@ def main():
         "lr": 1e-3,
         "exp": experiment,
         "log_key": False,
-        "proj_name": "rlpinn-ns2d-liddriven-tolerance"
+        "proj_name": "rlpinn-ns2d-liddriven-tolerance-corrected",
     }
-    
-    # backup_params = {
-    #     "experiment_key" : "b0dae86c42924e4484b8bd194e2d58d9",
-    # }
-    backup_params = None
 
     experiment.log_parameters(rl_agent_params)
-    # experiment.log_parameters(backup_params)
-    # --- вызов train_process_rl ---
 
     data = dill.dumps((get_model, train_args, optimizers, AE_model_params, AE_train_params, loss_surface_params))
     train_process_rl(data=data, save_path=save_path, device=args.device, seed=args.seed, rl_agent_params=rl_agent_params)
