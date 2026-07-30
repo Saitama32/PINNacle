@@ -224,7 +224,7 @@ def main():
         "lr": args.lr,
         "exp": experiment,
         "log_key": False,
-        "proj_name": "rlpinn-convection-beta50-tolerance-defoult-set",
+        "proj_name": "rlpinn-convection-beta50-tolerance-expand-set",
     }
 
     experiment.log_parameters(
