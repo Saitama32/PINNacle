@@ -1,7 +1,7 @@
 #!/bin/bash
 # Parallel launch for Convection1D beta=50 RL optimizer chain.
 
-SCRIPT="experiments/convection/convection_chain_expand_set.py"
+SCRIPT="experiments/convection/convection_chain.py"
 
 NUM_GPUS=$(nvidia-smi --query-gpu=name --format=csv,noheader | wc -l)
 
