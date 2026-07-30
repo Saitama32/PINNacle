@@ -223,6 +223,7 @@ def main():
         "agent_update_iters": 5,
         "lr": args.lr,
         "exp": experiment,
+        "log_key": False,
         "proj_name": "rlpinn-convection-beta50-tolerance-defoult-set",
     }
 
