@@ -206,6 +206,8 @@ def main():
         "n_save_models": args.n_save_models,
         "n_trajectories": args.n_trajectories,
         "tolerance": 0.076681697,
+        "use_tol": False,
+        "new_tol": True,
         "prev_tol": 0,
         "stuck_threshold": 10,
         "min_loss_change": 1e-7,
