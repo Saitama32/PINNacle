@@ -221,13 +221,13 @@ def run_deepxde_rl_training(
         z = torch.zeros(state_shape, device=device)
         return {"loss_total": z.clone(), "loss_oper": z.clone(), "loss_bnd": z.clone()}
     
-    # rl_agent.replay_buffer = collect_all_comet_transitions(rl_agent.replay_buffer, max_exps_last=500, tolerance = rl_agent_params["tolerance"],
-    #                                                        prev_tol= rl_agent_params["prev_tol"], use_tol = rl_agent_params["use_tol"], new_tol = rl_agent_params["new_tol"],
-    #                                                        use_log_state=rl_agent_params["log_key"], 
-    #                                                        proj_name=rl_agent_params["proj_name"],
-    #                                                        reset_success_done_to_failure=rl_agent_params.get("reset_success_done_to_failure", False),
-    #                                                        recompute_chain_rewards=rl_agent_params.get("recompute_chain_rewards", True),
-    #                                                     set_reward_from_next_loss=rl_agent_params.get("set_reward_from_next_loss", True))
+    rl_agent.replay_buffer = collect_all_comet_transitions(rl_agent.replay_buffer, max_exps_last=500, tolerance = rl_agent_params["tolerance"],
+                                                           prev_tol= rl_agent_params["prev_tol"], use_tol = rl_agent_params["use_tol"], new_tol = rl_agent_params["new_tol"],
+                                                           use_log_state=rl_agent_params["log_key"], 
+                                                           proj_name=rl_agent_params["proj_name"],
+                                                           reset_success_done_to_failure=rl_agent_params.get("reset_success_done_to_failure", False),
+                                                           recompute_chain_rewards=rl_agent_params.get("recompute_chain_rewards", False),
+                                                        set_reward_from_next_loss=rl_agent_params.get("set_reward_from_next_loss", False))
     # if backup_params is not None:
     #     optim_state, params_state = load_rl_agent_from_comet(backup_params["experiment_key"], map_location=device_type())
     #     rl_agent.model_optim.load_state_dict(optim_state)

@@ -10,7 +10,7 @@ sys.path.append(project_root)
 from comet_config import start_comet_experiment
 
 experiment = start_comet_experiment(
-    project_name="rlpinn-convection-beta50-tolerance_defoult_set",
+    project_name="rlpinn-convection-beta50-optimization_defoult_set",
 )
 
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
@@ -207,7 +207,7 @@ def main():
     rl_agent_params = {
         "n_save_models": args.n_save_models,
         "n_trajectories": args.n_trajectories,
-        "tolerance": 0.0,
+        "tolerance": 0.076681697,
         "prev_tol": 0,
         "stuck_threshold": 10,
         "min_loss_change": 1e-7,
@@ -223,7 +223,7 @@ def main():
         "agent_update_iters": 5,
         "lr": args.lr,
         "exp": experiment,
-        "proj_name": "rlpinn-convection-beta50-farm-transitions",
+        "proj_name": "rlpinn-convection-beta50-tolerance-defoult-set",
     }
 
     experiment.log_parameters(
