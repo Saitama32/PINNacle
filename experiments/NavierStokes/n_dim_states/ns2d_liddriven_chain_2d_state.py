@@ -197,7 +197,7 @@ def main():
         "lr": 1e-3,
         "exp": experiment,
         "log_key": False,
-        "proj_name": "rlpinn-ns2d-liddriven-tolerance-corrected",
+        "proj_name": "rlpinn-ns2d-liddriven-tolerance",
     }
 
     experiment.log_parameters(rl_agent_params)
