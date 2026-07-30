@@ -223,6 +223,7 @@ def main():
         "agent_update_iters": 5,
         "offline_pretrain_steps": 200,
         "offline_pretrain_iters": 5,
+        "include_terminal_starts": True,
         "lr": args.lr,
         "exp": experiment,
         "log_key": False,
