@@ -2,7 +2,7 @@
 # Auto-run RL chain and distribute jobs across available GPUs.
 
 SCRIPT="experiments/NavierStokes/n_dim_states/ns2d_liddriven_chain_1d_state.py"
-SEEDS=(34 345)
+SEEDS=(1234 12345)
 
 run_seed() {
     local gpu="$1"
