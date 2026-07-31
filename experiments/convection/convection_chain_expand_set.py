@@ -86,7 +86,7 @@ def main(seed_override=None):
     parser.add_argument("--device", type=str, default="0")
     parser.add_argument("--seed", type=int, default=1234)
 
-    parser.add_argument("--hidden-layers", type=str, default="100*5")
+    parser.add_argument("--hidden-layers", type=str, default="50*5")
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--log-every", type=int, default=100)
     parser.add_argument("--plot-every", type=int, default=2000)
