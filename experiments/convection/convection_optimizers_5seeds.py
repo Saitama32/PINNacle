@@ -65,7 +65,7 @@ def add_args(parser):
     parser.add_argument("--name", type=str, default="convection_beta50_optimizers_5seeds")
     parser.add_argument("--device", type=str, default="0")
     parser.add_argument("--seeds", type=str, default="123,234,345,456,567,678,789,890,901,1012")
-    parser.add_argument("--hidden-layers", type=str, default="50*5")
+    parser.add_argument("--hidden-layers", type=str, default="100*5")
     parser.add_argument("--loss-weight", type=str, default="")
 
     parser.add_argument("--iter", type=int, default=20000)
