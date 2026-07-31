@@ -229,6 +229,8 @@ def run_deepxde_rl_training(
         )
         rl_agent.model_optim.load_state_dict(optim_state)
         rl_agent.model_params.load_state_dict(params_state)
+        rl_agent.model_optim.eval()
+        rl_agent.model_params.eval()
         rl_agent.reinit_target()
 
     idx_traj = 0
@@ -265,6 +267,35 @@ def run_deepxde_rl_training(
                 break
 
             # --- agent action ---
+            if final_eval_mode and idx_traj == 0 and t == 0:
+                delta = state.get("delta", torch.zeros_like(state["loss_total"]))
+                state_tensor = torch.stack([
+                    state["loss_total"],
+                    state["loss_oper"],
+                    state["loss_bnd"],
+                    delta,
+                ], dim=0).unsqueeze(0).to(device)
+                with torch.no_grad():
+                    _, q_values = rl_agent.model_optim(state_tensor)
+                q_values = q_values.squeeze(0)
+                q_by_action = {
+                    rl_agent.i2opt[i]: float(q_values[i].item())
+                    for i in range(len(rl_agent.i2opt))
+                }
+                top_values, top_indices = torch.topk(q_values, k=min(2, q_values.numel()))
+                greedy_action = rl_agent.i2opt[int(top_indices[0].item())]
+                q_gap = (
+                    float((top_values[0] - top_values[1]).item())
+                    if top_values.numel() > 1 else float("nan")
+                )
+                formatted_q = ", ".join(
+                    f"{name}={value:.6f}" for name, value in q_by_action.items()
+                )
+                print(
+                    "First eval state Q-values: "
+                    f"{formatted_q}; greedy_action={greedy_action}; q_gap={q_gap:.6f}"
+                )
+
             action, action_raw, is_model = rl_agent.select_action(state, force_greedy=final_eval_mode)
             action_raw[2]['epochs'] = action_raw[1]
             action_raw = (action_raw[0], action_raw[2])
