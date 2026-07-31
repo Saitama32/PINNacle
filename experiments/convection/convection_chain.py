@@ -1,19 +1,21 @@
 # run_convection_rl.py
-import os
-import sys
-
+import os, sys
 os.environ["DDEBACKEND"] = "pytorch"
+from comet_ml import start
+from dotenv import load_dotenv
 
-project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-sys.path.append(project_root)
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+load_dotenv(os.path.join(PROJECT_ROOT, ".env"))
+api_key = os.getenv("COMET_API_KEY")
 
-from comet_config import start_comet_experiment
-
-experiment = start_comet_experiment(
+experiment = start(
+    api_key=api_key,
     project_name="rlpinn-convection-beta50-tolerance",
+    workspace="saitama32",
 )
 
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
+sys.path.append(PROJECT_ROOT)
 import time
 import argparse
 import dill
@@ -33,6 +35,17 @@ experiment.log_parameters(
         "description": "farm_transitions_convection_beta50_basic_RL_optimizer",
     }
 )
+
+
+def str2bool(v):
+    if isinstance(v, bool):
+        return v
+    val = str(v).strip().lower()
+    if val in {"true", "True", "1", "yes", "y", "on"}:
+        return True
+    if val in {"false", "False", "0", "no", "n", "off"}:
+        return False
+    raise argparse.ArgumentTypeError(f"Invalid boolean value: {v}")
 
 
 def build_get_model_convection(
@@ -67,7 +80,7 @@ def build_get_model_convection(
     return get_model
 
 
-def main():
+def main(seed_override=None):
     parser = argparse.ArgumentParser()
     parser.add_argument("--name", type=str, default="convection_beta50_rl")
     parser.add_argument("--device", type=str, default="0")
@@ -89,10 +102,15 @@ def main():
     parser.add_argument("--state-h", type=int, default=26)
     parser.add_argument("--state-w", type=int, default=26)
     parser.add_argument("--n-save-models", type=int, default=10)
+    parser.add_argument("--log_key", type=str2bool, nargs="?", const=True, default=False)
+    parser.add_argument("--exp_key", type=str, default="7f7a91cef55d4aeba0e509024977456b")
+    parser.add_argument("--model_step", type=int, default=None)
 
     parser.add_argument("--out", type=str, default="runs_single")
 
     args = parser.parse_args()
+    if seed_override is not None:
+        args.seed = int(seed_override)
 
     date_str = time.strftime("%m.%d-%H.%M.%S", time.localtime())
     save_path = os.path.join(args.out, f"{date_str}-{args.name}")
@@ -180,7 +198,7 @@ def main():
         "learning_rate": 5e-4,
         "resume": True,
         "finetune_AE_model": False,
-        "log_key": True,
+        "log_key": args.log_key,
     }
 
     loss_surface_params = {
@@ -231,7 +249,16 @@ def main():
         "agent_update_iters": 5,
         "lr": args.lr,
         "exp": experiment,
+        "log_key": args.log_key,
         "proj_name": "rlpinn-convection-beta50-farm-transitions",
+    }
+    comparison_params = {
+        "seed": args.seed,
+        "total_epochs": 7000,
+        "experiment_key": args.exp_key,
+        "agent_model_step": args.model_step,
+        "multi_pde_comparison": True,
+        "agent_optimizing_status": "all_epoch",
     }
 
     experiment.log_parameters(
@@ -245,6 +272,7 @@ def main():
             "hidden_layers": args.hidden_layers,
         }
     )
+    experiment.log_parameters(comparison_params)
 
     data = dill.dumps(
         (
@@ -254,16 +282,22 @@ def main():
             AE_model_params,
             AE_train_params,
             loss_surface_params,
+            comparison_params,
         )
     )
     train_process_rl(
         data=data,
         save_path=save_path,
-        device=args.device,
+        device=0,
         seed=args.seed,
         rl_agent_params=rl_agent_params,
+        comparison_params=comparison_params,
     )
 
 
 if __name__ == "__main__":
-    main()
+    seeds = [123, 234, 345, 456, 567, 678, 789, 890, 901, 1012]
+
+    for seed in seeds:
+        print(f"\nStarting experiment with seed = {seed}")
+        main(seed_override=seed)
