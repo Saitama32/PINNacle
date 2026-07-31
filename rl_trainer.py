@@ -84,7 +84,7 @@ def _serialize_solver_models(solver_models):
     return serialized_models
 
 
-def _build_torch_optimizer(opt_name: str, params, action: Dict[str, Any]):
+def _build_torch_optimizer(opt_name: str, params, action: Dict[str, Any], model=None):
 
     name = (opt_name or "").lower()
     opt_params = action.get("params", {})
@@ -135,7 +135,7 @@ def _build_torch_optimizer(opt_name: str, params, action: Dict[str, Any]):
         )
         return "PSO"  # deepxde/optimizers/pytorch/pso.PSO
 
-    raise ValueError(f"Unknown optimizer type: {opt_name}. Expected Adam / LBFGS / PSO.")
+    raise ValueError(f"Unknown optimizer type: {opt_name}. Expected Adam / SOAP / Muon / LBFGS / PSO.")
 
 
 def _extract_weighted_train_loss(model) -> float:
@@ -289,7 +289,7 @@ def run_deepxde_rl_training(
                 if chunk_iters <= 0:
                     comparison_budget_exhausted = True
                     break
-            torch_opt = _build_torch_optimizer(action["type"], model.net.parameters(), action)
+            torch_opt = _build_torch_optimizer(action["type"], model.net.parameters(), action, model=model.net)
 
 
             model.compile(torch_opt, loss_weights=loss_weights)

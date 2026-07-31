@@ -143,6 +143,8 @@ def main(seed_override=None):
         "Adam": {"lr": [1e-2, 1e-3, 1e-4], "epochs": [100, 1000, 2500]},
         "LBFGS": {"lr": [1, 5e-1, 1e-1], "epochs": [100, 500, 1000]},
         "PSO": {"lr": [0.0, 1e-3, 1e-4], "epochs": [100, 200, 300]},
+        "SOAP": {"lr": [1e-2, 1e-3, 3e-4], "epochs": [100, 1000, 2500],},
+        "Muon": {"lr": [2e-2, 1e-2, 5e-3], "epochs": [100, 1000, 2500]},
     }
 
     AE_model_params = {

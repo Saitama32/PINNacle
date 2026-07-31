@@ -1,7 +1,7 @@
 #!/bin/bash
 # Automatic launch of convection_chain.py with GPU distribution
 
-SCRIPT="experiments/convection/convection_chain.py"
+SCRIPT="experiments/convection/convection_chain_expand_set.py"
 
 LOG_KEY="true"
 EXP_KEY_1="7cb70254b82349c48ee19af951694f3d"
