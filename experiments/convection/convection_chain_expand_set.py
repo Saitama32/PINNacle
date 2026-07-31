@@ -10,7 +10,7 @@ api_key = os.getenv("COMET_API_KEY")
 
 experiment = start(
     api_key=api_key,
-    project_name="rlpinn-convection-beta50-tolerance",
+    project_name="rlpinn-convection-beta50-expand-set_comparison",
     workspace="saitama32",
 )
 
