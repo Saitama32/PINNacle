@@ -5,9 +5,9 @@ SCRIPT="experiments/convection/convection_chain.py"
 
 LOG_KEY="true"
 EXP_KEY_1="7cb70254b82349c48ee19af951694f3d"
-STEP_1=800
+STEP_1=1000
 EXP_KEY_2="bc6c3529542b415c885b06c2265ff1ea"
-STEP_2=800
+STEP_2=1000
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
