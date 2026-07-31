@@ -229,9 +229,6 @@ def _print_offline_greedy_chain_diagnostic(agent, max_states=16):
         (position, transition.state, int(transition.action[0]))
         for position, (_, transition) in enumerate(chain)
     ]
-    final_next_state = chain[-1][1].next_state
-    if isinstance(final_next_state, dict):
-        state_rows.append((len(chain), final_next_state, None))
 
     if len(state_rows) > max_states:
         selected = np.linspace(
@@ -269,11 +266,7 @@ def _print_offline_greedy_chain_diagnostic(agent, max_states=16):
             if top_values.shape[1] > 1
             else float("nan")
         )
-        replay_name = (
-            agent.i2opt[replay_action]
-            if replay_action is not None
-            else "<terminal-next>"
-        )
+        replay_name = agent.i2opt[replay_action]
         q_text = ", ".join(
             f"{agent.i2opt[action_idx]}={float(q_values[row_index, action_idx]):.3f}"
             for action_idx in agent.i2opt
