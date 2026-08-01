@@ -188,8 +188,6 @@ class DQNAgent:
             delta = torch.zeros_like(total)
 
         x = torch.stack((total, oper, bnd, delta), dim=0)   # (4,26,26)
-        if x.dim() == 2:
-            x = x.unsqueeze(-1)
         return x
 
     def _get_param_act_idx(self, action_i, pname):
