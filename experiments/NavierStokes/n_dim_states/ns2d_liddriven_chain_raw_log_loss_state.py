@@ -1,4 +1,4 @@
-import os
+﻿import os
 os.environ["DDEBACKEND"] = "pytorch"
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 import sys
@@ -11,7 +11,7 @@ api_key = os.getenv("COMET_API_KEY")
 
 experiment = start(
     api_key=api_key,
-    project_name="rlpinn-poisson3d-complexgeometry-optimization-raw-loss-no-log-improve-nn",
+    project_name="rlpinn-ns2d-liddriven-optimization-raw-loss-log-improve-nn",
     workspace="saitama32",
 )
 
@@ -23,7 +23,7 @@ import numpy as np
 import torch
 import deepxde as dde
 
-from src.pde.poisson import Poisson3D_ComplexGeometry
+from src.pde.ns import NS2D_LidDriven
 from src.utils.args import parse_hidden_layers
 from src.utils.callbacks import TesterCallback, PlotCallback, LossCallback
 from rl_trainer import train_process_rl
@@ -32,13 +32,13 @@ from rl_trainer import train_process_rl
 experiment.log_parameters({
     "param": "v_1",
     "reward_function": "v_2",
-    "description": "optimization_poisson3d_complexgeometry_raw_loss_state",
+    "description": "optimization_ns2d_liddriven_raw_log_loss_state",
 })
 
 
-def build_get_model_poisson3d_complexgeometry(hidden_layers: str, **pde_kwargs):
+def build_get_model_ns2d_liddriven(hidden_layers: str, datapath: str, a: float, nu: float):
     def get_model():
-        pde = Poisson3D_ComplexGeometry(**pde_kwargs)
+        pde = NS2D_LidDriven(datapath=datapath, a=a, nu=nu)
 
         layers = [pde.input_dim] + parse_hidden_layers(argparse.Namespace(hidden_layers=hidden_layers)) + [pde.output_dim]
         net = dde.nn.FNN(layers, "tanh", "Glorot normal")
@@ -62,9 +62,12 @@ def build_get_model_poisson3d_complexgeometry(hidden_layers: str, **pde_kwargs):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--name", type=str, default="poisson3d_complexgeometry_rl")
+    parser.add_argument("--name", type=str, default="ns2d_liddriven_rl")
     parser.add_argument("--device", type=str, default="0")
     parser.add_argument("--seed", type=int, default=1234)
+    parser.add_argument("--datapath", type=str, default="ref/lid_driven_a4.dat")
+    parser.add_argument("--a", type=float, default=4.0)
+    parser.add_argument("--nu", type=float, default=1e-2)
     parser.add_argument("--hidden-layers", type=str, default="100*5")
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--log-every", type=int, default=100)
@@ -72,7 +75,6 @@ def main():
     parser.add_argument("--n-trajectories", type=int, default=1000)
     parser.add_argument("--n-save-models", type=int, default=10)
     parser.add_argument("--out", type=str, default="runs_single")
-    parser.add_argument("--datapath", type=str, default="ref/poisson_3d.dat", help="Reference data path")
 
     args = parser.parse_args()
 
@@ -80,9 +82,8 @@ def main():
     save_path = os.path.join(args.out, f"{date_str}-{args.name}")
     os.makedirs(save_path, exist_ok=True)
 
-    pde_kwargs = {"datapath": args.datapath}
-    get_model = build_get_model_poisson3d_complexgeometry(args.hidden_layers, **pde_kwargs)
-    get_model_rec = build_get_model_poisson3d_complexgeometry(args.hidden_layers, **pde_kwargs)
+    get_model = build_get_model_ns2d_liddriven(args.hidden_layers, args.datapath, args.a, args.nu)
+    get_model_rec = build_get_model_ns2d_liddriven(args.hidden_layers, args.datapath, args.a, args.nu)
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     latent_dim = 1
@@ -103,7 +104,7 @@ def main():
 
     optimizers = {
         "Adam": {"lr": [1e-2, 1e-3, 1e-4], "epochs": [100, 1000, 2500]},
-        "LBFGS": {"lr": [1, 5e-1, 1e-1], "epochs": [100, 500, 1000]},
+        "LBFGS": {"lr": [1, 5e-1, 1e-1], "epochs": [100, 500, 1500]},
         "PSO": {"lr": [0.0, 1e-3, 1e-4], "epochs": [100, 200, 300]},
     }
 
@@ -150,7 +151,7 @@ def main():
     loss_surface_params = {
         "state_type": "raw_loss",
         "raw_loss_state_len": args.n_save_models,
-        "raw_loss_log_state": False,
+        "raw_loss_log_state": True,
         "loss_types": ["loss_total", "loss_oper", "loss_bnd"],
         "every_nth": 1,
         "num_of_layers": 3,
@@ -179,9 +180,9 @@ def main():
     rl_agent_params = {
         "n_save_models": args.n_save_models,
         "n_trajectories": args.n_trajectories,
-        "tolerance": 0.824311852455139,
-        "use_tol": True,
-        "new_tol": False,
+        "tolerance": 0.00810541202508866,
+        "use_tol": False,
+        "new_tol": True,
         "prev_tol": 0.0,
         "stuck_threshold": 10,
         "min_loss_change": 1e-7,
@@ -198,7 +199,7 @@ def main():
         "lr": 1e-3,
         "exp": experiment,
         "log_key": False,
-        "proj_name": "rlpinn-poisson3d-complexgeometry-rebuild-buffer-raw-loss-no-log",
+        "proj_name": "rlpinn-ns2d-liddriven-rebuild-buffer-raw-loss-log",
     }
 
     experiment.log_parameters(rl_agent_params)

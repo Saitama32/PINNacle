@@ -1,4 +1,4 @@
-import os
+﻿import os
 os.environ["DDEBACKEND"] = "pytorch"
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 import sys
@@ -11,7 +11,7 @@ api_key = os.getenv("COMET_API_KEY")
 
 experiment = start(
     api_key=api_key,
-    project_name="rlpinn-poisson3d-complexgeometry-optimization-raw-loss-no-log-improve-nn",
+    project_name="rlpinn-poisson3d-complexgeometry-optimization-raw-loss-log-improve-nn",
     workspace="saitama32",
 )
 
@@ -32,7 +32,7 @@ from rl_trainer import train_process_rl
 experiment.log_parameters({
     "param": "v_1",
     "reward_function": "v_2",
-    "description": "optimization_poisson3d_complexgeometry_raw_loss_state",
+    "description": "optimization_poisson3d_complexgeometry_raw_log_loss_state",
 })
 
 
@@ -150,7 +150,7 @@ def main():
     loss_surface_params = {
         "state_type": "raw_loss",
         "raw_loss_state_len": args.n_save_models,
-        "raw_loss_log_state": False,
+        "raw_loss_log_state": True,
         "loss_types": ["loss_total", "loss_oper", "loss_bnd"],
         "every_nth": 1,
         "num_of_layers": 3,
@@ -198,7 +198,7 @@ def main():
         "lr": 1e-3,
         "exp": experiment,
         "log_key": False,
-        "proj_name": "rlpinn-poisson3d-complexgeometry-rebuild-buffer-raw-loss-no-log",
+        "proj_name": "rlpinn-poisson3d-complexgeometry-rebuild-buffer-raw-loss-log",
     }
 
     experiment.log_parameters(rl_agent_params)

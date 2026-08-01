@@ -176,7 +176,7 @@ def main():
     rl_agent_params = {
         "n_save_models": args.n_save_models,
         "n_trajectories": args.n_trajectories,
-        "tolerance": 0.0,
+        "tolerance": 0.824311852455139,
         "use_tol": True,
         "new_tol": False,
         "prev_tol": 0.0,
@@ -195,7 +195,7 @@ def main():
         "lr": 1e-3,
         "exp": experiment,
         "log_key": False,
-        "proj_name": "rlpinn-poisson3d-complexgeometry-rebuild-buffer-2-dim",
+        "proj_name": "rlpinn-poisson3d-complexgeometry-tolerance",
     }
 
     experiment.log_parameters(rl_agent_params)
