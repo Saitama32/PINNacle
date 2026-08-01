@@ -2,6 +2,7 @@ matplotlib
 pandas
 scipy
 scikit-learn
+scikit-optimize
 numpy
 gym
 #==1.6.0
