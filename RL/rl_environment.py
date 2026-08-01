@@ -49,6 +49,7 @@ class EnvRLOptimizer(gym.Env):
         self.state_type = self.loss_surface_params.get("state_type", "loss_surface")
         self.equation_params = equation_params
         self.callbacks = callbacks
+        self.n_save_models = n_save_models
 
         self.visualization_model = None
         if self.state_type != "raw_loss":
@@ -73,7 +74,6 @@ class EnvRLOptimizer(gym.Env):
 
         self.tolerance = tolerance
         self.counter = 1
-        self.n_save_models = n_save_models
 
         # Reward shaping config.
         self.repeat_k = 3
