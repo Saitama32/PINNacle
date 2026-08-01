@@ -68,7 +68,7 @@ def add_args(parser):
     parser.add_argument("--hidden-layers", type=str, default="100*5")
     parser.add_argument("--loss-weight", type=str, default="")
 
-    parser.add_argument("--iter", type=int, default=20000)
+    parser.add_argument("--iter", type=int, default=7000)
     parser.add_argument("--log-every", type=int, default=100)
     parser.add_argument("--plot-every", type=int, default=2000)
     parser.add_argument("--n-save-models", type=int, default=10)
