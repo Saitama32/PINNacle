@@ -197,8 +197,8 @@ def main():
         "agent_update_iters": 5,
         "lr": 1e-3,
         "exp": experiment,
-        "log_key": False,
-        "proj_name": "rlpinn-poisson3d-complexgeometry-rebuild-buffer-raw-loss-log",
+        "log_key": True,
+        "proj_name": "rlpinn-poisson3d-complexgeometry-rebuild-buffer-raw-loss-no-log",
     }
 
     experiment.log_parameters(rl_agent_params)

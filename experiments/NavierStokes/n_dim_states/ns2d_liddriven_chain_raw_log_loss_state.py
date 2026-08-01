@@ -198,8 +198,8 @@ def main():
         "agent_update_iters": 5,
         "lr": 1e-3,
         "exp": experiment,
-        "log_key": False,
-        "proj_name": "rlpinn-ns2d-liddriven-rebuild-buffer-raw-loss-log",
+        "log_key": True,
+        "proj_name": "rlpinn-ns2d-liddriven-rebuild-buffer-raw-loss-no-log",
         "recover_current_loss_from_solver_models": True,
         "recompute_chain_rewards": True,
     }
