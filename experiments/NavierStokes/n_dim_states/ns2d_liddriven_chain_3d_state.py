@@ -177,7 +177,7 @@ def main():
     rl_agent_params = {
         "n_save_models": args.n_save_models,
         "n_trajectories": args.n_trajectories,
-        "tolerance": 0.00810541202508866,
+        "tolerance": 0.000352056,
         "use_tol": False,
         "new_tol": True,
         "prev_tol": 0.0,
@@ -199,6 +199,8 @@ def main():
         "proj_name": "rlpinn-ns2d-liddriven-rebuild-buffer-3-dim",
         "recover_current_loss_from_solver_models": True,
         "recompute_chain_rewards": True,
+        "offline_pretrain_steps": 500,
+        "offline_pretrain_iters": 5,
     }
 
     experiment.log_parameters(rl_agent_params)
