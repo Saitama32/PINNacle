@@ -1,0 +1,385 @@
+import os
+import sys
+
+os.environ["DDEBACKEND"] = "pytorch"
+os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
+
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
+sys.path.append(PROJECT_ROOT)
+
+from dotenv import load_dotenv
+from comet_ml import start
+
+load_dotenv(os.path.join(PROJECT_ROOT, ".env"))
+
+import argparse
+import dill
+import time
+
+import deepxde as dde
+import numpy as np
+import torch
+
+from RL.rl_utils.load_buffer.load_exps_from_comet import (
+    collect_comet_transition_entries,
+    rebuild_single_comet_experiment_transitions,
+)
+from RL.rl_utils.load_buffer.rebuild_states_from_solver_models import (
+    rebuild_transitions_states_from_solver_models,
+)
+from rl_trainer import train_process_rl
+from src.pde.poisson import Poisson3D_ComplexGeometry
+from src.utils.args import parse_hidden_layers
+from src.utils.callbacks import LossCallback, PlotCallback, TesterCallback
+
+
+dde.config.set_default_float("float32")
+torch.set_default_dtype(torch.float32)
+
+TARGET_PROJECT_NAME = "rlpinn_poisson3d_complexgeometry_rebuild_buffer_1_dim"
+DEFAULT_SOURCE_PROJECT_NAME = "rlpinn-poisson3d-complexgeometry-tolerance"
+LOCAL_OUTPUT_DIR = os.path.join("transitions_rebuilt", "poisson3d_complexgeometry_1_dim")
+
+
+def build_get_model_poisson3d_complexgeometry(hidden_layers: str, datapath: str):
+    def get_model():
+        pde = Poisson3D_ComplexGeometry(datapath=datapath)
+
+        layers = [pde.input_dim] + parse_hidden_layers(argparse.Namespace(hidden_layers=hidden_layers)) + [pde.output_dim]
+        net = dde.nn.FNN(layers, "tanh", "Glorot normal").float()
+
+        loss_weights = np.ones(pde.num_loss, dtype=float)
+        for i, c in enumerate(pde.loss_config):
+            loss_type = c.get("type", "")
+            if loss_type in ("boundary", "initial", "ic"):
+                loss_weights[i] = 100.0
+            elif loss_type == "pde":
+                loss_weights[i] = 1.0
+            else:
+                loss_weights[i] = 1.0
+
+        model = pde.create_model(net)
+        return model, loss_weights
+
+    return get_model
+
+
+def normalize_experiment_keys(experiment_keys):
+    if experiment_keys is None:
+        return None
+    keys = tuple(key.strip() for key in experiment_keys if key and key.strip())
+    if not keys:
+        raise ValueError("--source-experiment-keys was provided but no keys were passed.")
+    return keys
+
+
+def rebuild_project_comet_ae_state_transitions(
+    *,
+    source_project_name,
+    target_experiment,
+    output_dir,
+    AE_model_params,
+    AE_train_params,
+    loss_surface_params,
+    max_exps_last,
+    duration_grater_hours,
+    tolerance,
+    prev_tol,
+    use_tol,
+    new_tol,
+    num_workers,
+    experiment_keys=None,
+):
+    if not source_project_name:
+        raise ValueError("source_project_name is required.")
+    if target_experiment is None:
+        raise ValueError("target_experiment is required.")
+
+    os.makedirs(output_dir, exist_ok=True)
+    if experiment_keys is not None:
+        print(
+            "Loading source Comet project transitions by explicit experiment keys: "
+            f"project={source_project_name}, keys={len(experiment_keys)}"
+        )
+    else:
+        print(
+            "Loading source Comet project transitions by filters: "
+            f"project={source_project_name}, max_exps_last={max_exps_last}, "
+            f"duration_grater_hours={duration_grater_hours}, tolerance={tolerance}, "
+            f"prev_tol={prev_tol}, use_tol={use_tol}, new_tol={new_tol}"
+        )
+
+    transitions = collect_comet_transition_entries(
+        max_exps_last=max_exps_last,
+        duration_grater_hours=duration_grater_hours,
+        save_dir=None,
+        tolerance=tolerance,
+        prev_tol=prev_tol,
+        use_tol=use_tol,
+        new_tol=new_tol,
+        proj_name=source_project_name,
+        mark_states=None,
+        num_workers=num_workers,
+        experiment_keys=experiment_keys,
+    )
+    if not transitions:
+        print("No transitions loaded from source project.")
+        return []
+
+    print(f"Loaded {len(transitions)} transitions from source project.")
+
+    def log_rebuilt_entry(entry, step):
+        file_path = os.path.join(output_dir, f"transitions_{step}.pt")
+        torch.save(entry, file_path)
+        target_experiment.log_asset(
+            file_path,
+            file_name=f"entry_step_{step}.pt",
+            step=step,
+            overwrite=True,
+        )
+        print(f"Logged 1d AE-state transition to Comet: entry_step_{step}.pt")
+
+    rebuilt_entries = rebuild_transitions_states_from_solver_models(
+        transitions,
+        AE_model_params=AE_model_params,
+        AE_train_params=AE_train_params,
+        loss_surface_params=loss_surface_params,
+        on_rebuilt_entry=log_rebuilt_entry,
+    )
+
+    print(
+        "1d AE-state project rebuild buffer upload complete: "
+        f"{len(rebuilt_entries)} entries logged to Comet, "
+        f"local output_dir={output_dir}"
+    )
+    return rebuilt_entries
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--name", type=str, default="poisson3d_complexgeometry_1d_state_rebuild")
+    parser.add_argument("--device", type=str, default="0")
+    parser.add_argument("--seed", type=int, default=1234)
+    parser.add_argument("--datapath", type=str, default="ref/poisson_3d.dat", help="Reference data path")
+    parser.add_argument("--hidden-layers", type=str, default="100*5")
+    parser.add_argument("--lr", type=float, default=1e-3)
+    parser.add_argument("--log-every", type=int, default=100)
+    parser.add_argument("--plot-every", type=int, default=2000)
+    parser.add_argument("--n-trajectories", type=int, default=1000)
+    parser.add_argument("--n-save-models", type=int, default=10)
+    parser.add_argument("--out", type=str, default=LOCAL_OUTPUT_DIR)
+    parser.add_argument("--rebuild-buffer-only", action="store_true", default=True)
+    parser.add_argument("--source-project-name", type=str, default=DEFAULT_SOURCE_PROJECT_NAME)
+    parser.add_argument("--source-experiment-key", type=str, default=None)
+    parser.add_argument("--source-experiment-keys", nargs="*", default=None)
+    parser.add_argument("--target-project-name", type=str, default=TARGET_PROJECT_NAME)
+    parser.add_argument("--max-exps-last", type=int, default=10)
+    parser.add_argument("--duration-grater-hours", type=float, default=1.0)
+    parser.add_argument("--tolerance", type=float, default=0.0)
+    parser.add_argument("--prev-tol", type=float, default=0.0)
+    parser.add_argument("--new-tol", action="store_true")
+    parser.add_argument("--num-workers", type=int, default=None)
+    parser.add_argument("--no-use-tol", action="store_true")
+
+    args = parser.parse_args()
+
+    experiment = start(
+        api_key=os.getenv("COMET_API_KEY"),
+        project_name=args.target_project_name,
+        workspace=os.getenv("COMET_WORKSPACE", "saitama32"),
+    )
+
+    source_experiment_keys = None if args.source_experiment_key else normalize_experiment_keys(args.source_experiment_keys)
+    if args.source_experiment_key:
+        source_mode = "single_experiment"
+        source_run_name = args.source_experiment_key
+    elif source_experiment_keys is not None:
+        source_mode = "experiment_key_list"
+        source_run_name = f"explicit_keys_{len(source_experiment_keys)}"
+    else:
+        source_mode = "filtered_project"
+        source_run_name = args.source_project_name
+    output_dir = os.path.join(args.out, source_run_name)
+
+    experiment.log_parameters({
+        "param": "v_1",
+        "reward_function": "v_2",
+        "description": (
+            "rebuild_poisson3d_complexgeometry_buffer_1d_state"
+            if args.rebuild_buffer_only
+            else "optimization_poisson3d_complexgeometry_rl_optimizer_1d_state"
+        ),
+        "rebuild_buffer_only": args.rebuild_buffer_only,
+        "source_project_name": args.source_project_name,
+        "source_experiment_key": args.source_experiment_key,
+        "source_mode": source_mode,
+        "source_experiment_key_count": len(source_experiment_keys or []),
+        "target_project_name": args.target_project_name,
+        "local_output_dir": output_dir,
+        "max_exps_last": args.max_exps_last,
+        "duration_grater_hours": args.duration_grater_hours,
+        "tolerance": args.tolerance,
+        "prev_tol": args.prev_tol,
+        "use_tol": not args.no_use_tol,
+        "new_tol": args.new_tol,
+        "num_workers": args.num_workers,
+    })
+
+    date_str = time.strftime("%m.%d-%H.%M.%S", time.localtime())
+    save_path = os.path.join(args.out, f"{date_str}-{args.name}")
+    os.makedirs(save_path, exist_ok=True)
+
+    get_model = build_get_model_poisson3d_complexgeometry(args.hidden_layers, args.datapath)
+    get_model_rec = build_get_model_poisson3d_complexgeometry(args.hidden_layers, args.datapath)
+
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+
+    train_args = {
+        "iterations": 1,
+        "display_every": args.log_every,
+        "callbacks": [
+            TesterCallback(log_every=args.log_every),
+            PlotCallback(log_every=args.plot_every, fast=True),
+            LossCallback(verbose=True),
+        ],
+        "n_trajectories": args.n_trajectories,
+        "n_save_models": args.n_save_models,
+        "operator_coeff": 1,
+        "bnd_coeff": 1,
+    }
+
+    optimizers = {
+        "Adam": {"lr": [1e-2, 1e-3, 1e-4], "epochs": [100, 1000, 2500]},
+        "LBFGS": {"lr": [1, 5e-1, 1e-1], "epochs": [100, 500, 1500]},
+        "PSO": {"lr": [0.0, 1e-3, 1e-4], "epochs": [100, 200, 300]},
+    }
+
+    latent_dim = 1
+
+    AE_model_params = {
+        "mode": "NN",
+        "num_of_layers": 3,
+        "layers_AE": [991, 125, 15],
+        "num_models": None,
+        "from_last": False,
+        "prefix": "model-",
+        "every_nth": 1,
+        "grid_step": 0.1,
+        "d_max_latent": 2,
+        "anchor_mode": "circle",
+        "rec_weight": 10000.0,
+        "anchor_weight": 0.0,
+        "lastzero_weight": 0.0,
+        "polars_weight": 0.0,
+        "wellspacedtrajectory_weight": 0.0,
+        "gridscaling_weight": 0.0,
+        "latent_dim": latent_dim,
+        "device": device,
+    }
+
+    AE_train_params = {
+        "first_RL_epoch_AE_params": {
+            "epochs": 10000,
+            "patience_scheduler": 4000,
+            "cosine_scheduler_patience": 1200,
+        },
+        "other_RL_epoch_AE_params": {
+            "epochs": 20000,
+            "patience_scheduler": 4000,
+            "cosine_scheduler_patience": 1200,
+        },
+        "batch_size": 32,
+        "every_epoch": 100,
+        "learning_rate": 5e-4,
+        "resume": True,
+        "finetune_AE_model": False,
+        "log_key": True,
+    }
+
+    loss_surface_params = {
+        "loss_types": ["loss_total", "loss_oper", "loss_bnd"],
+        "every_nth": 1,
+        "num_of_layers": 3,
+        "layers_AE": [991, 125, 15],
+        "batch_size": 32,
+        "num_models": None,
+        "from_last": False,
+        "prefix": "model-",
+        "loss_name": "loss_total",
+        "x_range": [-1.25, 1.25, 25],
+        "vmax": -1.0,
+        "vmin": -1.0,
+        "vlevel": 30.0,
+        "key_models": None,
+        "key_modelnames": None,
+        "density_type": "CKA",
+        "density_p": 2,
+        "density_vmax": -1,
+        "density_vmin": -1,
+        "colorFromGridOnly": True,
+        "img_dir": "",
+        "dde_pde_model": get_model_rec,
+        "latent_dim": latent_dim,
+    }
+
+    if args.rebuild_buffer_only:
+        if args.source_experiment_key:
+            rebuild_single_comet_experiment_transitions(
+                source_project_name=args.source_project_name,
+                source_experiment_key=args.source_experiment_key,
+                target_experiment=experiment,
+                output_dir=output_dir,
+                AE_model_params=AE_model_params,
+                AE_train_params=AE_train_params,
+                loss_surface_params=loss_surface_params,
+            )
+        else:
+            rebuild_project_comet_ae_state_transitions(
+                source_project_name=args.source_project_name,
+                target_experiment=experiment,
+                output_dir=output_dir,
+                AE_model_params=AE_model_params,
+                AE_train_params=AE_train_params,
+                loss_surface_params=loss_surface_params,
+                max_exps_last=args.max_exps_last,
+                duration_grater_hours=args.duration_grater_hours,
+                tolerance=args.tolerance,
+                prev_tol=args.prev_tol,
+                use_tol=not args.no_use_tol,
+                new_tol=args.new_tol,
+                num_workers=args.num_workers,
+                experiment_keys=source_experiment_keys,
+            )
+        return
+
+    rl_agent_params = {
+        "n_save_models": args.n_save_models,
+        "n_trajectories": args.n_trajectories,
+        "tolerance": 0.000068,
+        "prev_tol": 0,
+        "stuck_threshold": 10,
+        "min_loss_change": 1e-7,
+        "min_grad_norm": 1e-5,
+        "rl_buffer_size": 10000,
+        "rl_batch_size": 32,
+        "n_transitions_reinit": 2000,
+        "gamma": 0.9,
+        "rl_reward_method": "absolute",
+        "reward_operator_coeff": 1,
+        "reward_boundary_coeff": 1,
+        "agent_min_buffer": 32,
+        "agent_update_iters": 5,
+        "lr": args.lr,
+        "exp": experiment,
+        "log_key": True,
+        "proj_name": args.source_project_name,
+    }
+
+    experiment.log_parameters(rl_agent_params)
+
+    data = dill.dumps((get_model, train_args, optimizers, AE_model_params, AE_train_params, loss_surface_params))
+    train_process_rl(data=data, save_path=save_path, device=args.device, seed=args.seed, rl_agent_params=rl_agent_params)
+
+
+if __name__ == "__main__":
+    main()
