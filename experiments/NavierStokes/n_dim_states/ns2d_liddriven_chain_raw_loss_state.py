@@ -200,6 +200,8 @@ def main():
         "exp": experiment,
         "log_key": False,
         "proj_name": "rlpinn-ns2d-liddriven-rebuild-buffer-raw-loss-no-log",
+        "recover_current_loss_from_solver_models": True,
+        "recompute_chain_rewards": True,
     }
 
     experiment.log_parameters(rl_agent_params)

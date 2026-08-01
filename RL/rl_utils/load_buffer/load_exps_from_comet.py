@@ -394,6 +394,25 @@ def set_transition_rewards_from_next_loss(
     return transitions
 
 
+def set_transition_rewards_from_current_loss(transitions):
+    updated = 0
+    skipped = 0
+
+    for tr in transitions:
+        loss = _valid_scalar(tr.get("current_loss"))
+        if loss is None:
+            skipped += 1
+            continue
+
+        tr["reward"] = float(loss)
+        updated += 1
+
+    if skipped:
+        print(f"Skipped {skipped} transitions without valid current_loss reward.")
+    print(f"Set reward=current_loss for {updated} transitions.")
+    return transitions
+
+
 def recompute_chain_rewards_for_terminal_chains(
     transitions,
     loss_key="loss_total",
@@ -557,6 +576,7 @@ def _process_loaded_transition_block(
             entries,
             dde_pde_model=dde_pde_model,
         )
+        entries = set_transition_rewards_from_current_loss(entries)
 
     if set_reward_from_next_loss:
         entries = set_transition_rewards_from_next_loss(
