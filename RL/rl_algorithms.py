@@ -18,6 +18,7 @@ from RL.rl_utils.per_buffer import PrioritizedReplayBuffer, Transition
 from RL.rl_utils.per_offline import recalc_all_priorities_batched
 from RL.rl_utils.logger import log_priority_to_comet
 from RL.rl_utils.metrics import collect_policy_metrics_by_seq_position
+from RL.rl_utils.informativity_metrics import collect_chain_mc_metrics
 
 
 EPS_START = 0.5
@@ -187,6 +188,8 @@ class DQNAgent:
             delta = torch.zeros_like(total)
 
         x = torch.stack((total, oper, bnd, delta), dim=0)   # (4,26,26)
+        if x.dim() == 2:
+            x = x.unsqueeze(-1)
         return x
 
     def _get_param_act_idx(self, action_i, pname):
@@ -351,6 +354,7 @@ class DQNAgent:
         loss_arr_optim_class, loss_arr_param = [], []
         all_rewards, all_dones = [], []
         model_reward_i_ar = []
+        chain_mc_metric_values = defaultdict(list)
 
         for _ in range(iters):
             if len(self.replay_buffer) < self.batch_size:
@@ -537,6 +541,10 @@ class DQNAgent:
                         f"train_action/{optim_name}/target_mean"
                     ] = float(y_opt[action_mask].mean().item())
 
+                chain_mc_metrics = collect_chain_mc_metrics(self, seqs, q_sa, self.gamma)
+                for metric_name, metric_value in chain_mc_metrics.items():
+                    chain_mc_metric_values[metric_name].append(metric_value)
+
 
             print(f"Loss for params: {loss_param}")
             print(f"Loss for optim: {loss_opt}")
@@ -592,6 +600,10 @@ class DQNAgent:
             "lambda_weight_max": lambda_weight_max,
         }
 
+        metrics_to_log.update({
+            metric_name: statistics.mean(values) if values else 0.0
+            for metric_name, values in chain_mc_metric_values.items()
+        })
         metrics_to_log.update(policy_position_metrics)
         metrics_to_log.update(action_diagnostics)
 
