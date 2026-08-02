@@ -682,7 +682,7 @@ def add_loss_reward_to_non_terminal_transitions(entries, loss_key="loss_total"):
 def collect_all_comet_transitions(
     replay_buffer=None,
     max_exps_last=10,
-    duration_grater_hours=1,
+    duration_grater_hours=0.07,
     save_dir=None,
     tolerance=0.0,
     prev_tol=0.0,
