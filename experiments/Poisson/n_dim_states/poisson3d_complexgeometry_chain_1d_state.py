@@ -196,6 +196,10 @@ def main():
         "exp": experiment,
         "log_key": False,
         "proj_name": "rlpinn-poisson3d-complexgeometry-rebuild-buffer-1-dim",
+        "recover_current_loss_from_solver_models": True,
+        "recompute_chain_rewards": True,
+        "offline_pretrain_steps": 500,
+        "offline_pretrain_iters": 5,
     }
 
     experiment.log_parameters(rl_agent_params)
