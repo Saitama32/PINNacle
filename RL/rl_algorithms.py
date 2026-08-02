@@ -164,6 +164,8 @@ class DQNAgent:
         total = st['loss_total'].to(self.device)
         oper  = st['loss_oper'].to(self.device)
         bnd   = st['loss_bnd'].to(self.device)
+        if 'loss_ic' in st:
+            bnd = bnd + st['loss_ic'].to(self.device)
 
         if 'delta' in st:
             delta = st['delta'].to(self.device)
