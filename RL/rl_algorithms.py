@@ -126,9 +126,9 @@ class DQNAgent:
 
         self.model_optim = DQN_optim(len(self.i2opt)).to(device)
         self.model_params = DQN_params(self.optimizer_dict).to(device)
-        if self.exp is not None:
-            watch(self.model_optim, log_step_interval = 200)
-            watch(self.model_params, log_step_interval = 200)
+        # if self.exp is not None:
+        #     watch(self.model_optim, log_step_interval = 200)
+        #     watch(self.model_params, log_step_interval = 200)
 
         self.reinit_target()
 
