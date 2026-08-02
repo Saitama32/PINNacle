@@ -2,6 +2,7 @@ import os
 os.environ["DDEBACKEND"] = "pytorch"
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 import sys
+import argparse
 from dotenv import load_dotenv
 from comet_ml import start
 
@@ -9,15 +10,27 @@ PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..
 load_dotenv(os.path.join(PROJECT_ROOT, ".env"))
 api_key = os.getenv("COMET_API_KEY")
 
+ablation_parser = argparse.ArgumentParser(add_help=False)
+ablation_parser.add_argument(
+    "--ablation",
+    choices=("full", "no_per", "no_soft_watkins", "no_trust_region"),
+    default="full",
+)
+args, _ = ablation_parser.parse_known_args()
+
 experiment = start(
     api_key=api_key,
-    project_name="rlpinn_poisson3d_complexgeometry_agent_ablation",
+    project_name=f"rlpinn_poisson3d_complexgeometry_agent_ablation_{args.ablation}",
     workspace="saitama32",
 )
+experiment.log_parameters({
+    "param": "v_1",
+    "reward_function": "v_2",
+    "description": "optimization_poisson3d_complexgeometry_2d_state",
+})
 
 sys.path.append(PROJECT_ROOT)
 import time
-import argparse
 import dill
 import numpy as np
 import torch
@@ -27,13 +40,6 @@ from src.pde.poisson import Poisson3D_ComplexGeometry
 from src.utils.args import parse_hidden_layers
 from src.utils.callbacks import TesterCallback, PlotCallback, LossCallback
 from rl_trainer import train_process_rl
-
-
-experiment.log_parameters({
-    "param": "v_1",
-    "reward_function": "v_2",
-    "description": "optimization_poisson3d_complexgeometry_2d_state",
-})
 
 
 ABLATION_FLAGS = {
