@@ -4,6 +4,7 @@ os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 import sys
 from comet_ml import start
 from dotenv import load_dotenv
+
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
 load_dotenv(os.path.join(PROJECT_ROOT, ".env"))
 api_key = os.getenv("COMET_API_KEY")
@@ -19,7 +20,7 @@ for _i, _arg in enumerate(sys.argv):
 
 experiment = start(
     api_key=api_key,
-    project_name=f"rlpinn_burgers1d_{_state_type_for_comet}_comparison",
+    project_name=f"rlpinn_poisson3d_complexgeometry_{_state_type_for_comet}_comparison",
     workspace="saitama32",
 )
 
@@ -31,7 +32,7 @@ import numpy as np
 import torch
 import deepxde as dde
 
-from src.pde.burgers import Burgers1D
+from src.pde.poisson import Poisson3D_ComplexGeometry
 from src.utils.args import parse_hidden_layers
 from src.utils.callbacks import TesterCallback, PlotCallback, LossCallback
 from rl_trainer import train_process_rl
@@ -41,9 +42,9 @@ dde.config.set_default_float("float32")
 torch.set_default_dtype(torch.float32)
 
 
-def build_get_model_burgers1d(hidden_layers: str):
+def build_get_model_poisson3d_complexgeometry(hidden_layers: str, **pde_kwargs):
     def get_model():
-        pde = Burgers1D()
+        pde = Poisson3D_ComplexGeometry(**pde_kwargs)
 
         layers = [pde.input_dim] + parse_hidden_layers(argparse.Namespace(hidden_layers=hidden_layers)) + [pde.output_dim]
         net = dde.nn.FNN(layers, "tanh", "Glorot normal")
@@ -67,23 +68,24 @@ def build_get_model_burgers1d(hidden_layers: str):
 
 def main(seed_override=None):
     parser = argparse.ArgumentParser()
-    parser.add_argument("--name", type=str, default="burgers1d_rl")
+    parser.add_argument("--name", type=str, default="poisson3d_complexgeometry_rl")
     parser.add_argument("--device", type=str, default="0")
     parser.add_argument("--seed", type=int, default=1234)
     parser.add_argument("--state-type", type=str, choices=("raw", "log_raw", "1d", "2d", "3d"), required=True)
     parser.add_argument("--exp_key", type=str, required=True)
+    parser.add_argument("--model_step", type=int, default=None)
 
     parser.add_argument("--hidden-layers", type=str, default="100*5")
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--log-every", type=int, default=100)
     parser.add_argument("--plot-every", type=int, default=2000)
 
-    # RL config
     parser.add_argument("--n-trajectories", type=int, default=100)
     parser.add_argument("--n-steps-max", type=int, default=1000)
     parser.add_argument("--state-h", type=int, default=26)
     parser.add_argument("--state-w", type=int, default=26)
     parser.add_argument("--n-save-models", type=int, default=10)
+    parser.add_argument("--datapath", type=str, default="ref/poisson_3d.dat")
     parser.add_argument("--out", type=str, default="runs_single")
 
     args = parser.parse_args()
@@ -93,7 +95,7 @@ def main(seed_override=None):
     experiment.log_parameters({
         "param": "v_1",
         "reward_function": "v_2",
-        "description": "comparison_burgers1d_loaded_dqn_final_eval",
+        "description": "comparison_poisson3d_complexgeometry_loaded_dqn_final_eval",
         "state_type": args.state_type,
     })
 
@@ -114,8 +116,9 @@ def main(seed_override=None):
     save_path = os.path.join(args.out, f"{date_str}-{args.name}")
     os.makedirs(save_path, exist_ok=True)
 
-    get_model = build_get_model_burgers1d(args.hidden_layers)
-    get_model_rec = build_get_model_burgers1d(args.hidden_layers)
+    pde_kwargs = {"datapath": args.datapath}
+    get_model = build_get_model_poisson3d_complexgeometry(args.hidden_layers, **pde_kwargs)
+    get_model_rec = build_get_model_poisson3d_complexgeometry(args.hidden_layers, **pde_kwargs)
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -132,19 +135,11 @@ def main(seed_override=None):
         "operator_coeff": 1,
         "bnd_coeff": 1,
     }
+
     optimizers = {
-        "Adam": {
-            "lr": [1e-2, 1e-3, 1e-4],
-            "epochs": [100, 1000, 2500]
-        },
-        "LBFGS": {
-            "lr": [1, 5e-1, 1e-1],
-            "epochs": [100, 500, 1000]
-        },
-        "PSO": {
-            "lr": [0.0, 1e-3, 1e-4],
-            "epochs": [100, 200, 300]
-        },
+        "Adam": {"lr": [1e-2, 1e-3, 1e-4], "epochs": [100, 1000, 2500]},
+        "LBFGS": {"lr": [1, 5e-1, 1e-1], "epochs": [100, 500, 1000]},
+        "PSO": {"lr": [0.0, 1e-3, 1e-4], "epochs": [100, 200, 300]},
     }
 
     AE_model_params = {
@@ -165,7 +160,7 @@ def main(seed_override=None):
         "wellspacedtrajectory_weight": 0.0,
         "gridscaling_weight": 0.0,
         "latent_dim": latent_dim,
-        "device": device
+        "device": device,
     }
 
     AE_train_params = {
@@ -184,7 +179,7 @@ def main(seed_override=None):
         "learning_rate": 5e-4,
         "resume": True,
         "finetune_AE_model": False,
-        "log_key": log_key_for_new_state
+        "log_key": log_key_for_new_state,
     }
 
     loss_surface_params = {
@@ -213,13 +208,13 @@ def main(seed_override=None):
         "colorFromGridOnly": True,
         "img_dir": "",
         "dde_pde_model": get_model_rec,
-        "latent_dim": latent_dim
+        "latent_dim": latent_dim,
     }
 
     rl_agent_params = {
         "n_save_models": args.n_save_models,
         "n_trajectories": args.n_trajectories,
-        "tolerance": 0.000001,
+        "tolerance": 0.824311852455139,
         "prev_tol": 0,
         "stuck_threshold": 10,
         "min_loss_change": 1e-7,
@@ -235,12 +230,14 @@ def main(seed_override=None):
         "agent_update_iters": 5,
         "lr": 1e-3,
         "exp": experiment,
-        "log_key": False
+        "log_key": False,
     }
+
     comparison_params = {
         "seed": args.seed,
         "total_epochs": 7000,
         "experiment_key": args.exp_key,
+        "agent_model_step": args.model_step,
         "multi_pde_comparison": True,
         "agent_optimizing_status": "all_epoch",
         "state_type": args.state_type,
