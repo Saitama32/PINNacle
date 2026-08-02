@@ -1,6 +1,6 @@
 #!/bin/bash
 
-SCRIPT="experiments/state_comparison/burgers1d_compare_chain.py"
+SCRIPT="experiments/Burgers/state_compare/burgers1d_compare.py"
 STATE_TYPE=""
 EXP_KEY_1=""
 EXP_KEY_2=""
