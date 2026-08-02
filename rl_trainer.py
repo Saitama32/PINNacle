@@ -29,7 +29,7 @@ torch.set_default_dtype(torch.float32)
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
-output_dir = os.path.join('.', 'transitions')
+output_dir = os.getenv("RL_TRANSITIONS_DIR", os.path.join('.', 'transitions'))
 
 os.makedirs(output_dir, exist_ok=True)
 
