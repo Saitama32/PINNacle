@@ -349,6 +349,15 @@ def run_deepxde_rl_training(
                         include_terminal_starts=rl_agent_params.get(
                             "include_terminal_starts", False
                         ),
+                        use_prioritized_replay=rl_agent_params.get(
+                            "use_prioritized_replay", True
+                        ),
+                        use_soft_watkins=rl_agent_params.get(
+                            "use_soft_watkins", True
+                        ),
+                        use_trust_region_masking=rl_agent_params.get(
+                            "use_trust_region_masking", True
+                        ),
                         exp = rl_agent_params["exp"],
                         model_snapshot_dir=f"{save_path}/rl_model_snapshots")
 

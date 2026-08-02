@@ -14,7 +14,7 @@ import statistics
 from pathlib import Path
 from RL.rl_utils.DQN_classes import DQN_optim, DQN_params
 from comet_ml.integration.pytorch import watch
-from RL.rl_utils.per_buffer import PrioritizedReplayBuffer, Transition
+from RL.rl_utils.per_buffer import PrioritizedReplayBuffer, Transition, UniformReplayBuffer
 from RL.rl_utils.per_offline import recalc_all_priorities_batched
 from RL.rl_utils.logger import log_priority_to_comet
 from RL.rl_utils.metrics import collect_policy_metrics_by_seq_position
@@ -31,6 +31,9 @@ class DQNAgent:
                  epsilon_decay=0.995, epsilon_min=0.01, memory_size=50000, batch_size=128, n_transitions_reinit = 2000, per_alpha =  0.6, per_beta0 = 0.4, device='cpu', exp=None,
                  warmup_updates: int = 200, recalc_batch_size: int = 32, success_frac = 0.2,
                  include_terminal_starts: bool = False,
+                 use_prioritized_replay: bool = True,
+                 use_soft_watkins: bool = True,
+                 use_trust_region_masking: bool = True,
                  model_snapshot_dir="rl_model_snapshots"):
         self.n_observation = n_observation
         self.n_action = n_action
@@ -40,6 +43,9 @@ class DQNAgent:
         self.epsilon_min = epsilon_min
         self.batch_size = batch_size
         self.include_terminal_starts = include_terminal_starts
+        self.use_prioritized_replay = use_prioritized_replay
+        self.use_soft_watkins = use_soft_watkins
+        self.use_trust_region_masking = use_trust_region_masking
         self.n_transitions_reinit = n_transitions_reinit
         self.steps_done = 0
         self.epsilon_step_offset = 0
@@ -77,7 +83,10 @@ class DQNAgent:
         self.per_alpha = per_alpha
         self.per_beta  = per_beta0
         self.per_beta_inc = (1.0 - per_beta0) / 100000.0
-        self.replay_buffer = PrioritizedReplayBuffer(memory_size, alpha=per_alpha)
+        if self.use_prioritized_replay:
+            self.replay_buffer = PrioritizedReplayBuffer(memory_size, alpha=per_alpha)
+        else:
+            self.replay_buffer = UniformReplayBuffer(memory_size)
 
         # --- Success replay (один буфер, логическая подселекция) ---
         # Доля последовательностей, которые берем из успешных эпизодов
@@ -90,8 +99,8 @@ class DQNAgent:
         #warmup
         self.warmup_updates_total = warmup_updates
         self.warmup_updates_done = 0
-        self.warmup_active = warmup_updates > 0
-        self.recalc_done = False
+        self.warmup_active = self.use_prioritized_replay and warmup_updates > 0
+        self.recalc_done = not self.use_prioritized_replay
         self.recalc_batch_size = recalc_batch_size
         self.transition_counter = 0
 
@@ -107,7 +116,10 @@ class DQNAgent:
             "EPS_START": EPS_START,
             "EPS_END": EPS_END,
             "EPS_DECAY": EPS_DECAY,
-            "TAU": TAU
+            "TAU": TAU,
+            "use_prioritized_replay": self.use_prioritized_replay,
+            "use_soft_watkins": self.use_soft_watkins,
+            "use_trust_region_masking": self.use_trust_region_masking,
         }
         if self.exp is not None:
             self.exp.log_parameters(epsilon_and_warmap_params)
@@ -219,7 +231,10 @@ class DQNAgent:
         rb = self.replay_buffer
 
         # --- Warmup: только uniform-выборка ---
-        if uniform:
+        # PER warmup deliberately excludes success replay. In the no-PER
+        # ablation uniform sampling is the main policy, so success replay is
+        # still mixed below exactly as in the full agent.
+        if uniform and self.use_prioritized_replay:
             seqs, idxs, is_w = rb.sample_sequences(
                 batch_size,
                 L,
@@ -231,13 +246,16 @@ class DQNAgent:
             return seqs, idxs, is_w
 
         # --- Основной режим: PER + при необходимости success-эпизоды ---
+        main_uniform = not self.use_prioritized_replay
+        main_beta = None if main_uniform else beta
+
         if self.success_frac <= 0.0 or not rb.success_indexes:
             # если success-режим выключен или ещё нет успешных эпизодов
             seqs, idxs, is_w = rb.sample_sequences(
                 batch_size,
                 L,
-                beta=beta,
-                uniform=False,
+                beta=main_beta,
+                uniform=main_uniform,
                 device=self.device,
                 include_terminal_starts=self.include_terminal_starts,
             )
@@ -263,8 +281,8 @@ class DQNAgent:
             main_seqs, main_idxs, main_is_w = rb.sample_sequences(
                 n_main,
                 L,
-                beta=beta,
-                uniform=False,
+                beta=main_beta,
+                uniform=main_uniform,
                 device=self.device,
                 include_terminal_starts=self.include_terminal_starts,
             )
@@ -342,6 +360,39 @@ class DQNAgent:
         G_lambda = G_lambda / sum_w.clamp_min(1e-3)
         return G_lambda.detach(), sum_w.detach()
 
+    def _one_step_optimizer_targets(self, next_state, reward, done):
+        """Historical one-step Double-DQN target used before soft Watkins."""
+        with torch.no_grad():
+            _, q_next_online = self.model_optim(next_state)
+            next_actions = q_next_online.argmax(dim=1)
+            _, q_next_target = self.target_model_optim(next_state)
+            q_next = q_next_target.gather(1, next_actions.view(-1, 1)).squeeze(1)
+            return reward + (1.0 - done) * self.gamma * q_next
+
+    def _trust_region_keep_mask(self, q_sa, y_opt, state, action_o):
+        """Return the optimizer-loss keep mask and TD scale diagnostics."""
+        delta = (y_opt - q_sa).detach()
+        sigma_batch = delta.std().clamp_min(self.tr_eps).item()
+        self.td_running_std = (
+            self.tr_mom * self.td_running_std
+            + (1.0 - self.tr_mom) * sigma_batch
+        )
+        sigma = max(sigma_batch, self.td_running_std, self.tr_eps)
+        sigma_t = torch.full_like(q_sa, fill_value=sigma)
+
+        if not self.use_trust_region_masking:
+            drop = torch.zeros_like(q_sa, dtype=torch.bool)
+            return drop, torch.ones_like(q_sa), sigma_t, sigma
+
+        with torch.no_grad():
+            _, q_opt_target = self.target_model_optim(state)
+        q_target_sa = q_opt_target.gather(1, action_o.view(-1, 1)).squeeze(1)
+        gap = q_sa.detach() - q_target_sa
+        too_far = gap.abs() > (self.tr_alpha * sigma_t)
+        moving_away = torch.sign(gap) != torch.sign(q_sa.detach() - y_opt.detach())
+        drop = too_far & moving_away
+        return drop, (~drop).float(), sigma_t, sigma
+
     
     def optim_(self, iters=1):
         """
@@ -362,8 +413,14 @@ class DQNAgent:
                 seqs, idxs, is_w = self._sample_sequences(self.batch_size, self.seq_len, uniform=True, beta=None)
                 is_w = is_w.to(self.device)           # единицы
             else:
-                seqs, idxs, is_w = self._sample_sequences(self.batch_size, self.seq_len, uniform=False, beta=self.per_beta)
-                self.per_beta = min(1.0, self.per_beta + self.per_beta_inc)
+                seqs, idxs, is_w = self._sample_sequences(
+                    self.batch_size,
+                    self.seq_len,
+                    uniform=not self.use_prioritized_replay,
+                    beta=self.per_beta if self.use_prioritized_replay else None,
+                )
+                if self.use_prioritized_replay:
+                    self.per_beta = min(1.0, self.per_beta + self.per_beta_inc)
                 is_w = is_w.to(self.device)
 
             policy_position_metrics = collect_policy_metrics_by_seq_position(self, seqs)    
@@ -391,34 +448,21 @@ class DQNAgent:
             q_sa = q_opt_cur.gather(1, action_o.view(-1,1)).squeeze(1)
 
             # --- SOFT/WATKINS G^{λ,κ} на каждый элемент батча из своей последовательности ---
-            with torch.no_grad():
-                soft_watkins_targets = [ self._soft_watkins_targets(seq, self.gamma) for seq in seqs ]
-                y_opt_list, lambda_weight_list = zip(*soft_watkins_targets)
-            y_opt = torch.stack(y_opt_list, dim=0)   # [B]
-            lambda_weight = torch.stack(lambda_weight_list, dim=0)   # [B]
+            if self.use_soft_watkins:
+                with torch.no_grad():
+                    soft_watkins_targets = [
+                        self._soft_watkins_targets(seq, self.gamma) for seq in seqs
+                    ]
+                    y_opt_list, lambda_weight_list = zip(*soft_watkins_targets)
+                y_opt = torch.stack(y_opt_list, dim=0)
+                lambda_weight = torch.stack(lambda_weight_list, dim=0)
+            else:
+                y_opt = self._one_step_optimizer_targets(next_state, reward, done)
+                lambda_weight = torch.ones(B, dtype=torch.float, device=self.device)
 
-            #Функционал trust region 
-
-            # --- TD-ошибка для головы оптимизатора (на λ-таргете) ---
-            delta = (y_opt - q_sa).detach()                           # [B]
-
-            # --- оценка σ: берём max(batch_std, running_EMA, eps) ---
-            sigma_batch = delta.std().clamp_min(self.tr_eps).item()
-            self.td_running_std = self.tr_mom * self.td_running_std + (1.0 - self.tr_mom) * sigma_batch
-            sigma = max(sigma_batch, self.td_running_std, self.tr_eps)
-            sigma_t = torch.full_like(q_sa, fill_value=sigma)         # [B], на девайсе
-
-            # --- разность между online и target на ТЕКУЩЕМ (s_t, a_t) ---
-            with torch.no_grad():
-                _, q_opt_tgt_cur = self.target_model_optim(state)     # [B, A]
-            q_tgt_sa = q_opt_tgt_cur.gather(1, action_o.view(-1,1)).squeeze(1)  # [B]
-            gap = (q_sa.detach() - q_tgt_sa)                          # [B]
-
-            # --- два условия маски (True => выкинуть из лосса) ---
-            cond1 = gap.abs() > (self.tr_alpha * sigma_t)             # далеко от таргет-значения
-            cond2 = torch.sign(gap) != torch.sign(q_sa.detach() - y_opt.detach())  # шаг уведёт ЕЩЁ дальше
-            tr_mask_drop = cond1 & cond2                              # [B] bool
-            tr_keep = (~tr_mask_drop).float()                         # [B] 1.0 = учим, 0.0 = выкинуть
+            tr_mask_drop, tr_keep, sigma_t, sigma = self._trust_region_keep_mask(
+                q_sa, y_opt, state, action_o
+            )
 
             # --- применяем маску к лоссу оптимизаторной головы ---
             per_sample_loss_opt = self.huberloss(input=q_sa, target=y_opt) * is_w
@@ -474,12 +518,15 @@ class DQNAgent:
             self.optimizer_opt.step()
             self.optimizer_params.step()
 
-            # --- апдейт приоритетов PER ---
-            with torch.no_grad():
-                td_param_abs = torch.as_tensor(td_param_items, dtype=torch.float, device=self.device)
-                td_param_abs = td_param_abs * tr_keep + self.tr_eps
-                new_priors = td_opt_abs + td_param_abs
-            self.replay_buffer.update_priorities(idxs, new_priors.cpu())
+            new_priors = None
+            if self.use_prioritized_replay:
+                with torch.no_grad():
+                    td_param_abs = torch.as_tensor(
+                        td_param_items, dtype=torch.float, device=self.device
+                    )
+                    td_param_abs = td_param_abs * tr_keep + self.tr_eps
+                    new_priors = td_opt_abs + td_param_abs
+                self.replay_buffer.update_priorities(idxs, new_priors.cpu())
 
             if self.warmup_active:
                 self.warmup_updates_done += 1
@@ -518,7 +565,11 @@ class DQNAgent:
                 # tr_drop_frac у тебя уже есть как drop_frac
                 # seq_avg_len у тебя уже есть как avg_len
 
-                prio_p95 = float(torch.quantile(new_priors.detach().to(self.device).float(), 0.95).item())
+                prio_p95 = None
+                if new_priors is not None:
+                    prio_p95 = float(
+                        torch.quantile(new_priors.detach().float(), 0.95).item()
+                    )
 
                 greedy_actions = q_opt_cur.argmax(dim=1)
                 action_diagnostics = {}
@@ -588,7 +639,6 @@ class DQNAgent:
             "q_abs_mean": q_abs_mean,
             "y_opt_mean": y_opt_mean,
             "tr_drop_frac": drop_frac,
-            "prio_p95": prio_p95,
             "mean_abs_delta": mean_abs_delta,
             "seq_frac_len_gt1": frac_len_gt1,
             "seq_avg_len": avg_len,
@@ -597,6 +647,8 @@ class DQNAgent:
             "lambda_weight_min": lambda_weight_min,
             "lambda_weight_max": lambda_weight_max,
         }
+        if prio_p95 is not None:
+            metrics_to_log["prio_p95"] = prio_p95
 
         metrics_to_log.update({
             metric_name: statistics.mean(values) if values else 0.0
@@ -671,7 +723,8 @@ class DQNAgent:
             self.exp.log_metric("count_bad_end", count_bad_end, step=self.steps_done)
             # Логируем список приоритетов
 
-            log_priority_to_comet(self.exp, self.replay_buffer.prior, step=self.steps_done)
+            if self.use_prioritized_replay:
+                log_priority_to_comet(self.exp, self.replay_buffer.prior, step=self.steps_done)
             # self.exp.log_parameter('priority', self.replay_buffer.prior)
 
 

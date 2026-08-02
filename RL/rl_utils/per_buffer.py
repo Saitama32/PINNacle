@@ -283,7 +283,8 @@ class PrioritizedReplayBuffer:
         return seqs, idxs, is_w
 
 
-    
+
+
     def sample_success_sequences(
         self,
         batch_size: int,
@@ -376,3 +377,59 @@ class PrioritizedReplayBuffer:
 
 
 
+
+class UniformReplayBuffer(PrioritizedReplayBuffer):
+    """Uniform replay with the sequence/success API used by the current agent.
+
+    It keeps the current sequence construction and success replay behavior,
+    but never stores, samples, or updates priorities.
+    """
+
+    def __init__(self, capacity):
+        super().__init__(capacity=capacity, alpha=0.0)
+        self.prior = []
+
+    def push(self, *args, priority=None, coeff=1.0):
+        del priority, coeff
+        tr = Transition(*args)
+
+        if len(self.memory) < self.capacity:
+            idx = len(self.memory)
+            self.memory.append(tr)
+        else:
+            idx = self.pos
+            self.memory[idx] = tr
+            self.pos = (self.pos + 1) % self.capacity
+
+        done = getattr(tr, "done", 0)
+        model_reward = float(getattr(tr, "model_reward", 0.0))
+        if (done == 1) and (model_reward > self.success_threshold):
+            self.success_indexes.add(idx)
+        else:
+            self.success_indexes.discard(idx)
+
+    def sample(self, batch_size, beta=None, device='cpu'):
+        del beta
+        return self.sample_uniform(batch_size, device=device)
+
+    def sample_sequences(
+        self,
+        batch_size: int,
+        L: int,
+        beta=None,
+        uniform=True,
+        device='cpu',
+        include_terminal_starts=False,
+    ):
+        del beta, uniform
+        return super().sample_sequences(
+            batch_size,
+            L,
+            beta=None,
+            uniform=True,
+            device=device,
+            include_terminal_starts=include_terminal_starts,
+        )
+
+    def update_priorities(self, idxs, new_p):
+        del idxs, new_p
