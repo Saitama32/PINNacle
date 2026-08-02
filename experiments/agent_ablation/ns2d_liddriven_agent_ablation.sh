@@ -1,7 +1,5 @@
 #!/bin/bash
-# Launch one NS2D Liddriven agent-ablation preset on the first available GPU.
-
-set -euo pipefail
+# Auto-run one NS2D Liddriven ablation and distribute two jobs across available GPUs.
 
 SCRIPT="experiments/agent_ablation/ns2d_liddriven_agent_ablation.py"
 ABLATION="${1:-}"
@@ -15,7 +13,16 @@ case "$ABLATION" in
         ;;
 esac
 
+run_job() {
+    local gpu="$1"
+    local replica="$2"
+    CUDA_VISIBLE_DEVICES="$gpu" python "$SCRIPT" \
+        --ablation "$ABLATION" \
+        --name "ns2d_liddriven_${ABLATION}_replica_${replica}" &
+}
+
 NUM_GPUS=$(nvidia-smi --query-gpu=name --format=csv,noheader | wc -l)
+
 echo "Detected GPUs: $NUM_GPUS"
 
 if [ "$NUM_GPUS" -eq 0 ]; then
@@ -23,6 +30,19 @@ if [ "$NUM_GPUS" -eq 0 ]; then
     exit 1
 fi
 
-echo "Launching NS2D Liddriven ablation: $ABLATION"
-CUDA_VISIBLE_DEVICES=0 python "$SCRIPT" --ablation "$ABLATION"
+if [ "$NUM_GPUS" -eq 1 ]; then
+    echo "Launching 2 processes on one GPU..."
+    run_job 0 1
+    run_job 0 2
+elif [ "$NUM_GPUS" -eq 2 ]; then
+    echo "Launching 1 process on each of two GPUs..."
+    run_job 0 1
+    run_job 1 2
+else
+    echo "More than 2 GPUs detected; using first two."
+    run_job 0 1
+    run_job 1 2
+fi
 
+wait
+echo "All processes finished."
