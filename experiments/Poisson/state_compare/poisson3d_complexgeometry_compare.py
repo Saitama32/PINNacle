@@ -2,6 +2,7 @@ import os
 os.environ["DDEBACKEND"] = "pytorch"
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 import sys
+import argparse
 from comet_ml import start
 from dotenv import load_dotenv
 
@@ -9,14 +10,27 @@ PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..
 load_dotenv(os.path.join(PROJECT_ROOT, ".env"))
 api_key = os.getenv("COMET_API_KEY")
 
-_state_type_for_comet = "unknown"
-for _i, _arg in enumerate(sys.argv):
-    if _arg == "--state-type" and _i + 1 < len(sys.argv):
-        _state_type_for_comet = sys.argv[_i + 1]
-        break
-    if _arg.startswith("--state-type="):
-        _state_type_for_comet = _arg.split("=", 1)[1]
-        break
+STATE_TYPE_CHOICES = ("raw", "log_raw", "1d", "2d", "3d")
+
+
+def parse_seeds(value):
+    try:
+        seeds = [int(seed.strip()) for seed in value.split(",") if seed.strip()]
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("--seeds must be a comma-separated list of integers") from exc
+    if len(seeds) != 5:
+        raise argparse.ArgumentTypeError("--seeds must contain exactly 5 seeds")
+    if len(set(seeds)) != len(seeds):
+        raise argparse.ArgumentTypeError("--seeds must not contain duplicates")
+    return seeds
+
+
+_pre_parser = argparse.ArgumentParser(add_help=False)
+_pre_parser.add_argument("--state-type", choices=STATE_TYPE_CHOICES, required=True)
+_pre_parser.add_argument("--seeds", type=parse_seeds, required=True)
+_pre_args, _ = _pre_parser.parse_known_args()
+_state_type_for_comet = _pre_args.state_type
+_seeds_for_run = _pre_args.seeds
 
 experiment = start(
     api_key=api_key,
@@ -26,7 +40,6 @@ experiment = start(
 
 sys.path.append(PROJECT_ROOT)
 import time
-import argparse
 import dill
 import numpy as np
 import torch
@@ -71,8 +84,9 @@ def main(seed_override=None):
     parser.add_argument("--name", type=str, default="poisson3d_complexgeometry_rl")
     parser.add_argument("--device", type=str, default="0")
     parser.add_argument("--seed", type=int, default=1234)
-    parser.add_argument("--state-type", type=str, choices=("raw", "log_raw", "1d", "2d", "3d"), required=True)
+    parser.add_argument("--state-type", choices=STATE_TYPE_CHOICES, required=True)
     parser.add_argument("--exp_key", type=str, required=True)
+    parser.add_argument("--seeds", type=parse_seeds, required=True)
     parser.add_argument("--model_step", type=int, default=None)
 
     parser.add_argument("--hidden-layers", type=str, default="100*5")
@@ -258,8 +272,6 @@ def main(seed_override=None):
 
 
 if __name__ == "__main__":
-    seeds = [123, 234, 345, 456, 567, 678, 789, 890, 901, 1012]
-
-    for seed in seeds:
-        print(f"\nStarting comparison experiment with seed = {seed}")
+    for seed in _seeds_for_run:
+        print(f"\nStarting comparison experiment with state_type = {_state_type_for_comet}, seed = {seed}")
         main(seed_override=seed)
