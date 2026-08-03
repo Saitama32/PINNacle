@@ -4,7 +4,7 @@ SCRIPT="experiments/NavierStokes/state_compare/ns2d_liddriven_compare.py"
 STATE_TYPE=""
 EXP_KEY_1=""
 EXP_KEY_2=""
-MODEL_STEP=""
+MODEL_STEP="510"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
