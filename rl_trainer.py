@@ -210,6 +210,95 @@ def _log_replay_action_diagnostics(agent):
         )
 
 
+def _print_offline_greedy_chain_diagnostic(agent, max_states=16):
+    success_indexes = set(agent.replay_buffer.success_indexes)
+    successful_chains = []
+    current_chain = []
+
+    for index, transition in enumerate(agent.replay_buffer.memory):
+        current_chain.append((index, transition))
+        if int(transition.done) != 0:
+            if index in success_indexes:
+                successful_chains.append(current_chain)
+            current_chain = []
+
+    if not successful_chains:
+        print("\nOffline greedy-chain diagnostic: no successful chain found.")
+        return
+
+    successful_chains.sort(key=lambda chain: (len(chain), chain[0][0]))
+    chain = successful_chains[len(successful_chains) // 2]
+
+    state_rows = [
+        (position, transition.state, int(transition.action[0]))
+        for position, (_, transition) in enumerate(chain)
+    ]
+    final_next_state = chain[-1][1].next_state
+    if isinstance(final_next_state, dict):
+        state_rows.append((len(chain), final_next_state, None))
+
+    if len(state_rows) > max_states:
+        selected = np.linspace(
+            0, len(state_rows) - 1, num=max_states, dtype=int
+        )
+        state_rows = [state_rows[index] for index in np.unique(selected)]
+
+    state_batch = torch.stack(
+        [agent._stack_state(state) for _, state, _ in state_rows],
+        dim=0,
+    )
+
+    was_training = agent.model_optim.training
+    agent.model_optim.eval()
+    with torch.no_grad():
+        _, q_values = agent.model_optim(state_batch)
+    if was_training:
+        agent.model_optim.train()
+
+    q_values = q_values.detach().cpu()
+    greedy_actions = q_values.argmax(dim=1)
+    top_values = torch.topk(q_values, k=min(2, q_values.shape[1]), dim=1).values
+
+    action_counts = {action_idx: 0 for action_idx in agent.i2opt}
+    print(
+        "\nOffline greedy-chain diagnostic: "
+        f"chain_len={len(chain)}, evaluated_states={len(state_rows)}"
+    )
+    print("  pos | replay_action | greedy_action | q_gap | q_values")
+    for row_index, (position, _, replay_action) in enumerate(state_rows):
+        greedy_action = int(greedy_actions[row_index])
+        action_counts[greedy_action] += 1
+        q_gap = (
+            float(top_values[row_index, 0] - top_values[row_index, 1])
+            if top_values.shape[1] > 1
+            else float("nan")
+        )
+        replay_name = (
+            agent.i2opt[replay_action]
+            if replay_action is not None
+            else "<terminal-next>"
+        )
+        q_text = ", ".join(
+            f"{agent.i2opt[action_idx]}={float(q_values[row_index, action_idx]):.3f}"
+            for action_idx in agent.i2opt
+        )
+        print(
+            f"  {position:>3} | {replay_name:<15} | "
+            f"{agent.i2opt[greedy_action]:<13} | {q_gap:>5.3f} | {q_text}"
+        )
+
+    selected_counts = {
+        agent.i2opt[action_idx]: count
+        for action_idx, count in action_counts.items()
+        if count > 0
+    }
+    print(
+        "  greedy_counts="
+        f"{selected_counts}, unique_actions={len(selected_counts)}, "
+        f"single_action_collapse={len(selected_counts) == 1}"
+    )
+
+
 def run_deepxde_rl_training(
     model,
     loss_weights,
@@ -311,6 +400,7 @@ def run_deepxde_rl_training(
                 f"param_loss_mean={np.mean(loss_param):.6f}"
             )
 
+        _print_offline_greedy_chain_diagnostic(rl_agent)
         rl_agent.reinit_target()
         rl_agent.transition_counter = 0
 

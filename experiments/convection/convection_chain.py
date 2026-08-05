@@ -229,7 +229,7 @@ def main():
         "reward_boundary_coeff": 1,
         "agent_min_buffer": 32,
         "agent_update_iters": 5,
-        "offline_pretrain_steps": 200,
+        "offline_pretrain_steps": 500,
         "offline_pretrain_iters": 5,
         "lr": args.lr,
         "exp": experiment,
