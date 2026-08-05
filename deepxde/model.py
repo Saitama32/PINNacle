@@ -318,7 +318,13 @@ class Model:
                 ]
         trainable_variables = (list(self.net.parameters()) + self.external_trainable_variables)
         if self.net.regularizer is None:
-            self.opt, self.lr_scheduler = optimizers.get(trainable_variables, self.opt_name, learning_rate=lr, decay=decay)
+            self.opt, self.lr_scheduler = optimizers.get(
+                trainable_variables,
+                self.opt_name,
+                learning_rate=lr,
+                decay=decay,
+                model=self.net,
+            )
         else:
             if self.net.regularizer[0] == "l2":
                 self.opt, self.lr_scheduler = optimizers.get(
@@ -327,6 +333,7 @@ class Model:
                     learning_rate=lr,
                     decay=decay,
                     weight_decay=self.net.regularizer[1],
+                    model=self.net,
                 )
             else:
                 raise NotImplementedError(f"{self.net.regularizer[0]} regularizaiton to be implemented for "

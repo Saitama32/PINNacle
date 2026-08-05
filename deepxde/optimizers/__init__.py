@@ -11,6 +11,8 @@ from .config import (
     set_PSO_options,
     SOAP_options,
     set_SOAP_options,
+    MUON_options,
+    set_MUON_options,
     PCGRAD_options,
     set_PCGRAD_options,
     SSBROYDEN_options,
