@@ -17,7 +17,9 @@ from RL.rl_environment import EnvRLOptimizer
 from RL.rl_algorithms import DQNAgent
 from src.utils.callbacks import ModelSaverCallback  
 from deepxde.optimizers.config import set_LBFGS_options, set_PSO_options, LBFGS_options, PSO_options
+from deepxde.optimizers.pytorch.pcgrad import PCGrad
 from deepxde.optimizers.pytorch.soap import SOAP
+from deepxde.optimizers.pytorch.ssbroyden import SSBroyden
 from typing import Any, Dict
 from RL.rl_utils.load_buffer.load_exps_from_comet import collect_all_comet_transitions
 
@@ -88,6 +90,25 @@ def _build_torch_optimizer(opt_name: str, params, action: Dict[str, Any]):
             lr=lr,
         )
 
+    if name == "pcgrad":
+        lr = float(opt_params.get("lr", 1e-3))
+        return PCGrad(
+            torch.optim.Adam(params, lr=lr),
+        )
+
+    if name in ["ssbroyden", "ss-broyden", "ss_broyden"]:
+        lr = float(opt_params.get("lr", 1.0))
+        tolerance_grad = float(opt_params.get("tolerance_grad", 1e-10))
+        debug = bool(opt_params.get("debug", False))
+        debug_every = int(opt_params.get("debug_every", 100))
+        return SSBroyden(
+            params,
+            lr=lr,
+            tolerance_grad=tolerance_grad,
+            debug=debug,
+            debug_every=debug_every,
+        )
+
     if name in ["lbfgs", "l-bfgs", "l_bfgs", "LBFGS"]:
         # torch LBFGS (для pytorch backend DeepXDE норм)
         opt = torch.optim.LBFGS(
@@ -106,7 +127,7 @@ def _build_torch_optimizer(opt_name: str, params, action: Dict[str, Any]):
         )
         return "PSO"  # deepxde/optimizers/pytorch/pso.PSO
 
-    raise ValueError(f"Unknown optimizer type: {opt_name}. Expected Adam / SOAP / LBFGS / PSO.")
+    raise ValueError(f"Unknown optimizer type: {opt_name}. Expected Adam / SOAP / PCGrad / SSBroyden / LBFGS / PSO.")
 
 
 def _extract_weighted_train_loss(model) -> float:
