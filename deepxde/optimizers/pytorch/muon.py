@@ -8,31 +8,46 @@ variables, and non-hidden parameters should be handled by the auxiliary Adam
 branch.
 """
 
-import math
-
 import torch
 
 
-def zeropower_via_newtonschulz5(g, steps=5, eps=1e-7):
+def zeropower_via_newtonschulz5(g, steps):
     """Approximate the zeroth power of a matrix with Newton-Schulz iterations."""
-    if g.ndim != 2:
-        raise ValueError("Muon expects 2D matrix parameters.")
+    if g.ndim < 2:
+        raise ValueError("Muon expects matrix-like parameters.")
 
-    dtype = g.dtype
-    x = g.float()
-    transpose = x.size(0) > x.size(1)
+    x = g.bfloat16()
+    transpose = g.size(-2) > g.size(-1)
     if transpose:
-        x = x.T
+        x = x.mT
 
-    x = x / (x.norm() + eps)
     a, b, c = 3.4445, -4.7750, 2.0315
+    x = x / (x.norm(dim=(-2, -1), keepdim=True) + 1e-7)
     for _ in range(steps):
-        xx_t = x @ x.T
+        xx_t = x @ x.mT
         x = a * x + (b * xx_t + c * (xx_t @ xx_t)) @ x
 
     if transpose:
-        x = x.T
-    return x.to(dtype=dtype)
+        x = x.mT
+    return x
+
+
+def muon_update(grad, momentum, beta=0.95, ns_steps=5, nesterov=True):
+    momentum.lerp_(grad, 1 - beta)
+    update = grad.lerp_(momentum, beta) if nesterov else momentum
+    if update.ndim == 4:
+        update = update.view(len(update), -1)
+    update = zeropower_via_newtonschulz5(update, steps=ns_steps)
+    update *= max(1, update.size(-2) / update.size(-1)) ** 0.5
+    return update
+
+
+def adam_update(grad, buf1, buf2, step, betas, eps):
+    buf1.lerp_(grad, 1 - betas[0])
+    buf2.lerp_(grad.square(), 1 - betas[1])
+    buf1c = buf1 / (1 - betas[0] ** step)
+    buf2c = buf2 / (1 - betas[1] ** step)
+    return buf1c / (buf2c.sqrt() + eps)
 
 
 class MuonWithAuxAdam(torch.optim.Optimizer):
@@ -57,18 +72,19 @@ class MuonWithAuxAdam(torch.optim.Optimizer):
             group = dict(group)
             params = list(group["params"])
             if group["use_muon"]:
-                bad_shapes = [tuple(p.shape) for p in params if p.ndim != 2]
+                params = sorted(params, key=lambda x: x.size(), reverse=True)
+                bad_shapes = [tuple(p.shape) for p in params if p.ndim < 2]
                 if bad_shapes:
-                    raise ValueError(f"Muon parameter groups only support 2D tensors, got {bad_shapes}.")
+                    raise ValueError(f"Muon parameter groups only support matrix-like tensors, got {bad_shapes}.")
                 group.setdefault("lr", 0.02)
                 group.setdefault("momentum", 0.95)
                 group.setdefault("nesterov", True)
                 group.setdefault("ns_steps", 5)
                 group.setdefault("weight_decay", 0.0)
             else:
-                group.setdefault("lr", 1e-3)
+                group.setdefault("lr", 3e-4)
                 group.setdefault("betas", (0.9, 0.95))
-                group.setdefault("eps", 1e-8)
+                group.setdefault("eps", 1e-10)
                 group.setdefault("weight_decay", 0.0)
             group.setdefault("maximize", False)
             group["params"] = params
@@ -114,19 +130,20 @@ class MuonWithAuxAdam(torch.optim.Optimizer):
             if not state:
                 state["momentum_buffer"] = torch.zeros_like(p)
 
-            buf = state["momentum_buffer"]
-            buf.mul_(momentum).add_(grad)
-            update = grad.add(buf, alpha=momentum) if nesterov else buf
-            update = zeropower_via_newtonschulz5(update, steps=ns_steps)
-            update.mul_(max(1.0, p.size(0) / p.size(1)) ** 0.5)
+            update = muon_update(
+                grad,
+                state["momentum_buffer"],
+                beta=momentum,
+                ns_steps=ns_steps,
+                nesterov=nesterov,
+            )
 
             if weight_decay:
                 p.mul_(1 - lr * weight_decay)
-            p.add_(update, alpha=-lr)
+            p.add_(update.reshape(p.shape), alpha=-lr)
 
     def _adam_step(self, group):
         lr = group["lr"]
-        beta1, beta2 = group["betas"]
         eps = group["eps"]
         weight_decay = group["weight_decay"]
         maximize = group["maximize"]
@@ -150,14 +167,7 @@ class MuonWithAuxAdam(torch.optim.Optimizer):
             exp_avg_sq = state["exp_avg_sq"]
             state["step"] += 1
 
+            update = adam_update(grad, exp_avg, exp_avg_sq, state["step"], group["betas"], eps)
             if weight_decay:
                 p.mul_(1 - lr * weight_decay)
-
-            exp_avg.mul_(beta1).add_(grad, alpha=1 - beta1)
-            exp_avg_sq.mul_(beta2).addcmul_(grad, grad, value=1 - beta2)
-
-            bias_correction1 = 1 - beta1 ** state["step"]
-            bias_correction2 = 1 - beta2 ** state["step"]
-            step_size = lr / bias_correction1
-            denom = exp_avg_sq.sqrt().div_(math.sqrt(bias_correction2)).add_(eps)
-            p.addcdiv_(exp_avg, denom, value=-step_size)
+            p.add_(update, alpha=-lr)
