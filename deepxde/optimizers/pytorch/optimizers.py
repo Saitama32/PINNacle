@@ -104,7 +104,7 @@ def _make_base_optimizer(params, optimizer, learning_rate=None, decay=None, weig
             raise ValueError("L-BFGS optimizer doesn't support weight_decay > 0")
         if learning_rate is not None or decay is not None:
             print("Warning: learning rate is ignored for {}".format(optimizer))
-        optim = torch.optim.LBFGS(
+        return torch.optim.LBFGS(
             params,
             lr= LBFGS_options["lr"] if LBFGS_options["lr"]  is not None else 1,
             max_iter=LBFGS_options["iter_per_step"],
@@ -156,13 +156,21 @@ def _make_base_optimizer(params, optimizer, learning_rate=None, decay=None, weig
             bias_correction=SOAP_options["bias_correction"],
         )
 
+    if optimizer in ["muon", "Muon"]:
+        return _make_muon_optimizer(
+            params,
+            learning_rate,
+            weight_decay=weight_decay,
+            model=model,
+        )
+
     raise NotImplementedError(
-        f"Causal base optimizer {optimizer} is not supported. "
-        "Use one of: adam, soap, L-BFGS, L-BFGS-B, PSO."
+        f"Base optimizer {optimizer} is not supported. "
+        "Use one of: adam, soap, muon, L-BFGS, L-BFGS-B, PSO."
     )
 
 
-def get(params, optimizer, learning_rate=None, decay=None, weight_decay=0):
+def get(params, optimizer, learning_rate=None, decay=None, weight_decay=0, model=None):
     """Retrieves an Optimizer instance."""
     # Custom Optimizer
     if isinstance(optimizer, torch.optim.Optimizer):
@@ -175,6 +183,7 @@ def get(params, optimizer, learning_rate=None, decay=None, weight_decay=0):
             learning_rate=learning_rate,
             decay=decay,
             weight_decay=weight_decay,
+            model=model,
         )
     elif optimizer == "NNCG":
         if weight_decay > 0:
@@ -192,24 +201,6 @@ def get(params, optimizer, learning_rate=None, decay=None, weight_decay=0):
             cg_max_iters=NNCG_options["cgmaxiter"],
             line_search_fn=NNCG_options["lsfun"],
             verbose=NNCG_options["verbose"],
-        )
-    elif optimizer == "PSO":
-        if weight_decay > 0:
-            raise ValueError("PSO optimizer doesn't support weight_decay > 0")
-        if learning_rate is not None or decay is not None:
-            print("Warning: learning rate is ignored for {}".format(optimizer))
-        optim = PSO(
-            params,
-            pop_size=PSO_options["pop_size"],
-            b=PSO_options["b"],
-            c1=PSO_options["c1"],
-            c2=PSO_options["c2"],
-            lr=PSO_options["lr"],
-            betas=PSO_options["betas"],
-            c_decrease=PSO_options["c_decrease"],
-            variance=PSO_options["variance"],
-            epsilon=PSO_options["epsilon"],
-            n_iter=PSO_options["n_iter"],
         )
     else:
         if learning_rate is None:
@@ -231,6 +222,14 @@ def get(params, optimizer, learning_rate=None, decay=None, weight_decay=0):
                 precondition_frequency=SOAP_options["precondition_frequency"],
                 max_precondition_dim=SOAP_options["max_precondition_dim"],
                 bias_correction=SOAP_options["bias_correction"],
+            )
+
+        elif optimizer in ["muon", "Muon"]:
+            optim = _make_muon_optimizer(
+                params,
+                learning_rate,
+                weight_decay=weight_decay,
+                model=model,
             )
 
         elif optimizer == "pcgrad":
