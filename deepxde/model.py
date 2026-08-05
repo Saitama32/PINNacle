@@ -367,15 +367,42 @@ class Model:
             def closure():
                 loss_list = []
                 grad_list = []
-                for i in range(self.opt.pop_size):
-                    vector_to_parameters(self.opt.swarm[i], params)
-                    losses = outputs_losses_train(inputs, targets)[1]
-                    total_loss = torch.sum(losses)
-                    grads = torch.autograd.grad(total_loss, params)
-                    grad_vec = parameters_to_vector(grads)
-                    loss_list.append(total_loss)
-                    grad_list.append(grad_vec)
-                return torch.stack(loss_list), torch.stack(grad_list)
+                use_grad = getattr(self.opt, "use_grad", True)
+                if hasattr(self.opt, "causal_context"):
+                    context = self.opt.causal_context(inputs, targets, self.data)
+                else:
+                    context = None
+
+                if context is None:
+                    active_inputs, active_targets = inputs, targets
+                    for i in range(self.opt.pop_size):
+                        vector_to_parameters(self.opt.swarm[i], params)
+                        losses = outputs_losses_train(active_inputs, active_targets)[1]
+                        total_loss = torch.sum(losses)
+                        if use_grad:
+                            loss_list.append(total_loss)
+                            grads = torch.autograd.grad(total_loss, params)
+                            grad_vec = parameters_to_vector(grads)
+                            grad_list.append(grad_vec)
+                        else:
+                            loss_list.append(total_loss.detach())
+                    grads_swarm = torch.stack(grad_list) if use_grad else None
+                    return torch.stack(loss_list), grads_swarm
+
+                with context as (active_inputs, active_targets):
+                    for i in range(self.opt.pop_size):
+                        vector_to_parameters(self.opt.swarm[i], params)
+                        losses = outputs_losses_train(active_inputs, active_targets)[1]
+                        total_loss = torch.sum(losses)
+                        if use_grad:
+                            loss_list.append(total_loss)
+                            grads = torch.autograd.grad(total_loss, params)
+                            grad_vec = parameters_to_vector(grads)
+                            grad_list.append(grad_vec)
+                        else:
+                            loss_list.append(total_loss.detach())
+                    grads_swarm = torch.stack(grad_list) if use_grad else None
+                    return torch.stack(loss_list), grads_swarm
 
             self.opt.step(closure)
             if self.lr_scheduler is not None:
