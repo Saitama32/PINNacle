@@ -31,6 +31,7 @@ class DQNAgent:
     def __init__(self, n_observation=None, n_action=None, optimizer_dict=None, lr=1e-3, gamma=0.98, epsilon=1.0,
                  epsilon_decay=0.995, epsilon_min=0.01, memory_size=50000, batch_size=128, n_transitions_reinit = 2000, per_alpha =  0.6, per_beta0 = 0.4, device='cpu', exp=None,
                  warmup_updates: int = 50, recalc_batch_size: int = 32, success_frac = 0.2,
+                 include_terminal_starts: bool = False,
                  model_snapshot_dir="rl_model_snapshots"):
         self.n_observation = n_observation
         self.n_action = n_action
@@ -39,6 +40,7 @@ class DQNAgent:
         self.epsilon_decay = epsilon_decay
         self.epsilon_min = epsilon_min
         self.batch_size = batch_size
+        self.include_terminal_starts = include_terminal_starts
         self.n_transitions_reinit = n_transitions_reinit
         self.steps_done = 0
         self.epsilon_step_offset = 0
@@ -219,13 +221,27 @@ class DQNAgent:
 
         # --- Warmup: только uniform-выборка ---
         if uniform:
-            seqs, idxs, is_w = rb.sample_sequences(batch_size, L, beta=None, uniform=True, device=self.device)
+            seqs, idxs, is_w = rb.sample_sequences(
+                batch_size,
+                L,
+                beta=None,
+                uniform=True,
+                device=self.device,
+                include_terminal_starts=self.include_terminal_starts,
+            )
             return seqs, idxs, is_w
 
         # --- Основной режим: PER + при необходимости success-эпизоды ---
         if self.success_frac <= 0.0 or not rb.success_indexes:
             # если success-режим выключен или ещё нет успешных эпизодов
-            seqs, idxs, is_w = rb.sample_sequences(batch_size, L, beta=beta, uniform=False, device=self.device)
+            seqs, idxs, is_w = rb.sample_sequences(
+                batch_size,
+                L,
+                beta=beta,
+                uniform=False,
+                device=self.device,
+                include_terminal_starts=self.include_terminal_starts,
+            )
             return seqs, idxs, is_w
 
         # Сколько последовательностей взять из success-эпизодов
@@ -246,7 +262,12 @@ class DQNAgent:
         # 1) Основная часть — обычный PER по стартовым индексам
         if n_main > 0:
             main_seqs, main_idxs, main_is_w = rb.sample_sequences(
-                n_main, L, beta=beta, uniform=False, device=self.device
+                n_main,
+                L,
+                beta=beta,
+                uniform=False,
+                device=self.device,
+                include_terminal_starts=self.include_terminal_starts,
             )
             seqs_all.extend(main_seqs)
             idxs_all.append(main_idxs.to(torch.long))
@@ -255,7 +276,10 @@ class DQNAgent:
         # 2) Success-последовательности (равномерно по success_indexes)
         if n_succ > 0:
             succ_seqs, succ_idxs, succ_is_w = rb.sample_success_sequences(
-                n_succ, L, device=self.device
+                n_succ,
+                L,
+                device=self.device,
+                include_terminal_starts=self.include_terminal_starts,
             )
             seqs_all.extend(succ_seqs)
             idxs_all.append(succ_idxs.to(torch.long))
@@ -498,24 +522,10 @@ class DQNAgent:
                 prio_p95 = float(torch.quantile(new_priors.detach().to(self.device).float(), 0.95).item())
 
                 greedy_actions = q_opt_cur.argmax(dim=1)
-                seq_success = torch.tensor(
-                    [
-                        int(bool(seq) and int(seq[-1].done) == 1)
-                        for seq in seqs
-                    ],
-                    dtype=torch.bool,
-                    device=self.device,
-                )
                 action_diagnostics = {}
                 for action_idx, optim_name in self.i2opt.items():
                     action_mask = action_o == action_idx
                     action_count = int(action_mask.sum().item())
-                    action_diagnostics[
-                        f"train_action/{optim_name}/sample_count"
-                    ] = action_count
-                    action_diagnostics[
-                        f"train_action/{optim_name}/sample_frac"
-                    ] = action_count / max(B, 1)
                     action_diagnostics[
                         f"train_policy/greedy_frac/{optim_name}"
                     ] = float((greedy_actions == action_idx).float().mean().item())
@@ -527,20 +537,8 @@ class DQNAgent:
                         continue
 
                     action_diagnostics[
-                        f"train_action/{optim_name}/reward_mean"
-                    ] = float(reward[action_mask].mean().item())
-                    action_diagnostics[
                         f"train_action/{optim_name}/target_mean"
                     ] = float(y_opt[action_mask].mean().item())
-                    action_diagnostics[
-                        f"train_action/{optim_name}/q_taken_mean"
-                    ] = float(q_sa[action_mask].mean().item())
-                    action_diagnostics[
-                        f"train_action/{optim_name}/td_abs_mean"
-                    ] = float(delta_raw[action_mask].abs().mean().item())
-                    action_diagnostics[
-                        f"train_action/{optim_name}/success_seq_frac"
-                    ] = float(seq_success[action_mask].float().mean().item())
 
 
             print(f"Loss for params: {loss_param}")

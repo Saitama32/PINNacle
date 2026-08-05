@@ -197,7 +197,6 @@ def _log_replay_action_diagnostics(agent):
             record_success_chain(current_chain)
             current_chain = []
 
-    metrics = {}
     print("\nPost-processed replay diagnostics:")
     for action_idx, optim_name in agent.i2opt.items():
         stats = action_stats[action_idx]
@@ -209,18 +208,6 @@ def _log_replay_action_diagnostics(agent):
             f"success_nonterminal={stats['success_nonterminal_count']}, "
             f"success_terminal={stats['success_terminal_count']}"
         )
-        prefix = f"buffer_action/{optim_name}"
-        metrics[f"{prefix}/count"] = count
-        metrics[f"{prefix}/reward_mean"] = reward_mean
-        metrics[
-            f"{prefix}/success_nonterminal_count"
-        ] = stats["success_nonterminal_count"]
-        metrics[
-            f"{prefix}/success_terminal_count"
-        ] = stats["success_terminal_count"]
-
-    if agent.exp is not None:
-        agent.exp.log_metrics(metrics, step=agent.steps_done)
 
 
 def run_deepxde_rl_training(
@@ -277,6 +264,9 @@ def run_deepxde_rl_training(
                         device=device,
                         batch_size=rl_agent_params["rl_batch_size"],
                         n_transitions_reinit = rl_agent_params["n_transitions_reinit"],
+                        include_terminal_starts=rl_agent_params.get(
+                            "include_terminal_starts", False
+                        ),
                         exp = rl_agent_params["exp"],
                         model_snapshot_dir=f"{save_path}/rl_model_snapshots")
 

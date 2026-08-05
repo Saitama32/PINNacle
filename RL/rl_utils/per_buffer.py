@@ -177,7 +177,15 @@ class PrioritizedReplayBuffer:
         return seq[start_pos:]
         
 
-    def sample_sequences(self, batch_size: int, L: int, beta=None, uniform=False, device='cpu'):
+    def sample_sequences(
+        self,
+        batch_size: int,
+        L: int,
+        beta=None,
+        uniform=False,
+        device='cpu',
+        include_terminal_starts=False,
+    ):
         """
         Возвращает:
         - seqs: list[list[Transition]] длиной B, каждая — последовательность длиной ≤L,
@@ -194,10 +202,17 @@ class PrioritizedReplayBuffer:
             raise RuntimeError("Buffer is empty")
 
         # --- строим пул валидных стартовых индексов: done == 0 и есть следующий шаг ---
-        valid_start_idxs = [
-            i for i, tr in enumerate(self.memory[:-1])  # до N-1 включительно только N-2
-            if getattr(tr, "done", 0) == 0
-        ]
+        if include_terminal_starts:
+            valid_start_idxs = [
+                i
+                for i, tr in enumerate(self.memory)
+                if getattr(tr, "done", 0) != 0 or i < N - 1
+            ]
+        else:
+            valid_start_idxs = [
+                i for i, tr in enumerate(self.memory[:-1])
+                if getattr(tr, "done", 0) == 0
+            ]
         # если вообще нет валидных стартов — fallback: позволяем всё как раньше
         no_valid_starts = (len(valid_start_idxs) == 0)
 
@@ -269,7 +284,13 @@ class PrioritizedReplayBuffer:
 
 
     
-    def sample_success_sequences(self, batch_size: int, L: int, device='cpu'):
+    def sample_success_sequences(
+        self,
+        batch_size: int,
+        L: int,
+        device='cpu',
+        include_terminal_starts=False,
+    ):
         """
         Сэмплирует batch_size последовательностей длиной ≤L,
         КАЖДАЯ из которых заканчивается успешным терминальным переходом
@@ -282,7 +303,14 @@ class PrioritizedReplayBuffer:
         """
         if not self.success_indexes:
             # если пока нет ни одного успеха — просто fallback на uniform sequences
-            seqs, idxs, is_w = self.sample_sequences(batch_size, L, beta=None, uniform=True, device=device)
+            seqs, idxs, is_w = self.sample_sequences(
+                batch_size,
+                L,
+                beta=None,
+                uniform=True,
+                device=device,
+                include_terminal_starts=include_terminal_starts,
+            )
             return seqs, idxs, is_w
 
         success_list = list(self.success_indexes)
@@ -302,9 +330,18 @@ class PrioritizedReplayBuffer:
                 end_idx = success_list[random.randint(0, N_succ - 1)]
 
                 # Строим последовательность, заканчивающуюся этим success
-                candidate = self._build_sequence_ending_at(end_idx, L, random_start=True)
+                if include_terminal_starts:
+                    candidate = self._build_sequence_ending_at(
+                        end_idx, L, random_start=False
+                    )
+                    start_pos = random.randint(0, len(candidate) - 1)
+                    candidate = candidate[start_pos:]
+                else:
+                    candidate = self._build_sequence_ending_at(
+                        end_idx, L, random_start=True
+                    )
 
-                if len(candidate) <= 1:
+                if not include_terminal_starts and len(candidate) <= 1:
                     continue
 
                 seq = candidate
@@ -319,7 +356,12 @@ class PrioritizedReplayBuffer:
             # Не смогли найти нормальную success-цепочку.
             # Крайний случай: добиваем батч обычной последовательностью.
                 fallback_seqs, fallback_idxs, _ = self.sample_sequences(
-                    1, L, beta=None, uniform=True, device=device
+                    1,
+                    L,
+                    beta=None,
+                    uniform=True,
+                    device=device,
+                    include_terminal_starts=include_terminal_starts,
                 )
                 seq = fallback_seqs[0]
                 start_idx_for_this_seq = int(fallback_idxs[0])
