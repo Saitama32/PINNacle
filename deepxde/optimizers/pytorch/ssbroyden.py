@@ -156,11 +156,16 @@ def _strong_wolfe(
 class SSBroyden(Optimizer):
     """Implements the self-scaled Broyden algorithm."""
 
+    _INIT_MATRIX_MULTIPLIER = 1
+    _UPDATE_MATRIX_MULTIPLIER = 6
+
     def __init__(
         self,
         params,
         lr: Union[float, Tensor] = 1.0,
         tolerance_grad: float = 1e-10,
+        debug: bool = False,
+        debug_every: int = 100,
     ):
         if isinstance(lr, Tensor):
             if lr.numel() != 1:
@@ -173,11 +178,15 @@ class SSBroyden(Optimizer):
             raise ValueError(f"Invalid learning rate: {lr}")
         if not 0.0 < tolerance_grad:
             raise ValueError(f"Invalid tolerance on gradient: {tolerance_grad}")
+        if debug_every < 1:
+            raise ValueError(f"Invalid debug_every value: {debug_every}")
 
         defaults = {
             "lr": lr,
             "tolerance_grad": tolerance_grad,
             "method": "ssbroyden",
+            "debug": debug,
+            "debug_every": debug_every,
         }
         super().__init__(params, defaults)
         if len(self.param_groups) != 1:
@@ -189,8 +198,16 @@ class SSBroyden(Optimizer):
         self._params = self.param_groups[0]["params"]
         self._numel_cache = None
         nbparams = self._numel()
+        self._check_cuda_dense_memory(
+            nbparams,
+            self._params[0].dtype,
+            self._params[0].device,
+            self._INIT_MATRIX_MULTIPLIER,
+            "initializing Hk",
+        )
         state = self.state[self._params[0]]
         state["k"] = 0
+        state["first_step"] = True
         state["Hk"] = torch.eye(
             nbparams,
             dtype=self._params[0].dtype,
@@ -204,6 +221,41 @@ class SSBroyden(Optimizer):
                 for p in self._params
             )
         return self._numel_cache
+
+    @staticmethod
+    def _format_bytes(num_bytes):
+        units = ["B", "KiB", "MiB", "GiB", "TiB"]
+        value = float(num_bytes)
+        for unit in units:
+            if abs(value) < 1024.0 or unit == units[-1]:
+                return f"{value:.2f} {unit}"
+            value /= 1024.0
+
+    @classmethod
+    def _dense_matrix_bytes(cls, num_params, dtype):
+        element_size = torch.empty((), dtype=dtype).element_size()
+        return int(num_params) * int(num_params) * element_size
+
+    @classmethod
+    def _check_cuda_dense_memory(cls, num_params, dtype, device, matrix_multiplier, stage):
+        if device.type != "cuda":
+            return
+
+        one_matrix = cls._dense_matrix_bytes(num_params, dtype)
+        required = matrix_multiplier * one_matrix
+        free, total = torch.cuda.mem_get_info(device)
+        if required <= free:
+            return
+
+        raise RuntimeError(
+            "SSBroyden requires dense O(n_params^2) memory and cannot safely "
+            f"continue while {stage}. "
+            f"num_params={num_params}; one dense matrix="
+            f"{cls._format_bytes(one_matrix)}; estimated peak for this stage="
+            f"{cls._format_bytes(required)}; CUDA free={cls._format_bytes(free)}; "
+            f"CUDA total={cls._format_bytes(total)}. Reduce --hidden-layers or use "
+            "a first-order optimizer for this model size."
+        )
 
     def _gather_flat_grad(self):
         views = []
@@ -305,28 +357,50 @@ class SSBroyden(Optimizer):
         Hkyk = state["Hk"] @ y_k
         yk_dot_Hkyk = y_k @ Hkyk
         yk_dot_sk = y_k @ s_k
+        eps = torch.finfo(yk_dot_sk.dtype).eps
+        if (
+            yk_dot_sk <= eps
+            or yk_dot_Hkyk <= eps
+            or torch.isnan(yk_dot_sk)
+            or torch.isnan(yk_dot_Hkyk)
+            or torch.isinf(yk_dot_sk)
+            or torch.isinf(yk_dot_Hkyk)
+        ):
+            state["first_step"] = False
+            state["k"] += 1
+            return orig_loss
 
         v_k = torch.sqrt(yk_dot_Hkyk) * (s_k / (yk_dot_sk) - Hkyk / yk_dot_Hkyk)
-        tau_k = min(1.0, -yk_dot_sk / (alpha_k * (s_k @ grad_k)))
         phi_k = 1.0
 
         b_k = -alpha_k * (s_k @ grad_k) / yk_dot_sk
         h_k = yk_dot_Hkyk / yk_dot_sk
         a_k = h_k * b_k - 1.0
-        c_k = torch.sqrt(a_k / (a_k + 1.0))
+        c_k = torch.sqrt(torch.abs(a_k) / (a_k + 1.0))
         rhom_k = min(1.0, h_k * (1 - c_k))
         thetam_k = (rhom_k - 1) / a_k
         thetap_k = 1.0 / rhom_k
         theta_k = max(thetam_k, min(thetap_k, (1.0 - b_k) / b_k))
         sigma_k = 1 + a_k * theta_k
         n = self._numel()
-        sigma_k_pow = sigma_k ** (-1 / (n - 1))
-        if theta_k > 0:
-            tau_k = tau_k * min(sigma_k_pow, 1.0 / theta_k)
+        if state.get("first_step", False):
+            tau_k = h_k / (1.0 + a_k * theta_k)
         else:
-            tau_k = min(tau_k * sigma_k_pow, sigma_k)
+            rhok_k = min(1.0, 1.0 / b_k)
+            sigma_k_pow = torch.abs(sigma_k) ** (1.0 / (1.0 - n))
+            if theta_k <= 0:
+                tau_k = min(rhok_k * sigma_k_pow, sigma_k)
+            else:
+                tau_k = rhok_k * min(sigma_k_pow, 1.0 / theta_k)
         phi_k = (1 - theta_k) / (1.0 + a_k * theta_k)
 
+        self._check_cuda_dense_memory(
+            self._numel(),
+            state["Hk"].dtype,
+            state["Hk"].device,
+            self._UPDATE_MATRIX_MULTIPLIER,
+            "updating Hk",
+        )
         temp1 = (Hkyk[:, None] @ Hkyk[None, :]) / yk_dot_Hkyk
         temp2 = phi_k * (v_k[:, None] @ v_k[None, :])
         temp3 = (s_k[:, None] @ s_k[None, :]) / yk_dot_sk
@@ -337,5 +411,38 @@ class SSBroyden(Optimizer):
             return orig_loss
 
         state["Hk"] = H_kp1
+        state["first_step"] = False
         state["k"] += 1
+        self._print_debug(
+            state,
+            alpha_k=alpha_k,
+            gtd=gtd,
+            yk_dot_sk=yk_dot_sk,
+            tau_k=tau_k,
+            theta_k=theta_k,
+            phi_k=phi_k,
+        )
         return orig_loss
+
+    def _print_debug(self, state, *, alpha_k, gtd, yk_dot_sk, tau_k, theta_k, phi_k):
+        group = self.param_groups[0]
+        if not group["debug"]:
+            return
+        if state["k"] % group["debug_every"] != 0:
+            return
+
+        def scalar(value):
+            if isinstance(value, torch.Tensor):
+                return float(value.detach().cpu())
+            return float(value)
+
+        print(
+            "[SSBroyden debug] "
+            f"step={state['k']} "
+            f"alpha_k={scalar(alpha_k):.6e} "
+            f"gtd={scalar(gtd):.6e} "
+            f"yk_dot_sk={scalar(yk_dot_sk):.6e} "
+            f"tau_k={scalar(tau_k):.6e} "
+            f"theta_k={scalar(theta_k):.6e} "
+            f"phi_k={scalar(phi_k):.6e}"
+        )
