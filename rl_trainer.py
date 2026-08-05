@@ -230,8 +230,43 @@ def run_deepxde_rl_training(
                                                            use_log_state=rl_agent_params["log_key"], 
                                                            proj_name=rl_agent_params["proj_name"],
                                                            reset_success_done_to_failure=rl_agent_params.get("reset_success_done_to_failure", False),
-                                                           recompute_chain_rewards=rl_agent_params.get("recompute_chain_rewards", True),
-                                                        set_reward_from_next_loss=rl_agent_params.get("set_reward_from_next_loss", True))
+                                                           recompute_chain_rewards=rl_agent_params.get("recompute_chain_rewards", False),
+                                                         set_reward_from_next_loss=rl_agent_params.get("set_reward_from_next_loss", False))
+
+    offline_pretrain_steps = int(rl_agent_params.get("offline_pretrain_steps", 0))
+    offline_pretrain_iters = int(rl_agent_params.get("offline_pretrain_iters", 5))
+    if offline_pretrain_steps > 0:
+        if len(rl_agent.replay_buffer) < rl_agent.batch_size:
+            raise RuntimeError(
+                "Not enough replay transitions for offline pretraining: "
+                f"{len(rl_agent.replay_buffer)} < batch_size({rl_agent.batch_size})"
+            )
+
+        print(
+            "\nStarting offline RL pretraining: "
+            f"steps={offline_pretrain_steps}, iters_per_step={offline_pretrain_iters}."
+        )
+        for step in range(1, offline_pretrain_steps + 1):
+            loss_optim, loss_param = rl_agent.optim_(iters=offline_pretrain_iters)
+            rl_agent.steps_done += 1
+            if not loss_optim or not loss_param:
+                raise RuntimeError(
+                    f"Offline pretraining stopped at step {step}: no updates were made."
+                )
+            print(
+                f"[offline {step}/{offline_pretrain_steps}] "
+                f"optim_loss_mean={np.mean(loss_optim):.6f}, "
+                f"param_loss_mean={np.mean(loss_param):.6f}"
+            )
+
+        rl_agent.reinit_target()
+        rl_agent.transition_counter = 0
+
+    rl_agent.start_epsilon_schedule()
+    print(
+        "Epsilon schedule starts at global metric step "
+        f"{rl_agent.epsilon_step_offset}; first online interaction uses step 0."
+    )
     # if backup_params is not None:
     #     optim_state, params_state = load_rl_agent_from_comet(backup_params["experiment_key"], map_location=device_type())
     #     rl_agent.model_optim.load_state_dict(optim_state)

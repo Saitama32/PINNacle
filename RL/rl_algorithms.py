@@ -41,6 +41,7 @@ class DQNAgent:
         self.batch_size = batch_size
         self.n_transitions_reinit = n_transitions_reinit
         self.steps_done = 0
+        self.epsilon_step_offset = 0
         self.opt_count = 0
         self.opt_count_out = 0
         self.opt_count_for_reinit = 5
@@ -132,6 +133,19 @@ class DQNAgent:
         self.target_model_optim.eval()
         self.target_model_params.load_state_dict(self.model_params.state_dict())
         self.target_model_params.eval()
+
+    def start_epsilon_schedule(self):
+        """Start epsilon decay from the current global metric step."""
+        self.epsilon_step_offset = self.steps_done
+
+    def get_epsilon_threshold(self):
+        interaction_steps = max(0, self.steps_done - self.epsilon_step_offset)
+        eps_threshold = EPS_END + (EPS_START - EPS_END) * math.exp(
+            -1.0 * interaction_steps / EPS_DECAY
+        )
+        if interaction_steps < self.slot_bootstrap_steps:
+            return self.slot_bootstrap_eps
+        return eps_threshold
 
     def detach_transition(self, transition):
         def detach_item(item):
@@ -714,11 +728,8 @@ class DQNAgent:
 
         # eps-greedy
         sample = random.random()
-        eps_threshold = EPS_END + (EPS_START - EPS_END) * math.exp(-1. * self.steps_done / EPS_DECAY)
+        eps_threshold = self.get_epsilon_threshold()
         self.steps_done += 1
-
-        if self.steps_done < self.slot_bootstrap_steps:
-            eps_threshold = self.slot_bootstrap_eps
 
         # --- GREEDY ---
         if sample > eps_threshold:
