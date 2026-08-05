@@ -8,6 +8,7 @@ from typing import List, Union
 from landscape_visualization._aux.plot_loss_surface import PlotLossSurface
 from landscape_visualization._aux.visualization_model import VisualizationModel
 from landscape_visualization._aux.early_stopping_plot import EarlyStopping
+from RL.rl_utils.raw_loss_state import build_raw_loss_state_from_solver_models
 
 # from tedeous.optimizers.optimizer import Optimizer
 # from tedeous.callbacks.callback_list import CallbackList
@@ -44,11 +45,14 @@ class EnvRLOptimizer(gym.Env):
 
         self.AE_model_params = AE_model_params
         self.AE_train_params = AE_train_params
-        self.loss_surface_params = loss_surface_params
+        self.loss_surface_params = loss_surface_params or {}
+        self.state_type = self.loss_surface_params.get("state_type", "loss_surface")
         self.equation_params = equation_params
         self.callbacks = callbacks
 
-        self.visualization_model = VisualizationModel(**self.AE_model_params)
+        self.visualization_model = None
+        if self.state_type != "raw_loss":
+            self.visualization_model = VisualizationModel(**self.AE_model_params)
         self.plot_loss_surface = None
 
         # Action dimension is fixed by the optimizer dictionary.
@@ -62,7 +66,10 @@ class EnvRLOptimizer(gym.Env):
         # self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=self.visualization_model.latent_dim,
         #                                     dtype=np.float32)
         # observation_space = 3
-        self.observation_space = self.visualization_model.latent_dim + 1
+        if self.state_type == "raw_loss":
+            self.observation_space = int(self.loss_surface_params.get("raw_loss_state_len", self.n_save_models or 10))
+        else:
+            self.observation_space = self.visualization_model.latent_dim + 1
 
         self.tolerance = tolerance
         self.counter = 1
@@ -186,34 +193,44 @@ class EnvRLOptimizer(gym.Env):
     def step(self):
         """Applying an action (optimizer selection) and updating the state."""
 
-        finetune_AE_model = self.AE_train_params['finetune_AE_model']
-        batch_size = self.AE_train_params['batch_size']
-        every_epoch = self.AE_train_params['every_epoch']
-        learning_rate = self.AE_train_params['learning_rate']
-        resume = self.AE_train_params['resume']
-        AE_params = self.AE_train_params[
-            'other_RL_epoch_AE_params' if finetune_AE_model else 'first_RL_epoch_AE_params'
-        ]
+        if self.state_type == "raw_loss":
+            raw_loss_state_len = self.loss_surface_params.get("raw_loss_state_len", self.n_save_models)
+            raw_loss_log_state = self.loss_surface_params.get("raw_loss_log_state", False)
+            self.raw_states_dict = build_raw_loss_state_from_solver_models(
+                self.solver_models,
+                dde_pde_model=self.loss_surface_params.get("dde_pde_model"),
+                state_len=raw_loss_state_len,
+                log_key=raw_loss_log_state,
+            )
+        else:
+            finetune_AE_model = self.AE_train_params['finetune_AE_model']
+            batch_size = self.AE_train_params['batch_size']
+            every_epoch = self.AE_train_params['every_epoch']
+            learning_rate = self.AE_train_params['learning_rate']
+            resume = self.AE_train_params['resume']
+            AE_params = self.AE_train_params[
+                'other_RL_epoch_AE_params' if finetune_AE_model else 'first_RL_epoch_AE_params'
+            ]
 
-        epochs = AE_params['epochs']
-        patience_scheduler = AE_params['patience_scheduler']
-        cosine_scheduler_patience = AE_params['cosine_scheduler_patience']
+            epochs = AE_params['epochs']
+            patience_scheduler = AE_params['patience_scheduler']
+            cosine_scheduler_patience = AE_params['cosine_scheduler_patience']
 
-        cb_es = EarlyStopping(patience=patience_scheduler)
+            cb_es = EarlyStopping(patience=patience_scheduler)
 
-        AEmodel = self.visualization_model.train(
-            learning_rate, cosine_scheduler_patience, epochs, every_epoch, batch_size, resume,
-            callbacks=[cb_es], solver_models=self.solver_models, finetune_AE_model=finetune_AE_model
-        )
+            AEmodel = self.visualization_model.train(
+                learning_rate, cosine_scheduler_patience, epochs, every_epoch, batch_size, resume,
+                callbacks=[cb_es], solver_models=self.solver_models, finetune_AE_model=finetune_AE_model
+            )
 
-        self.loss_surface_params['solver_models'] = self.solver_models
-        self.loss_surface_params['AE_model'] = AEmodel
+            self.loss_surface_params['solver_models'] = self.solver_models
+            self.loss_surface_params['AE_model'] = AEmodel
 
-        self.plot_loss_surface = PlotLossSurface(**self.loss_surface_params)
-        self.plot_loss_surface.counter = self.counter
+            self.plot_loss_surface = PlotLossSurface(**self.loss_surface_params)
+            self.plot_loss_surface.counter = self.counter
 
-        # 1) next_state and current raw loss.
-        self.raw_states_dict = self.plot_loss_surface.save_equation_loss_surface(log_key=self.AE_train_params['log_key'])
+            # 1) next_state and current raw loss.
+            self.raw_states_dict = self.plot_loss_surface.save_equation_loss_surface(log_key=self.AE_train_params['log_key'])
 
         if "loss" in self.reward_params:
             reward_scalar = float(self.reward_params["loss"])
