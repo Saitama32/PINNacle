@@ -498,10 +498,24 @@ class DQNAgent:
                 prio_p95 = float(torch.quantile(new_priors.detach().to(self.device).float(), 0.95).item())
 
                 greedy_actions = q_opt_cur.argmax(dim=1)
+                seq_success = torch.tensor(
+                    [
+                        int(bool(seq) and int(seq[-1].done) == 1)
+                        for seq in seqs
+                    ],
+                    dtype=torch.bool,
+                    device=self.device,
+                )
                 action_diagnostics = {}
                 for action_idx, optim_name in self.i2opt.items():
                     action_mask = action_o == action_idx
                     action_count = int(action_mask.sum().item())
+                    action_diagnostics[
+                        f"train_action/{optim_name}/sample_count"
+                    ] = action_count
+                    action_diagnostics[
+                        f"train_action/{optim_name}/sample_frac"
+                    ] = action_count / max(B, 1)
                     action_diagnostics[
                         f"train_policy/greedy_frac/{optim_name}"
                     ] = float((greedy_actions == action_idx).float().mean().item())
@@ -513,12 +527,20 @@ class DQNAgent:
                         continue
 
                     action_diagnostics[
+                        f"train_action/{optim_name}/reward_mean"
+                    ] = float(reward[action_mask].mean().item())
+                    action_diagnostics[
                         f"train_action/{optim_name}/target_mean"
                     ] = float(y_opt[action_mask].mean().item())
-
-                chain_mc_metrics = collect_chain_mc_metrics(self, seqs, q_sa, self.gamma)
-                for metric_name, metric_value in chain_mc_metrics.items():
-                    chain_mc_metric_values[metric_name].append(metric_value)
+                    action_diagnostics[
+                        f"train_action/{optim_name}/q_taken_mean"
+                    ] = float(q_sa[action_mask].mean().item())
+                    action_diagnostics[
+                        f"train_action/{optim_name}/td_abs_mean"
+                    ] = float(delta_raw[action_mask].abs().mean().item())
+                    action_diagnostics[
+                        f"train_action/{optim_name}/success_seq_frac"
+                    ] = float(seq_success[action_mask].float().mean().item())
 
 
             print(f"Loss for params: {loss_param}")
@@ -580,6 +602,7 @@ class DQNAgent:
             for metric_name, values in chain_mc_metric_values.items()
         })
         metrics_to_log.update(policy_position_metrics)
+        metrics_to_log.update(action_diagnostics)
 
         if self.exp is not None:
             self.exp.log_metrics(metrics_to_log, step=self.steps_done)
