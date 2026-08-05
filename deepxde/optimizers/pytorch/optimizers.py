@@ -4,7 +4,13 @@ import torch
 
 # from .nncg import NNCG
 from .pso import PSO
-from ..config import LBFGS_options, NNCG_options, PSO_options
+from .soap import SOAP
+from ..config import (
+    LBFGS_options,
+    NNCG_options,
+    PSO_options,
+    SOAP_options,
+)
 
 
 # NOTE: edited
@@ -17,6 +23,7 @@ def get(params, optimizer, learning_rate=None, decay=None, weight_decay=0):
     # Custom Optimizer
     if isinstance(optimizer, torch.optim.Optimizer):
         optim = optimizer
+
     elif optimizer in ["L-BFGS", "L-BFGS-B"]:
         if weight_decay > 0:
             raise ValueError("L-BFGS optimizer doesn't support weight_decay > 0")
@@ -32,6 +39,7 @@ def get(params, optimizer, learning_rate=None, decay=None, weight_decay=0):
             history_size=LBFGS_options["maxcor"],
             line_search_fn=("strong_wolfe" if LBFGS_options["maxls"] > 0 else None),
         )
+
     elif optimizer == "NNCG":
         if weight_decay > 0:
             raise ValueError("NNCG optimizer doesn't support weight_decay > 0")
@@ -76,6 +84,18 @@ def get(params, optimizer, learning_rate=None, decay=None, weight_decay=0):
             optim = torch.optim.RMSprop(params, lr=learning_rate, weight_decay=weight_decay)
         elif optimizer == "adam":
             optim = torch.optim.Adam(params, lr=learning_rate, weight_decay=weight_decay)
+        elif optimizer == "soap":
+            optim = SOAP(
+                params,
+                lr=learning_rate,
+                betas=(SOAP_options["beta1"], SOAP_options["beta2"]),
+                shampoo_beta=SOAP_options["shampoo_beta"],
+                eps=SOAP_options["epsilon"],
+                weight_decay=weight_decay,
+                precondition_frequency=SOAP_options["precondition_frequency"],
+                max_precondition_dim=SOAP_options["max_precondition_dim"],
+                bias_correction=SOAP_options["bias_correction"],
+            )
         elif optimizer == "adamw":
             if weight_decay == 0:
                 raise ValueError("AdamW optimizer requires non-zero weight decay")
