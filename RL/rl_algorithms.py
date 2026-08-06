@@ -22,7 +22,7 @@ from RL.rl_utils.informativity_metrics import collect_chain_mc_metrics
 
 EPS_START = 0.5
 EPS_END = 0.05
-EPS_DECAY = 50
+EPS_DECAY = 200
 TAU = 0.01
 
 
@@ -672,7 +672,7 @@ class DQNAgent:
                 self.exp.log_metric("bad_action_procent", len(bad_action)/agent_reward_count, step=self.steps_done)
             self.exp.log_metric("count_good_end", count_good_end, step=self.steps_done)
             self.exp.log_metric("count_bad_end", count_bad_end, step=self.steps_done)
-            # Save and upload only every fifth trained model.
+            # Save and upload only every tenth trained model.
             if self.model_snapshot_counter % 10 == 0:
                 self.model_snapshot_dir.mkdir(parents=True, exist_ok=True)
                 optim_path = self.model_snapshot_dir / f"model_optim_step_{self.steps_done}.pt"
