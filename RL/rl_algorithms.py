@@ -540,6 +540,10 @@ class DQNAgent:
                         f"train_action/{optim_name}/target_mean"
                     ] = float(y_opt[action_mask].mean().item())
 
+                chain_mc_metrics = collect_chain_mc_metrics(self, seqs, q_sa, self.gamma)
+                for metric_name, metric_value in chain_mc_metrics.items():
+                    chain_mc_metric_values[metric_name].append(metric_value)
+
 
             print(f"Loss for params: {loss_param}")
             print(f"Loss for optim: {loss_opt}")
