@@ -220,7 +220,7 @@ def main():
         "agent_update_iters": 5,
         "offline_pretrain_steps": 500,
         "offline_pretrain_iters": 5,
-        "include_terminal_starts": False,
+        "include_terminal_starts": True,
         "recompute_chain_rewards": True,
         "lr": args.lr,
         "exp": experiment,
