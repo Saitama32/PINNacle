@@ -16,7 +16,6 @@ from RL.rl_utils.DQN_classes import DQN_optim, DQN_params
 from comet_ml.integration.pytorch import watch
 from RL.rl_utils.per_buffer import PrioritizedReplayBuffer, Transition
 from RL.rl_utils.per_offline import recalc_all_priorities_batched
-from RL.rl_utils.logger import log_priority_to_comet
 from RL.rl_utils.metrics import collect_policy_metrics_by_seq_position
 from RL.rl_utils.informativity_metrics import collect_chain_mc_metrics
 
@@ -47,6 +46,7 @@ class DQNAgent:
         self.opt_count = 0
         self.opt_count_out = 0
         self.opt_count_for_reinit = 5
+        self.model_snapshot_counter = 0
         self.optimizer_dict = optimizer_dict
         self.i2opt = {v: k for v, k in enumerate(optimizer_dict.keys())}
         uniq_params = list(set([x for xs in optimizer_dict.values() for x in xs]))
@@ -115,9 +115,9 @@ class DQNAgent:
 
         self.model_optim = DQN_optim(len(self.i2opt)).to(device)
         self.model_params = DQN_params(self.optimizer_dict).to(device)
-        if self.exp is not None:
-            watch(self.model_optim, log_step_interval = 200)
-            watch(self.model_params, log_step_interval = 200)
+        # if self.exp is not None:
+        #     watch(self.model_optim, log_step_interval = 200)
+        #     watch(self.model_params, log_step_interval = 200)
 
         self.reinit_target()
 
@@ -651,6 +651,8 @@ class DQNAgent:
         print(f"Mean batch loss optim class: {optim_batch_loss_mean}")
         print(f"Mean batch loss param: {param_batch_loss_mean}")
 
+        self.model_snapshot_counter += 1
+
         if self.exp is not None:
 
             self.exp.log_metric("optim_batch_loss_mean", optim_batch_loss_mean, step=self.steps_done)
@@ -666,36 +668,29 @@ class DQNAgent:
                 self.exp.log_metric("bad_action_procent", len(bad_action)/agent_reward_count, step=self.steps_done)
             self.exp.log_metric("count_good_end", count_good_end, step=self.steps_done)
             self.exp.log_metric("count_bad_end", count_bad_end, step=self.steps_done)
-            # Логируем список приоритетов
+            # Save and upload only every fifth trained model.
+            if self.model_snapshot_counter % 10 == 0:
+                self.model_snapshot_dir.mkdir(parents=True, exist_ok=True)
+                optim_path = self.model_snapshot_dir / f"model_optim_step_{self.steps_done}.pt"
+                params_path = self.model_snapshot_dir / f"model_params_step_{self.steps_done}.pt"
 
-            log_priority_to_comet(self.exp, self.replay_buffer.prior, step=self.steps_done)
-            # self.exp.log_parameter('priority', self.replay_buffer.prior)
+                torch.save(self.model_optim.state_dict(), optim_path)
+                torch.save(self.model_params.state_dict(), params_path)
 
-
-
-            # Save model snapshots locally and, optionally, log them to Comet as assets.
-            # We use log_asset instead of log_model to avoid the Comet model-element limit.
-            self.model_snapshot_dir.mkdir(parents=True, exist_ok=True)
-            optim_path = self.model_snapshot_dir / f"model_optim_step_{self.steps_done}.pt"
-            params_path = self.model_snapshot_dir / f"model_params_step_{self.steps_done}.pt"
-
-            torch.save(self.model_optim.state_dict(), optim_path)
-            torch.save(self.model_params.state_dict(), params_path)
-
-            self.exp.log_asset(
-                str(optim_path),
-                file_name=f"rl_model_snapshots/model_optim_step_{self.steps_done}.pt",
-                step=self.steps_done,
-                overwrite=True,
-            )
-            self.exp.log_asset(
-                str(params_path),
-                file_name=f"rl_model_snapshots/model_params_step_{self.steps_done}.pt",
-                step=self.steps_done,
-                overwrite=True,
-            )
-            self.exp.log_other("model_snapshot_step", self.steps_done)
-            self.exp.log_other("model_snapshot_local_dir", str(self.model_snapshot_dir))
+                self.exp.log_asset(
+                    str(optim_path),
+                    file_name=f"rl_model_snapshots/model_optim_step_{self.steps_done}.pt",
+                    step=self.steps_done,
+                    overwrite=True,
+                )
+                self.exp.log_asset(
+                    str(params_path),
+                    file_name=f"rl_model_snapshots/model_params_step_{self.steps_done}.pt",
+                    step=self.steps_done,
+                    overwrite=True,
+                )
+                self.exp.log_other("model_snapshot_step", self.steps_done)
+                self.exp.log_other("model_snapshot_local_dir", str(self.model_snapshot_dir))
 
 
         return loss_arr_optim_class, loss_arr_param
