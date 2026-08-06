@@ -10,7 +10,7 @@ sys.path.append(project_root)
 from comet_config import start_comet_experiment
 
 experiment = start_comet_experiment(
-    project_name="rlpinn-convection-beta50-tolerance",
+    project_name="rlpinn-convection-beta50-optimization_expand_set",
 )
 
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
@@ -121,23 +121,13 @@ def main():
         "operator_coeff": 1,
         "bnd_coeff": 1,
     }
+
     optimizers = {
-        "PSO": {
-            "lr": [0.0, 1e-3, 1e-4],
-            "epochs": [100, 200, 300],
-        },
-        "SOAP": {
-            "lr": [1e-3, 3e-4, 3e-5],
-            "epochs": [100, 1000, 2500],
-        },
-        "PCGrad": {
-            "lr": [1e-2, 1e-3, 1e-4],
-            "epochs": [100, 1000, 2000],
-        },
-        "SSBroyden": {
-            "lr": [1.0, 5e-1, 1e-1],
-            "epochs": [100, 500, 1000],
-        },
+        "Adam": {"lr": [1e-2, 1e-3, 1e-4], "epochs": [100, 1000, 2500]},
+        "LBFGS": {"lr": [1, 5e-1, 1e-1], "epochs": [100, 500, 1000]},
+        "PSO": {"lr": [0.0, 1e-3, 1e-4], "epochs": [100, 200, 300]},
+        "SOAP": {"lr": [1e-2, 1e-3, 3e-4], "epochs": [100, 1000, 2500],},
+        "Muon": {"lr": [2e-2, 1e-2, 5e-3], "epochs": [100, 1000, 2500]},
     }
 
     AE_model_params = {
@@ -216,9 +206,9 @@ def main():
         "n_save_models": args.n_save_models,
         "n_trajectories": args.n_trajectories,
         "tolerance": 0.076681697,
-        "prev_tol": 0,
         "use_tol": False,
         "new_tol": True,
+        "prev_tol": 0,
         "stuck_threshold": 10,
         "min_loss_change": 1e-7,
         "min_grad_norm": 1e-5,
@@ -238,7 +228,7 @@ def main():
         "lr": args.lr,
         "exp": experiment,
         "log_key": False,
-        "proj_name": "rlpinn-convection-beta50-tolerance-defoult-set",
+        "proj_name": "rlpinn-convection-beta50-tolerance-expand-set",
     }
 
     experiment.log_parameters(
