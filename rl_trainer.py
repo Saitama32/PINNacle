@@ -364,7 +364,9 @@ def run_deepxde_rl_training(
                                                            proj_name=rl_agent_params["proj_name"],
                                                            reset_success_done_to_failure=rl_agent_params.get("reset_success_done_to_failure", False),
                                                            recompute_chain_rewards=rl_agent_params.get("recompute_chain_rewards", False),
-                                                         set_reward_from_next_loss=rl_agent_params.get("set_reward_from_next_loss", False))
+                                                           set_reward_from_next_loss=rl_agent_params.get("set_reward_from_next_loss", False),
+                                                           recover_current_loss_from_solver_models=rl_agent_params.get("recover_current_loss_from_solver_models", False),
+                                                           dde_pde_model=rl_agent_params.get("dde_pde_model", loss_surface_params.get("dde_pde_model")))
     _log_replay_action_diagnostics(rl_agent)
 
     offline_pretrain_steps = int(rl_agent_params.get("offline_pretrain_steps", 0))

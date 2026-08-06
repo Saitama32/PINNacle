@@ -9,6 +9,7 @@ import numpy as np
 import torch
 from dotenv import load_dotenv
 
+from landscape_visualization._aux.PINN_loss_data import PINNLossData
 from RL.rl_algorithms import PrioritizedReplayBuffer
 from RL.rl_utils.load_buffer.load_transitions_into_buffer_pickle import (
     load_transitions_to_replay_buffer,
@@ -198,14 +199,15 @@ def _done_value(tr):
         return None
 
 
-def _filter_zero_current_reward_transitions(entries, loss_key="loss_total"):
+def _filter_zero_current_reward_transitions(entries, loss_key="loss_total", state_loss_is_log=False):
     filtered = []
     skipped = 0
 
     for tr in entries:
-        current_reward = _extract_loss_scalar_from_state(
-            tr.get("next_state"),
+        current_reward = _transition_loss_value(
+            tr,
             loss_key=loss_key,
+            state_loss_is_log=state_loss_is_log,
         )
         if current_reward == 0:
             skipped += 1
@@ -268,6 +270,101 @@ def _transition_loss_value(tr, loss_key="loss_total", state_loss_is_log=False):
     if state_loss_is_log:
         value = np.expm1(value)
     return value if np.isfinite(value) else None
+
+
+def _valid_scalar(value):
+    if torch.is_tensor(value):
+        if value.numel() != 1:
+            return None
+        value = value.detach().cpu().item()
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        return None
+    return value if np.isfinite(value) else None
+
+
+def _last_solver_model_entry(solver_models):
+    if not solver_models:
+        return None
+    for solver_model in reversed(solver_models):
+        if solver_model is not None:
+            return solver_model
+    return None
+
+
+def _state_dict_from_solver_model_entry(solver_model):
+    if solver_model is None:
+        return None
+
+    if isinstance(solver_model, dict):
+        state_dict = solver_model.get("state_dict")
+    elif hasattr(solver_model, "state_dict"):
+        state_dict = solver_model.state_dict()
+    else:
+        return None
+
+    if not state_dict:
+        return None
+
+    return {
+        key: value.detach().cpu().clone() if torch.is_tensor(value) else value
+        for key, value in state_dict.items()
+    }
+
+
+def set_current_loss_from_solver_models(transitions, *, dde_pde_model):
+    if dde_pde_model is None:
+        raise ValueError(
+            "dde_pde_model is required when recover_current_loss_from_solver_models=True."
+        )
+
+    dde_model, loss_weights = dde_pde_model()
+    dde_model.compile(
+        torch.optim.Adam(dde_model.net.parameters(), lr=0.001),
+        loss_weights=loss_weights,
+    )
+    loss_compute = PINNLossData(dde_model, cache_points=True, use_train=True)
+
+    updated = 0
+    preserved = 0
+    skipped = 0
+
+    for tr in transitions:
+        current_loss = _valid_scalar(tr.get("current_loss"))
+        if current_loss is not None:
+            preserved += 1
+            continue
+
+        solver_model = _last_solver_model_entry(tr.get("solver_models"))
+        state_dict = _state_dict_from_solver_model_entry(solver_model)
+        if state_dict is None:
+            skipped += 1
+            continue
+
+        try:
+            dde_model.net.load_state_dict(state_dict, strict=True)
+            loss_dict = loss_compute.evaluate(save_graph=False)
+            loss_vec = loss_dict["loss_vec"].detach().cpu().numpy()
+            loss_total = float(np.sum(loss_vec))
+        except Exception as exc:
+            tr["current_loss_recovery_error"] = str(exc)
+            skipped += 1
+            continue
+
+        if not np.isfinite(loss_total):
+            skipped += 1
+            continue
+
+        tr["current_loss"] = loss_total
+        tr["current_loss_source"] = "solver_models"
+        updated += 1
+
+    print(
+        "Recovered current_loss from solver_models: "
+        f"updated={updated}, preserved={preserved}, skipped={skipped}."
+    )
+    return transitions
 
 
 def set_transition_rewards_from_next_loss(
@@ -373,6 +470,7 @@ def recompute_chain_rewards_for_terminal_chains(
                     rewards[idx] -= chain_repeat_penalty * over
 
         for tr, reward, loss in zip(chain, rewards, losses):
+            tr["current_loss"] = float(loss)
             tr["reward"] = float(loss)
             reward = float(reward)
             if "reward_model_original" not in tr and "reward_model" in tr:
@@ -439,6 +537,8 @@ def _process_loaded_transition_block(
     loss_key="loss_total",
     reset_success_done_to_failure=False,
     set_reward_from_next_loss=False,
+    recover_current_loss_from_solver_models=False,
+    dde_pde_model=None,
 ):
     transitions = _filter_terminal_without_active_chain(transitions)
 
@@ -451,6 +551,12 @@ def _process_loaded_transition_block(
     # transitions = shift_done_rewards(transitions, done=-1, shift_value=-5)
     entries = repair_equal_states_in_all_entries(transitions, loss_key=loss_key)
     entries = add_delta_to_all_entries(entries)
+
+    if recover_current_loss_from_solver_models:
+        entries = set_current_loss_from_solver_models(
+            entries,
+            dde_pde_model=dde_pde_model,
+        )
 
     if set_reward_from_next_loss:
         entries = set_transition_rewards_from_next_loss(
@@ -476,7 +582,11 @@ def _process_loaded_transition_block(
             prev_tol=prev_tol,
         )
 
-    entries = _filter_zero_current_reward_transitions(entries, loss_key=loss_key)
+    entries = _filter_zero_current_reward_transitions(
+        entries,
+        loss_key=loss_key,
+        state_loss_is_log=use_log_state,
+    )
     return entries
 
 
@@ -564,7 +674,9 @@ def collect_all_comet_transitions(
     num_workers=None,
     reset_success_done_to_failure=False,
     recompute_chain_rewards=False,
-    set_reward_from_next_loss=False
+    set_reward_from_next_loss=False,
+    recover_current_loss_from_solver_models=False,
+    dde_pde_model=None,
 ) -> PrioritizedReplayBuffer:
     """Собирает все переходы из не-crashed экспериментов проекта и возвращает заполненный PrioritizedReplayBuffer."""
     print("🔍 Получаем эксперименты из Comet...")
@@ -665,6 +777,8 @@ def collect_all_comet_transitions(
             proj_name=proj_name,
             reset_success_done_to_failure=reset_success_done_to_failure,
             set_reward_from_next_loss=set_reward_from_next_loss,
+            recover_current_loss_from_solver_models=recover_current_loss_from_solver_models,
+            dde_pde_model=dde_pde_model,
         )
         if recompute_chain_rewards:
             block_entries = recompute_chain_rewards_for_terminal_chains(
