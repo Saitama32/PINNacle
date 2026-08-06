@@ -10,7 +10,7 @@ sys.path.append(project_root)
 from comet_config import start_comet_experiment
 
 experiment = start_comet_experiment(
-    project_name="rlpinn-convection-beta50-tolerance",
+    project_name="rlpinn-convection-beta50-optimization-defoult-set",
 )
 
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
