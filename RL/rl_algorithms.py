@@ -20,16 +20,16 @@ from RL.rl_utils.metrics import collect_policy_metrics_by_seq_position
 from RL.rl_utils.informativity_metrics import collect_chain_mc_metrics
 
 
-EPS_START = 0.5
+EPS_START = 0.95
 EPS_END = 0.05
-EPS_DECAY = 200
+EPS_DECAY = 1000
 TAU = 0.01
 
 
 class DQNAgent:
     def __init__(self, n_observation=None, n_action=None, optimizer_dict=None, lr=1e-3, gamma=0.98, epsilon=1.0,
                  epsilon_decay=0.995, epsilon_min=0.01, memory_size=50000, batch_size=128, n_transitions_reinit = 2000, per_alpha =  0.6, per_beta0 = 0.4, device='cpu', exp=None,
-                 warmup_updates: int = 200, recalc_batch_size: int = 32, success_frac = 0.2,
+                 warmup_updates: int = 30, recalc_batch_size: int = 32, success_frac = 0.2,
                  include_terminal_starts: bool = False,
                  model_snapshot_dir="rl_model_snapshots"):
         self.n_observation = n_observation
@@ -56,7 +56,7 @@ class DQNAgent:
 
         # e - greedly 
         self.slot_bootstrap_steps = 20     # первые N шагов нового запуска делаем повышенное ε
-        self.slot_bootstrap_eps = 0.5
+        self.slot_bootstrap_eps = 0.95
 
         # TD
         self.lambda_ = 0.95     # λ
