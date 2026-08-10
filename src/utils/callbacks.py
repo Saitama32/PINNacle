@@ -181,6 +181,8 @@ class IntegralDiagnosticsCallback(Callback):
             "global_integral_loss",
             "global_integral_rms",
             "local_integral_loss",
+            "initial_condition_loss",
+            "initial_condition_weight",
             "local_integral_rms",
             "local_integral_mae",
             "local_integral_max",
@@ -204,6 +206,7 @@ class IntegralDiagnosticsCallback(Callback):
             "integral_weight",
             "weighted_global_integral_loss",
             "weighted_local_integral_loss",
+            "weighted_initial_condition_loss",
             "integral_loss_weighted",
             "actual_total_loss",
             "integral_residual_rms",
@@ -254,6 +257,9 @@ class IntegralDiagnosticsCallback(Callback):
                 f"raw={values['integral_loss_raw']:.10e} "
                 f"global={values['global_integral_loss']:.10e} "
                 f"local={values['local_integral_loss']:.10e} "
+                f"ic={values['initial_condition_loss']:.10e} "
+                f"ic_weight={values['initial_condition_weight']:.10e} "
+                f"weighted_ic={values['weighted_initial_condition_loss']:.10e} "
                 f"weight={values['integral_weight']:.10e} "
                 f"weighted={values['integral_loss_weighted']:.10e} "
                 f"total={values['actual_total_loss']:.10e} "

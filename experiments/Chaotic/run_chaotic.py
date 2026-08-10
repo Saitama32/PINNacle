@@ -245,11 +245,15 @@ def validate_args(args):
         raise ValueError("--causal-num-chunks must be positive.")
     if args.integral_only and not args.use_integral_loss:
         raise ValueError("--integral-only requires --use-integral-loss.")
+    if args.integral_ic_enabled and not (args.use_integral_loss and args.integral_only):
+        raise ValueError("--integral-ic-enabled requires --use-integral-loss and --integral-only.")
     if args.use_integral_loss:
         if args.equation not in {"ks", "kuramoto-sivashinsky"}:
             raise ValueError("--use-integral-loss is currently supported only with --equation ks.")
         if args.integral_loss_weight < 0 or not np.isfinite(args.integral_loss_weight):
             raise ValueError("--integral-loss-weight must be finite and non-negative.")
+        if args.integral_ic_weight < 0 or not np.isfinite(args.integral_ic_weight):
+            raise ValueError("--integral-ic-weight must be finite and non-negative.")
         if args.integral_batch_size <= 0:
             raise ValueError("--integral-batch-size must be positive.")
         if args.integral_warmup_steps < 0:
@@ -334,6 +338,8 @@ def maybe_attach_integral_loss(model, args):
         t_min=args.integral_t_min,
         seed=args.integral_seed if args.integral_seed is not None else args.seed,
         resample_every=args.integral_resample_every,
+        initial_condition_enabled=args.integral_ic_enabled,
+        initial_condition_weight=args.integral_ic_weight,
     )
     model.integral_loss = integral_loss
     model.integral_loss_diagnostics = None
@@ -484,6 +490,8 @@ def run_one(equation_name, args):
             integral_t_min=args.integral_t_min,
             integral_resample_every=args.integral_resample_every,
             integral_seed=args.integral_seed,
+            integral_ic_enabled=args.integral_ic_enabled,
+            integral_ic_weight=args.integral_ic_weight,
         )
         trainer = FAMTrainer(
             model,
@@ -576,6 +584,8 @@ def parse_args():
     )
     parser.add_argument("--integral-resample-every", type=int, default=1)
     parser.add_argument("--integral-seed", type=int, default=None)
+    parser.add_argument("--integral-ic-enabled", type=str2bool, nargs="?", const=True, default=False)
+    parser.add_argument("--integral-ic-weight", type=float, default=100.0)
     parser.add_argument(
         "--sampling-method",
         choices=["none", "fam-w", "famaw-w"],

@@ -394,6 +394,8 @@ class GlobalIntegralLoss:
         seed=None,
         resample_every=1,
         initial_condition_fn=None,
+        initial_condition_enabled=False,
+        initial_condition_weight=100.0,
     ):
         self.model = model
         self.pde = pde
@@ -414,6 +416,8 @@ class GlobalIntegralLoss:
         self.t0_fraction = float(t0_fraction)
         self.resample_every = int(resample_every)
         self.initial_condition_fn = initial_condition_fn or ks_initial_condition_torch
+        self.initial_condition_enabled = bool(initial_condition_enabled)
+        self.initial_condition_weight = float(initial_condition_weight)
 
         if self.batch_size <= 0:
             raise ValueError("integral batch_size must be positive.")
@@ -437,6 +441,8 @@ class GlobalIntegralLoss:
             raise ValueError("integral t0_fraction must be finite and satisfy 0 <= t0_fraction <= 1.")
         if self.resample_every <= 0:
             raise ValueError("integral resample_every must be positive.")
+        if self.initial_condition_weight < 0 or not math.isfinite(self.initial_condition_weight):
+            raise ValueError("integral initial_condition_weight must be finite and non-negative.")
         if getattr(pde, "input_dim", 2) != 2:
             raise ValueError("GlobalIntegralLoss currently supports only 2D inputs ordered as (x, t).")
         if not hasattr(pde, "ks_spatial_operator"):
@@ -617,6 +623,17 @@ class GlobalIntegralLoss:
     def integral_residual(self, step=None, endpoints=None):
         return self.global_integral_residual(step=step, endpoints=endpoints)
 
+    def compute_initial_condition_loss(self, x=None):
+        if x is None:
+            x = self.cached_x
+        if x is None:
+            raise ValueError("Initial-condition loss requires sampled integral endpoints.")
+        initial_time = torch.full_like(x, self.domain_t_min)
+        initial_points = torch.cat((x, initial_time), dim=1)
+        prediction = self.model.net(initial_points)
+        target = self.initial_condition_fn(x)
+        return torch.mean(torch.square(prediction - target))
+
     def compute_local_raw_loss(self, step=None, endpoints=None):
         if endpoints is None:
             x, t = self.sample_endpoints(step=step)
@@ -658,7 +675,16 @@ class GlobalIntegralLoss:
                 "max_intervals_per_point": 0,
             },
         )
-        raw_loss = global_raw_loss + self.local_weight * local_raw_loss
+        initial_condition_loss = (
+            self.compute_initial_condition_loss(self.cached_x)
+            if self.initial_condition_enabled
+            else torch.zeros_like(global_raw_loss)
+        )
+        raw_loss = (
+            global_raw_loss
+            + self.local_weight * local_raw_loss
+            + self.initial_condition_weight * initial_condition_loss
+        )
         self.last_diagnostics = self._build_diagnostics(
             raw_loss=raw_loss,
             global_raw_loss=global_raw_loss,
@@ -666,6 +692,7 @@ class GlobalIntegralLoss:
             local_raw_loss=local_raw_loss,
             local_diagnostics=local_diagnostics,
             local_segments=local_segments,
+            initial_condition_loss=initial_condition_loss,
             deepxde_loss_sum=deepxde_loss_sum,
         )
         return raw_loss
@@ -682,6 +709,9 @@ class GlobalIntegralLoss:
         self.last_diagnostics["weighted_local_integral_loss"] = (
             self.last_diagnostics["local_integral_loss"] * self.local_weight * weight
         )
+        self.last_diagnostics["weighted_initial_condition_loss"] = (
+            self.last_diagnostics["initial_condition_loss"] * self.initial_condition_weight * weight
+        )
         if deepxde_loss_sum is not None:
             deepxde_loss_sum = deepxde_loss_sum.detach()
             self.last_diagnostics["deepxde_loss_sum"] = deepxde_loss_sum
@@ -697,6 +727,7 @@ class GlobalIntegralLoss:
         local_raw_loss,
         local_diagnostics,
         local_segments,
+        initial_condition_loss,
         deepxde_loss_sum=None,
     ):
         residual_detached = global_residual.detach()
@@ -707,6 +738,8 @@ class GlobalIntegralLoss:
             "global_integral_loss": global_raw_loss.detach(),
             "global_integral_rms": torch.sqrt(torch.mean(residual_detached**2)),
             "local_integral_loss": local_raw_loss.detach(),
+            "initial_condition_loss": initial_condition_loss.detach(),
+            "initial_condition_weight": self.initial_condition_weight,
             "local_integral_rms": local_diagnostics["local_residual_rms"].detach(),
             "local_integral_mae": local_diagnostics["local_residual_mae"].detach(),
             "local_integral_max": local_diagnostics["local_residual_max"].detach(),
@@ -729,6 +762,7 @@ class GlobalIntegralLoss:
             "local_chain_contiguity_error": local_diagnostics["local_chain_contiguity_error"],
             "weighted_global_integral_loss": global_raw_loss.detach() * 0.0,
             "weighted_local_integral_loss": local_raw_loss.detach() * 0.0,
+            "weighted_initial_condition_loss": initial_condition_loss.detach() * 0.0,
             "integral_weight": 0.0,
             "integral_loss_weighted": raw_loss.detach() * 0.0,
             "integral_residual_rms": torch.sqrt(torch.mean(residual_detached**2)),
@@ -771,6 +805,8 @@ def attach_integral_loss_train_step(model, integral_loss, integral_only=False):
     model.integral_loss = integral_loss
     model.integral_loss_diagnostics = None
     integral_only = bool(integral_only)
+    if integral_loss.initial_condition_enabled and not integral_only:
+        raise ValueError("Integral initial-condition loss is supported only with integral_only=True.")
 
     def _compute_total_loss(active_inputs, active_targets, skip_backward=False):
         if integral_only:
