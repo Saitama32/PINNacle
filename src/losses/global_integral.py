@@ -270,16 +270,56 @@ def compute_local_integral_loss(
     interval_length_terms = []
 
     total_segments = int(segment_x.shape[0])
+    contiguous_u_a = None
+    contiguous_u_b = None
+    if contiguous_chain and point_num_segments is not None and point_num_segments.numel() > 0:
+        segment_counts = [int(count) for count in point_num_segments.tolist()]
+        if sum(segment_counts) != total_segments:
+            raise ValueError("point_num_segments must sum to the number of local segments.")
+
+        unique_inputs_parts = []
+        offset = 0
+        for segment_count in segment_counts:
+            chain_x = segment_x[offset : offset + 1].expand(segment_count + 1, -1)
+            chain_t = torch.cat(
+                [segment_a[offset : offset + 1], segment_b[offset : offset + segment_count]],
+                dim=0,
+            )
+            unique_inputs_parts.append(torch.cat([chain_x, chain_t], dim=1))
+            offset += segment_count
+
+        unique_inputs = torch.cat(unique_inputs_parts, dim=0)
+        unique_value_chunks = []
+        for start in range(0, unique_inputs.shape[0], int(segment_batch_size)):
+            stop = min(start + int(segment_batch_size), unique_inputs.shape[0])
+            unique_value_chunks.append(model(unique_inputs[start:stop]))
+        unique_values = torch.cat(unique_value_chunks, dim=0)
+
+        u_a_parts = []
+        u_b_parts = []
+        node_offset = 0
+        for segment_count in segment_counts:
+            chain_values = unique_values[node_offset : node_offset + segment_count + 1]
+            u_a_parts.append(chain_values[:-1])
+            u_b_parts.append(chain_values[1:])
+            node_offset += segment_count + 1
+        contiguous_u_a = torch.cat(u_a_parts, dim=0)
+        contiguous_u_b = torch.cat(u_b_parts, dim=0)
+
     for start in range(0, total_segments, int(segment_batch_size)):
         stop = min(start + int(segment_batch_size), total_segments)
         chunk_x = segment_x[start:stop]
         chunk_a = segment_a[start:stop]
         chunk_b = segment_b[start:stop]
 
-        inputs_a = torch.cat([chunk_x, chunk_a], dim=1)
-        inputs_b = torch.cat([chunk_x, chunk_b], dim=1)
-        u_a = model(inputs_a)
-        u_b = model(inputs_b)
+        if contiguous_u_a is None:
+            inputs_a = torch.cat([chunk_x, chunk_a], dim=1)
+            inputs_b = torch.cat([chunk_x, chunk_b], dim=1)
+            u_a = model(inputs_a)
+            u_b = model(inputs_b)
+        else:
+            u_a = contiguous_u_a[start:stop]
+            u_b = contiguous_u_b[start:stop]
 
         midpoint = 0.5 * (chunk_a + chunk_b)
         half_width = 0.5 * (chunk_b - chunk_a)
@@ -605,19 +645,24 @@ class GlobalIntegralLoss:
         u_end = self.model.net(endpoints_tensor)
         u0 = self.initial_condition_fn(x)
 
-        quad_points = self.quadrature_points(x, t)
-        u_quad = self.model.net(quad_points)
-        g_quad = self.pde.ks_spatial_operator(quad_points, u_quad).reshape(
-            x.shape[0], self.quadrature_order
-        )
-        _, weights = self._quadrature_constants(quad_points.device, quad_points.dtype)
-        weighted_sum = torch.sum(
-            weights.view(1, self.quadrature_order) * g_quad,
-            dim=1,
-            keepdim=True,
-        )
         span = t - self.domain_t_min
-        integral = 0.5 * span * weighted_sum
+        active = span[:, 0] != 0
+        integral = torch.zeros_like(u_end)
+        if torch.any(active):
+            active_x = x[active]
+            active_t = t[active]
+            quad_points = self.quadrature_points(active_x, active_t)
+            u_quad = self.model.net(quad_points)
+            g_quad = self.pde.ks_spatial_operator(quad_points, u_quad).reshape(
+                active_x.shape[0], self.quadrature_order
+            )
+            _, weights = self._quadrature_constants(quad_points.device, quad_points.dtype)
+            weighted_sum = torch.sum(
+                weights.view(1, self.quadrature_order) * g_quad,
+                dim=1,
+                keepdim=True,
+            )
+            integral[active] = 0.5 * span[active] * weighted_sum
         return u_end - u0 + integral
 
     def integral_residual(self, step=None, endpoints=None):
