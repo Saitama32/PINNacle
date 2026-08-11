@@ -241,8 +241,15 @@ def validate_args(args):
             raise ValueError("Dynamic freezing is currently supported only for Kuramoto-Sivashinsky.")
         if args.optimizer not in {"adam", "soap", "muon"}:
             raise ValueError("Dynamic freezing supports --optimizer adam, soap, or muon.")
-        if args.use_causal_loss or args.use_integral_loss:
-            raise ValueError("Dynamic freezing v1 is incompatible with causal and integral objectives.")
+        if args.use_integral_loss:
+            raise ValueError("Dynamic freezing is incompatible with the integral objective.")
+        if args.use_causal_loss:
+            diagnostic_points = (args.dynamic_freezing_nt - 1) * args.dynamic_freezing_nx
+            if args.causal_num_chunks > diagnostic_points:
+                raise ValueError(
+                    "--causal-num-chunks must not exceed the number of interior dynamic-freezing "
+                    f"diagnostic points ({diagnostic_points})."
+                )
         DynamicFreezingConfig(
             enabled=args.dynamic_freezing,
             group_size=args.weight_group_size,

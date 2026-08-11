@@ -9,6 +9,8 @@ import numpy as np
 import torch
 from scipy import interpolate, stats
 
+from src.losses.causal import causal_loss_with_fixed_weights, causal_residual_loss
+
 from .optimizer_adapter import MaskedOptimizerAdapter
 from .weight_groups import WeightGroupCollection
 
@@ -83,6 +85,15 @@ class DynamicFreezingController(dde.callbacks.Callback):
     def dtype(self):
         return next(self.model.net.parameters()).dtype
 
+    @property
+    def causal_enabled(self):
+        options = getattr(self.model, "causal_loss_options", None)
+        return bool(options and options.get("enabled", False))
+
+    @property
+    def causal_options(self):
+        return getattr(self.model, "causal_loss_options", {}) or {}
+
     def _build_grids(self):
         bbox = np.asarray(self.model.pde.bbox, dtype=np.float64)
         if bbox.shape != (4,):
@@ -145,9 +156,77 @@ class DynamicFreezingController(dde.callbacks.Callback):
         bad_mask = ~good_mask
         return good_mask.cpu().numpy(), bad_mask.cpu().numpy(), squared.cpu().numpy()
 
-    def _evaluate_losses(self, good_mask, bad_mask):
+    def _causal_target(self, residual=None, fixed_weights=None, return_details=False):
+        options = self.causal_options
+        time_index = int(options.get("time_index", -1))
+        try:
+            time_values = self.interior_np[:, time_index]
+        except IndexError as error:
+            raise ValueError(
+                f"causal time_index={time_index} is invalid for diagnostic points "
+                f"with {self.interior_np.shape[1]} coordinates"
+            ) from error
+        if residual is None:
+            residual = self._residual(self.interior_np)
+        num_chunks = int(options.get("num_chunks", 16))
+        if fixed_weights is not None:
+            if return_details:
+                raise ValueError("return_details is not supported with fixed causal weights")
+            return causal_loss_with_fixed_weights(
+                residual=residual,
+                t=self._tensor(time_values),
+                num_chunks=num_chunks,
+                fixed_weights=fixed_weights,
+            )
+        return causal_residual_loss(
+            residual=residual,
+            t=self._tensor(time_values),
+            num_chunks=num_chunks,
+            tol=float(options.get("tol", 0.1)),
+            include_ic_in_weights=bool(options.get("include_ic_in_weights", False)),
+            ic_loss=self._ic_loss(),
+            ic_weight_in_causal=float(options.get("ic_weight_in_causal", 0.0)),
+            return_details=return_details,
+        )
+
+    def _evaluate_losses(
+        self,
+        good_mask,
+        bad_mask,
+        causal_weights=None,
+        return_causal_details=False,
+    ):
         ic_loss = self._ic_loss()
-        residual_sq = self._residual(self.interior_np).square().reshape(-1)
+        residual = self._residual(self.interior_np)
+        residual_sq = residual.square().reshape(-1)
+        if self.causal_enabled:
+            if causal_weights is None:
+                causal_result = self._causal_target(
+                    residual=residual,
+                    return_details=return_causal_details,
+                )
+                if return_causal_details:
+                    causal_loss, _, causal_details = causal_result
+                else:
+                    causal_loss, _ = causal_result
+                    causal_details = None
+            else:
+                causal_loss = self._causal_target(
+                    residual=residual,
+                    fixed_weights=causal_weights,
+                )
+                causal_details = None
+            result = {
+                "ic": float(ic_loss.cpu()),
+                "good_pde": math.nan,
+                "good": float(ic_loss.cpu()),
+                "bad": float(causal_loss.detach().cpu()),
+                "pde": float(residual_sq.mean().cpu()) if residual_sq.numel() else 0.0,
+            }
+            if causal_details is not None:
+                result["causal_details"] = causal_details
+            return result
+
         good_tensor = torch.as_tensor(good_mask, dtype=torch.bool, device=self.device)
         bad_tensor = torch.as_tensor(bad_mask, dtype=torch.bool, device=self.device)
         good_pde = residual_sq[good_tensor].mean() if good_tensor.any() else torch.zeros((), device=self.device, dtype=self.dtype)
@@ -213,7 +292,14 @@ class DynamicFreezingController(dde.callbacks.Callback):
         if event_id == 1:
             self.first_event_step = step
         good_mask, bad_mask, _ = self._region(event_id)
-        base = self._evaluate_losses(good_mask, bad_mask)
+        base = self._evaluate_losses(
+            good_mask,
+            bad_mask,
+            return_causal_details=self.causal_enabled,
+        )
+        causal_weights = (
+            base["causal_details"]["weights"] if self.causal_enabled else None
+        )
         was_frozen = {group.group_id: group.is_frozen for group in self.groups.groups}
         rows = []
         eps = self.config.relative_eps
@@ -225,11 +311,20 @@ class DynamicFreezingController(dde.callbacks.Callback):
                 delta = full_delta.reshape(-1)[group.flat_start : group.flat_end].detach().clone()
             before = group.values().clone()
             self.groups.apply_group_delta(group, delta)
-            changed = self._evaluate_losses(good_mask, bad_mask)
+            changed = self._evaluate_losses(
+                good_mask,
+                bad_mask,
+                causal_weights=causal_weights,
+            )
             with torch.no_grad():
                 group.parameter.reshape(-1)[group.flat_start : group.flat_end].copy_(before)
             d_ic = (changed["ic"] - base["ic"]) / (base["ic"] + eps)
-            d_good_pde = (changed["good_pde"] - base["good_pde"]) / (base["good_pde"] + eps)
+            d_good_pde = (
+                math.nan
+                if self.causal_enabled
+                else (changed["good_pde"] - base["good_pde"])
+                / (base["good_pde"] + eps)
+            )
             d_good = (changed["good"] - base["good"]) / (base["good"] + eps)
             d_bad = (changed["bad"] - base["bad"]) / (base["bad"] + eps)
             protected = abs(d_good)
@@ -301,6 +396,8 @@ class DynamicFreezingController(dde.callbacks.Callback):
         max_points = self.config.nullspace_max_points
         ic_count = min(len(self.ic_np), max_points)
         ic_idx = np.linspace(0, len(self.ic_np) - 1, ic_count, dtype=int)
+        if self.causal_enabled:
+            return self.ic_np[ic_idx], np.empty((0, self.ic_np.shape[1]), dtype=np.float32)
         remaining = max_points - ic_count
         good_idx = np.flatnonzero(good_mask)
         if remaining <= 0:
@@ -475,11 +572,12 @@ class DynamicFreezingController(dde.callbacks.Callback):
     def _log_training(self, step):
         good_mask, bad_mask, squared = self._region(max(2, self.event_count + 1))
         losses = self._evaluate_losses(good_mask, bad_mask)
+        target_pde_loss = losses["bad"] if self.causal_enabled else losses["pde"]
         self.training_rows.append({
             "step": step,
-            "total_loss": self.config.ic_weight * losses["ic"] + losses["pde"],
+            "total_loss": self.config.ic_weight * losses["ic"] + target_pde_loss,
             "ic_loss": losses["ic"],
-            "pde_loss": losses["pde"],
+            "pde_loss": target_pde_loss,
             "current_num_good_points": int(np.sum(squared < self.config.good_tolerance)),
             "current_fraction_good": float(np.mean(squared < self.config.good_tolerance)),
             "num_frozen_groups": len(self.groups.frozen_groups),

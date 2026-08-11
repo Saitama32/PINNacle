@@ -1,18 +1,19 @@
 import torch
 
 
-def causal_residual_loss(
-    residual,
-    t,
-    num_chunks,
-    tol,
-    include_ic_in_weights=False,
-    ic_loss=None,
-    ic_weight_in_causal=0.0,
-):
-    """Reweight time-ordered PDE residual chunks for causal training."""
+def temporal_chunk_losses(residual, t, num_chunks):
+    """Return time-ordered mean squared residuals for equal-sized chunks."""
+    num_chunks = int(num_chunks)
+    if num_chunks <= 0:
+        raise ValueError("num_chunks must be positive")
+
     t = t.reshape(-1)
     r2 = residual.reshape(-1).pow(2)
+    if t.numel() != r2.numel():
+        raise ValueError(
+            "residual and t must contain the same number of scalar values, "
+            f"got {r2.numel()} and {t.numel()}"
+        )
 
     idx = torch.argsort(t)
     r2 = r2[idx]
@@ -23,11 +24,45 @@ def causal_residual_loss(
 
     chunk_size = n // num_chunks
     used = chunk_size * num_chunks
-    r2 = r2[:used]
-    chunk_losses = r2.reshape(num_chunks, chunk_size).mean(dim=1)
+    return r2[:used].reshape(num_chunks, chunk_size).mean(dim=1)
+
+
+def causal_loss_with_fixed_weights(residual, t, num_chunks, fixed_weights):
+    """Evaluate causal residual loss without recomputing its curriculum weights."""
+    chunk_losses = temporal_chunk_losses(residual, t, num_chunks)
+    weights = torch.as_tensor(
+        fixed_weights,
+        dtype=chunk_losses.dtype,
+        device=chunk_losses.device,
+    ).reshape(-1)
+    if weights.numel() != chunk_losses.numel():
+        raise ValueError(
+            "fixed_weights must have one value per temporal chunk, "
+            f"got {weights.numel()} weights for {chunk_losses.numel()} chunks"
+        )
+    return torch.mean(weights.detach() * chunk_losses)
+
+
+def causal_residual_loss(
+    residual,
+    t,
+    num_chunks,
+    tol,
+    include_ic_in_weights=False,
+    ic_loss=None,
+    ic_weight_in_causal=0.0,
+    return_details=False,
+):
+    """Reweight time-ordered PDE residual chunks for causal training."""
+    chunk_losses = temporal_chunk_losses(residual, t, num_chunks)
 
     matrix = torch.tril(
-        torch.ones(num_chunks, num_chunks, device=r2.device, dtype=r2.dtype),
+        torch.ones(
+            int(num_chunks),
+            int(num_chunks),
+            device=chunk_losses.device,
+            dtype=chunk_losses.dtype,
+        ),
         diagonal=-1,
     )
     cumulative_prev = matrix @ chunk_losses
@@ -48,4 +83,10 @@ def causal_residual_loss(
         "causal_chunk_loss_mean": chunk_losses.mean().detach(),
         "causal_chunk_loss_max": chunk_losses.max().detach(),
     }
+    if return_details:
+        details = {
+            "weights": weights.detach(),
+            "chunk_losses": chunk_losses.detach(),
+        }
+        return loss, diagnostics, details
     return loss, diagnostics
