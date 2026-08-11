@@ -6,6 +6,7 @@ import time
 
 os.environ["DDEBACKEND"] = "pytorch"
 os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
+os.environ.setdefault("MPLBACKEND", "Agg")
 
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 if PROJECT_ROOT not in sys.path:
@@ -16,6 +17,7 @@ import torch
 import deepxde as dde
 
 from src.model import PeriodicFourierFeatures, ResNet
+from src.dynamic_freezing import DynamicFreezingConfig, DynamicFreezingController
 from src.losses.global_integral import (
     GlobalIntegralLoss,
     attach_integral_loss_train_step,
@@ -199,6 +201,17 @@ def configure_optimizer(args):
             max_precondition_dim=args.soap_max_precondition_dim,
             bias_correction=args.soap_bias_correction,
         )
+    elif args.optimizer == "muon":
+        dde.optimizers.set_MUON_options(
+            momentum=args.muon_momentum,
+            nesterov=args.muon_nesterov,
+            ns_steps=args.muon_ns_steps,
+            adam_lr=args.muon_adam_lr,
+            adam_betas=(args.muon_adam_beta1, args.muon_adam_beta2),
+            adam_eps=args.muon_adam_epsilon,
+            muon_weight_decay=args.muon_weight_decay,
+            adam_weight_decay=args.muon_adam_weight_decay,
+        )
     elif args.optimizer == "pcgrad":
         dde.optimizers.set_PCGRAD_options(
             base_optimizer=args.pcgrad_base_optimizer,
@@ -222,6 +235,33 @@ def validate_args(args):
             "Either pass a positive value, for example --weight-decay 1e-4, "
             "or switch to --optimizer adam."
         )
+
+    if args.dynamic_freezing:
+        if args.equation not in {"ks", "kuramoto-sivashinsky"}:
+            raise ValueError("Dynamic freezing is currently supported only for Kuramoto-Sivashinsky.")
+        if args.optimizer not in {"adam", "soap", "muon"}:
+            raise ValueError("Dynamic freezing supports --optimizer adam, soap, or muon.")
+        if args.use_causal_loss or args.use_integral_loss:
+            raise ValueError("Dynamic freezing v1 is incompatible with causal and integral objectives.")
+        DynamicFreezingConfig(
+            enabled=args.dynamic_freezing,
+            group_size=args.weight_group_size,
+            freeze_fraction=args.freeze_fraction,
+            good_tolerance=args.good_tolerance,
+            freeze_events=args.freeze_events,
+            freeze_interval_steps=args.freeze_interval_steps,
+            diagnostic_nt=args.dynamic_freezing_nt,
+            diagnostic_nx=args.dynamic_freezing_nx,
+            nullspace_enabled=args.nullspace_enabled,
+            nullspace_max_points=args.nullspace_max_points,
+            nullspace_damping=args.nullspace_damping,
+            responsibility_enabled=args.responsibility_enabled,
+            responsibility_nt=args.responsibility_nt,
+            responsibility_nx=args.responsibility_nx,
+            log_every=args.log_every,
+            seed=args.seed or 0,
+            ic_weight=args.bc_loss_weight,
+        ).validate()
 
     if args.famaw_causal_window and args.sampling_method not in {"fam-w", "famaw-w"}:
         raise ValueError("--famaw-causal-window is only supported with --sampling-method fam-w or famaw-w.")
@@ -382,6 +422,28 @@ def save_run_configuration(save_path, args, equation_name):
         json.dump(config, file_obj, indent=2, sort_keys=True)
 
 
+def dynamic_freezing_config(args):
+    return DynamicFreezingConfig(
+        enabled=args.dynamic_freezing,
+        group_size=args.weight_group_size,
+        freeze_fraction=args.freeze_fraction,
+        good_tolerance=args.good_tolerance,
+        freeze_events=args.freeze_events,
+        freeze_interval_steps=args.freeze_interval_steps,
+        diagnostic_nt=args.dynamic_freezing_nt,
+        diagnostic_nx=args.dynamic_freezing_nx,
+        nullspace_enabled=args.nullspace_enabled,
+        nullspace_max_points=args.nullspace_max_points,
+        nullspace_damping=args.nullspace_damping,
+        responsibility_enabled=args.responsibility_enabled,
+        responsibility_nt=args.responsibility_nt,
+        responsibility_nx=args.responsibility_nx,
+        log_every=args.log_every,
+        seed=args.seed or 0,
+        ic_weight=args.bc_loss_weight,
+    )
+
+
 def run_one(equation_name, args):
     if args.seed is not None:
         dde.config.set_random_seed(args.seed)
@@ -419,9 +481,10 @@ def run_one(equation_name, args):
     run_name = equation_name.replace("-", "_")
     timestamp = time.strftime("%m.%d-%H.%M.%S", time.localtime())
     causal_tag = "-causal-loss" if args.use_causal_loss else ""
+    freeze_tag = "-dynamic-freezing" if args.dynamic_freezing else ""
     save_path = os.path.join(
         args.out,
-        f"{timestamp}-{run_name}-pinn-{args.net}-{args.optimizer.lower()}-{args.sampling_method}{causal_tag}",
+        f"{timestamp}-{run_name}-pinn-{args.net}-{args.optimizer.lower()}-{args.sampling_method}{causal_tag}{freeze_tag}",
     )
     os.makedirs(save_path, exist_ok=True)
     save_run_configuration(save_path, args, equation_name)
@@ -431,6 +494,15 @@ def run_one(equation_name, args):
         f"sampling={args.sampling_method} for {args.iterations} iterations."
     )
     callbacks = make_callbacks(args, equation_name)
+    controller = None
+    if args.dynamic_freezing:
+        controller_log_dir = args.dynamic_freezing_log_dir or save_path
+        controller = DynamicFreezingController(
+            model,
+            dynamic_freezing_config(args),
+            controller_log_dir,
+        )
+        callbacks = ([] if callbacks is None else list(callbacks)) + [controller]
     if args.sampling_method == "none":
         losshistory, train_state = model.train(
             iterations=args.iterations,
@@ -516,7 +588,7 @@ def parse_args():
     parser.add_argument("--fourier-include-bias", type=str2bool, nargs="?", const=True, default=True)
     parser.add_argument("--iterations", type=int, default=10000)
     parser.add_argument("--lr", type=float, default=5e-4)
-    parser.add_argument("--bc-loss-weight", type=float, default=100.0)
+    parser.add_argument("--bc-loss-weight", "--ic-weight", dest="bc_loss_weight", type=float, default=100.0)
     parser.add_argument("--seed", type=int, default=12345)
     parser.add_argument("--out", type=str, default="runs_plain")
     parser.add_argument("--log-every", type=int, default=100)
@@ -579,7 +651,7 @@ def parse_args():
     parser.add_argument(
         "--sampling-method",
         choices=["none", "fam-w", "famaw-w"],
-        default="fam-w",
+        default="none",
     )
     parser.add_argument("--sampling-refresh-every", type=int, default=1000)
     parser.add_argument("--fam-alpha", type=float, default=0.6)
@@ -604,6 +676,7 @@ def parse_args():
             "adam",
             "pcgrad",
             "soap",
+            "muon",
             "L-BFGS",
             "L-BFGS-B",
             "PSO",
@@ -614,7 +687,7 @@ def parse_args():
             "SSBroyden",
             "adam",
         ],
-        default="adam",
+        default="muon",
     )
     parser.add_argument("--weight-decay", type=float, default=0)
 
@@ -659,6 +732,37 @@ def parse_args():
         const=True,
         default=True,
     )
+    parser.add_argument("--muon-momentum", type=float, default=0.95)
+    parser.add_argument("--muon-nesterov", type=str2bool, nargs="?", const=True, default=True)
+    parser.add_argument("--muon-ns-steps", type=int, default=5)
+    parser.add_argument("--muon-adam-lr", type=float, default=3e-4)
+    parser.add_argument("--muon-adam-beta1", type=float, default=0.9)
+    parser.add_argument("--muon-adam-beta2", type=float, default=0.95)
+    parser.add_argument("--muon-adam-epsilon", type=float, default=1e-10)
+    parser.add_argument("--muon-weight-decay", type=float, default=0.0)
+    parser.add_argument("--muon-adam-weight-decay", type=float, default=0.0)
+
+    parser.add_argument(
+        "--dynamic-freezing",
+        type=str2bool,
+        nargs="?",
+        const=True,
+        default=True,
+    )
+    parser.add_argument("--weight-group-size", type=int, default=256)
+    parser.add_argument("--freeze-fraction", type=float, default=0.25)
+    parser.add_argument("--good-tolerance", type=float, default=1e-3)
+    parser.add_argument("--freeze-events", type=int, default=3)
+    parser.add_argument("--freeze-interval-steps", type=int, default=2000)
+    parser.add_argument("--dynamic-freezing-nt", type=int, default=16)
+    parser.add_argument("--dynamic-freezing-nx", type=int, default=64)
+    parser.add_argument("--nullspace-enabled", type=str2bool, nargs="?", const=True, default=True)
+    parser.add_argument("--nullspace-max-points", type=int, default=256)
+    parser.add_argument("--nullspace-damping", type=float, default=1e-6)
+    parser.add_argument("--responsibility-enabled", type=str2bool, nargs="?", const=True, default=True)
+    parser.add_argument("--responsibility-nt", type=int, default=16)
+    parser.add_argument("--responsibility-nx", type=int, default=64)
+    parser.add_argument("--dynamic-freezing-log-dir", type=str, default=None)
     return parser.parse_args()
 
 
