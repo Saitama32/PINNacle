@@ -12,7 +12,12 @@ import deepxde as dde
 from deepxde import display
 from deepxde.callbacks import CallbackList
 
-from src.losses.global_integral import GlobalIntegralLoss, compose_optimizer_task_losses
+from src.losses.global_integral import (
+    GlobalIntegralLoss,
+    compose_optimizer_task_losses,
+    flat_grad_or_zeros,
+    sum_integral_task_losses,
+)
 
 
 def split_fixed_movable_points(points, num_fixed, num_movable, rng=None, shuffle=True):
@@ -692,10 +697,11 @@ class FAMTrainer:
         theta_loss = deepxde_loss_sum
         if self.integral_loss is not None:
             step = self.model.train_state.step
-            integral_weighted_loss = self.integral_loss.compute_weighted_loss(
+            integral_task_losses = self.integral_loss.compute_weighted_components(
                 step,
                 deepxde_loss_sum=None if self.integral_only else deepxde_loss_sum,
             )
+            integral_weighted_loss = sum_integral_task_losses(integral_task_losses)
             diagnostics = self.integral_loss.last_diagnostics
             self.last_integral_raw_loss = diagnostics["integral_loss_raw"]
             self.last_integral_weight = diagnostics["integral_weight"]
@@ -707,6 +713,7 @@ class FAMTrainer:
                     integral_only=True,
                     opt_name=getattr(self.model, "opt_name", None),
                     opt=self.model.opt,
+                    integral_task_losses=integral_task_losses,
                 )
                 theta_loss = integral_weighted_loss
             else:
@@ -716,6 +723,7 @@ class FAMTrainer:
                     integral_only=False,
                     opt_name=getattr(self.model, "opt_name", None),
                     opt=self.model.opt,
+                    integral_task_losses=integral_task_losses,
                 )
                 theta_loss = theta_loss + integral_weighted_loss
             diagnostics["actual_total_loss"] = theta_loss.detach()
@@ -743,8 +751,7 @@ class FAMTrainer:
                         self.model.opt.losses = weighted_losses
                         if use_grad:
                             loss_list.append(theta_loss)
-                            grads = torch.autograd.grad(theta_loss, params)
-                            grad_list.append(parameters_to_vector(grads))
+                            grad_list.append(flat_grad_or_zeros(theta_loss, params))
                         else:
                             loss_list.append(theta_loss.detach())
                     grads_swarm = torch.stack(grad_list) if use_grad else None

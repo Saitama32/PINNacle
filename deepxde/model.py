@@ -790,7 +790,7 @@ class Model:
             elif backend_name == "tensorflow":
                 self._train_tensorflow_tfp()
             elif backend_name == "pytorch":
-                if self.opt_name == "L-BFGS":
+                if self.opt_name in ["L-BFGS", "L-BFGS-B"]:
                     self._train_pytorch_lbfgs()
                 elif self.opt_name in ["NNCG", "PSO"]:
                     if iterations is None:

@@ -96,15 +96,46 @@ def _uses_pcgrad_task_projection(opt_name=None, opt=None):
     return any("pcgrad" in name for name in names)
 
 
-def compose_optimizer_task_losses(base_losses, integral_weighted_loss, integral_only=False, opt_name=None, opt=None):
-    integral_task_loss = integral_weighted_loss.reshape(1)
+def compose_optimizer_task_losses(
+    base_losses,
+    integral_weighted_loss,
+    integral_only=False,
+    opt_name=None,
+    opt=None,
+    integral_task_losses=None,
+):
+    if integral_task_losses is None:
+        integral_task_losses = integral_weighted_loss.reshape(1)
+    else:
+        active_losses = [loss.reshape(()) for loss in integral_task_losses if loss is not None]
+        integral_task_losses = (
+            torch.stack(active_losses)
+            if active_losses
+            else integral_weighted_loss.reshape(1)
+        )
     if integral_only or base_losses is None:
-        return integral_task_loss
+        return integral_task_losses
     if base_losses.ndim == 0:
         base_losses = base_losses.reshape(1)
     if _uses_pcgrad_task_projection(opt_name=opt_name, opt=opt) and base_losses.numel() > 0:
-        return torch.cat([base_losses, integral_task_loss])
+        return torch.cat([base_losses, integral_task_losses])
     return base_losses
+
+
+def sum_integral_task_losses(integral_task_losses):
+    active_losses = [loss.reshape(()) for loss in integral_task_losses if loss is not None]
+    if not active_losses:
+        raise RuntimeError("Integral loss produced no active components.")
+    return torch.stack(active_losses).sum()
+
+
+def flat_grad_or_zeros(loss, params):
+    grads = torch.autograd.grad(loss, params, allow_unused=True)
+    dense_grads = [
+        torch.zeros_like(param) if grad is None else grad
+        for grad, param in zip(grads, params)
+    ]
+    return parameters_to_vector(dense_grads)
 
 
 def _zero_local_diagnostics(device, dtype):
@@ -730,6 +761,15 @@ class GlobalIntegralLoss:
             + self.local_weight * local_raw_loss
             + self.initial_condition_weight * initial_condition_loss
         )
+        self.last_components = (
+            global_raw_loss,
+            self.local_weight * local_raw_loss if self.local_enabled else None,
+            (
+                self.initial_condition_weight * initial_condition_loss
+                if self.initial_condition_enabled
+                else None
+            ),
+        )
         self.last_diagnostics = self._build_diagnostics(
             raw_loss=raw_loss,
             global_raw_loss=global_raw_loss,
@@ -742,27 +782,36 @@ class GlobalIntegralLoss:
         )
         return raw_loss
 
-    def compute_weighted_loss(self, step, deepxde_loss_sum=None):
-        raw_loss = self.compute_raw_loss(step=step, deepxde_loss_sum=deepxde_loss_sum)
-        weight = self.current_weight(step)
-        weighted_loss = raw_loss * weight
-        self.last_diagnostics["integral_weight"] = weight
+    def compute_weighted_components(self, step, deepxde_loss_sum=None):
+        self.compute_raw_loss(step=step, deepxde_loss_sum=deepxde_loss_sum)
+        global_component = self.last_components[0]
+        local_component = (
+            self.last_components[1]
+            if self.last_components[1] is not None
+            else torch.zeros_like(global_component)
+        )
+        initial_condition_component = (
+            self.last_components[2]
+            if self.last_components[2] is not None
+            else torch.zeros_like(global_component)
+        )
+        weighted_loss = global_component + local_component + initial_condition_component
+        self.last_diagnostics["integral_weight"] = 1.0
         self.last_diagnostics["integral_loss_weighted"] = weighted_loss.detach()
-        self.last_diagnostics["weighted_global_integral_loss"] = (
-            self.last_diagnostics["global_integral_loss"] * weight
-        )
-        self.last_diagnostics["weighted_local_integral_loss"] = (
-            self.last_diagnostics["local_integral_loss"] * self.local_weight * weight
-        )
-        self.last_diagnostics["weighted_initial_condition_loss"] = (
-            self.last_diagnostics["initial_condition_loss"] * self.initial_condition_weight * weight
-        )
+        self.last_diagnostics["weighted_global_integral_loss"] = global_component.detach()
+        self.last_diagnostics["weighted_local_integral_loss"] = local_component.detach()
+        self.last_diagnostics["weighted_initial_condition_loss"] = initial_condition_component.detach()
         if deepxde_loss_sum is not None:
             deepxde_loss_sum = deepxde_loss_sum.detach()
             self.last_diagnostics["deepxde_loss_sum"] = deepxde_loss_sum
             self.last_diagnostics["actual_total_loss"] = deepxde_loss_sum + weighted_loss.detach()
         self.model.integral_loss_diagnostics = self.last_diagnostics
-        return weighted_loss
+        return self.last_components
+
+    def compute_weighted_loss(self, step, deepxde_loss_sum=None):
+        return sum_integral_task_losses(
+            self.compute_weighted_components(step, deepxde_loss_sum)
+        )
 
     def _build_diagnostics(
         self,
@@ -855,16 +904,18 @@ def attach_integral_loss_train_step(model, integral_loss, integral_only=False):
 
     def _compute_total_loss(active_inputs, active_targets, skip_backward=False):
         if integral_only:
-            integral_weighted_loss = integral_loss.compute_weighted_loss(
+            integral_task_losses = integral_loss.compute_weighted_components(
                 model.train_state.step,
                 deepxde_loss_sum=None,
             )
+            integral_weighted_loss = sum_integral_task_losses(integral_task_losses)
             model.opt.losses = compose_optimizer_task_losses(
                 base_losses=None,
                 integral_weighted_loss=integral_weighted_loss,
                 integral_only=True,
                 opt_name=getattr(model, "opt_name", None),
                 opt=model.opt,
+                integral_task_losses=integral_task_losses,
             )
             integral_loss.last_diagnostics["actual_total_loss"] = integral_weighted_loss.detach()
             integral_loss.last_diagnostics["deepxde_loss_sum"] = torch.zeros_like(integral_weighted_loss.detach())
@@ -877,16 +928,18 @@ def attach_integral_loss_train_step(model, integral_loss, integral_only=False):
                 if ic_loss is not None:
                     losses = torch.cat([losses, ic_loss.reshape(1)])
             deepxde_loss_sum = torch.sum(losses)
-            integral_weighted_loss = integral_loss.compute_weighted_loss(
+            integral_task_losses = integral_loss.compute_weighted_components(
                 model.train_state.step,
                 deepxde_loss_sum=deepxde_loss_sum,
             )
+            integral_weighted_loss = sum_integral_task_losses(integral_task_losses)
             model.opt.losses = compose_optimizer_task_losses(
                 base_losses=losses,
                 integral_weighted_loss=integral_weighted_loss,
                 integral_only=False,
                 opt_name=getattr(model, "opt_name", None),
                 opt=model.opt,
+                integral_task_losses=integral_task_losses,
             )
             total_loss = deepxde_loss_sum + integral_weighted_loss
             integral_loss.last_diagnostics["actual_total_loss"] = total_loss.detach()
@@ -952,8 +1005,7 @@ def attach_integral_loss_train_step(model, integral_loss, integral_only=False):
                     )
                     if use_grad:
                         loss_list.append(total_loss)
-                        grads = torch.autograd.grad(total_loss, params)
-                        grad_list.append(parameters_to_vector(grads))
+                        grad_list.append(flat_grad_or_zeros(total_loss, params))
                     else:
                         loss_list.append(total_loss.detach())
 
