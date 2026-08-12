@@ -255,6 +255,7 @@ def validate_args(args):
             group_size=args.weight_group_size,
             max_freeze_fraction=args.max_freeze_fraction,
             good_tolerance=args.good_tolerance,
+            protected_pde_tolerance=args.protected_pde_tolerance,
             freeze_events=args.freeze_events,
             max_freeze_refresh_steps=args.max_freeze_refresh_steps,
             causal_protect_weight=args.causal_protect_weight,
@@ -436,6 +437,7 @@ def dynamic_freezing_config(args):
         group_size=args.weight_group_size,
         max_freeze_fraction=args.max_freeze_fraction,
         good_tolerance=args.good_tolerance,
+        protected_pde_tolerance=args.protected_pde_tolerance,
         freeze_events=args.freeze_events,
         max_freeze_refresh_steps=args.max_freeze_refresh_steps,
         causal_protect_weight=args.causal_protect_weight,
@@ -761,6 +763,15 @@ def parse_args():
     parser.add_argument("--weight-group-size", type=int, default=256)
     parser.add_argument("--max-freeze-fraction", type=float, default=0.25)
     parser.add_argument("--good-tolerance", type=float, default=1e-3)
+    parser.add_argument(
+        "--protected-pde-tolerance",
+        type=float,
+        default=1e-3,
+        help=(
+            "Independent tolerance for the mean residual loss over the protected "
+            "causal prefix; does not affect legacy non-causal freezing."
+        ),
+    )
     parser.add_argument(
         "--freeze-events",
         type=int,

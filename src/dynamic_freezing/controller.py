@@ -25,6 +25,7 @@ class DynamicFreezingConfig:
     group_size: int = 256
     max_freeze_fraction: float = 0.25
     good_tolerance: float = 1e-3
+    protected_pde_tolerance: float = 1e-3
     freeze_events: int = 3
     max_freeze_refresh_steps: int = 2000
     causal_protect_weight: float = 0.9
@@ -48,6 +49,8 @@ class DynamicFreezingConfig:
             raise ValueError("max freeze fraction must satisfy 0 <= value <= 1")
         if self.good_tolerance <= 0:
             raise ValueError("good tolerance must be positive")
+        if self.protected_pde_tolerance <= 0:
+            raise ValueError("protected PDE tolerance must be positive")
         if self.freeze_events <= 0 or self.max_freeze_refresh_steps <= 0:
             raise ValueError("freeze event count and max refresh steps must be positive")
         if not 0 < self.causal_protect_weight <= 1:
@@ -397,18 +400,34 @@ class DynamicFreezingController(dde.callbacks.Callback):
             protected = abs(d_good)
             utility = max(0.0, -d_bad)
             score = utility / (protected + eps)
-            violates = changed["good"] > self.config.good_tolerance
-            worsens = changed["good"] > base["good"] + eps
-            protected_risk = max(
-                0.0,
-                (changed["good"] - self.config.good_tolerance)
-                / self.config.good_tolerance,
-            )
-            incremental_worsening = max(
-                0.0,
-                (changed["good"] - base["good"])
-                / (max(base["good"], self.config.good_tolerance) + eps),
-            )
+            if self.causal_enabled:
+                protection = self._causal_protection_metrics(
+                    base, changed, protected_front
+                )
+                violates = protection["violates_ic_tolerance"] or protection[
+                    "violates_protected_pde_tolerance"
+                ]
+                worsens = protection["worsens_ic"] or protection[
+                    "worsens_protected_pde"
+                ]
+                protected_risk = protection["protected_risk"]
+                incremental_worsening = protection["incremental_worsening"]
+                risky_group = protection["risky"]
+            else:
+                violates = changed["good"] > self.config.good_tolerance
+                worsens = changed["good"] > base["good"] + eps
+                protected_risk = max(
+                    0.0,
+                    (changed["good"] - self.config.good_tolerance)
+                    / self.config.good_tolerance,
+                )
+                incremental_worsening = max(
+                    0.0,
+                    (changed["good"] - base["good"])
+                    / (max(base["good"], self.config.good_tolerance) + eps),
+                )
+                risky_group = violates and worsens
+                protection = {}
             rows.append({
                 "event_id": event_id,
                 "step": step,
@@ -425,12 +444,20 @@ class DynamicFreezingController(dde.callbacks.Callback):
                 "loss_good_base": base["good"],
                 "loss_good_after": changed["good"],
                 "loss_bad_before": base["bad"],
-                "protected_tolerance": self.config.good_tolerance,
+                "protected_tolerance": (
+                    math.nan if self.causal_enabled else self.config.good_tolerance
+                ),
                 "protected_risk": protected_risk,
                 "incremental_worsening": incremental_worsening,
                 "violates_protected_tolerance": violates,
                 "worsens_protected": worsens,
-                "risky": violates and worsens,
+                "risky": risky_group,
+                "loss_ic_base": base["ic"],
+                "loss_ic_after": changed["ic"],
+                "ic_tolerance": self.config.good_tolerance,
+                "loss_protected_pde_base": base["good_pde"],
+                "loss_protected_pde_after": changed["good_pde"],
+                "protected_pde_tolerance": self.config.protected_pde_tolerance,
                 "delta_good_abs": changed["good"] - base["good"],
                 "delta_bad_abs": changed["bad"] - base["bad"],
                 "d_ic_rel": d_ic,
@@ -443,6 +470,7 @@ class DynamicFreezingController(dde.callbacks.Callback):
                 "S": score,
                 "force_train": d_good < 0 and d_bad < 0,
                 "_delta": delta,
+                **protection,
             })
 
         protected_mask = (
@@ -540,6 +568,63 @@ class DynamicFreezingController(dde.callbacks.Callback):
         max_frozen = int(math.floor(len(rows) * self.config.max_freeze_fraction))
         selected = {row["group_id"] for row in risky[:max_frozen]}
         return selected, risky
+
+    def _causal_protection_metrics(self, base, changed, protected_front_chunk):
+        """Evaluate IC and causal-prefix protection as independent constraints."""
+        eps = self.config.relative_eps
+        ic_tolerance = self.config.good_tolerance
+        pde_tolerance = self.config.protected_pde_tolerance
+
+        ic_violates = changed["ic"] > ic_tolerance
+        ic_worsens = changed["ic"] > base["ic"] + eps
+        pde_is_protected = protected_front_chunk >= 0
+        pde_violates = pde_is_protected and changed["good_pde"] > pde_tolerance
+        pde_worsens = pde_is_protected and changed["good_pde"] > base["good_pde"] + eps
+
+        ic_risk = max(0.0, (changed["ic"] - ic_tolerance) / ic_tolerance)
+        pde_risk = (
+            max(0.0, (changed["good_pde"] - pde_tolerance) / pde_tolerance)
+            if pde_is_protected
+            else 0.0
+        )
+        ic_increment = max(
+            0.0,
+            (changed["ic"] - base["ic"])
+            / (max(base["ic"], ic_tolerance) + eps),
+        )
+        pde_increment = (
+            max(
+                0.0,
+                (changed["good_pde"] - base["good_pde"])
+                / (max(base["good_pde"], pde_tolerance) + eps),
+            )
+            if pde_is_protected
+            else 0.0
+        )
+        ic_is_risky = ic_violates and ic_worsens
+        pde_is_risky = pde_violates and pde_worsens
+        risky = ic_is_risky or pde_is_risky
+        active_risks = []
+        active_increments = []
+        if ic_is_risky:
+            active_risks.append(ic_risk)
+            active_increments.append(ic_increment)
+        if pde_is_risky:
+            active_risks.append(pde_risk)
+            active_increments.append(pde_increment)
+        return {
+            "violates_ic_tolerance": ic_violates,
+            "worsens_ic": ic_worsens,
+            "ic_protected_risk": ic_risk,
+            "ic_incremental_worsening": ic_increment,
+            "violates_protected_pde_tolerance": pde_violates,
+            "worsens_protected_pde": pde_worsens,
+            "pde_protected_risk": pde_risk,
+            "pde_incremental_worsening": pde_increment,
+            "protected_risk": max(active_risks, default=0.0),
+            "incremental_worsening": max(active_increments, default=0.0),
+            "risky": risky,
+        }
 
     def _selected_constraint_points(self, good_mask):
         max_points = self.config.nullspace_max_points

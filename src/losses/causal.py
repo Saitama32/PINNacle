@@ -76,15 +76,17 @@ def causal_residual_loss(
         diagonal=-1,
     )
     cumulative_prev = matrix @ chunk_losses
+    ic_offset = torch.zeros((), device=chunk_losses.device, dtype=chunk_losses.dtype)
 
     if include_ic_in_weights:
         if ic_loss is None:
             raise ValueError("ic_loss must be provided when include_ic_in_weights=True")
-        cumulative_prev = cumulative_prev + float(ic_weight_in_causal) * ic_loss.detach()
+        ic_offset = float(ic_weight_in_causal) * ic_loss.detach()
+        cumulative_prev = cumulative_prev + ic_offset
 
     weights = torch.exp(-float(tol) * cumulative_prev.detach())
     post_chunk_weights = torch.exp(
-        -float(tol) * torch.cumsum(chunk_losses.detach(), dim=0)
+        -float(tol) * (ic_offset + torch.cumsum(chunk_losses.detach(), dim=0))
     )
     loss = torch.mean(weights * chunk_losses)
 
