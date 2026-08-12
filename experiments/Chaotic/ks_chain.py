@@ -73,27 +73,27 @@ def main():
     parser.add_argument("--device", type=str, default="0")
     parser.add_argument("--seed", type=int, default=1234)
 
-    parser.add_argument("--hidden-layers", type=str, default="50*5")
+    parser.add_argument("--hidden-layers", type=str, default="190*5")
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--log-every", type=int, default=100)
     parser.add_argument("--plot-every", type=int, default=2000)
-    parser.add_argument("--use-integral-loss", action="store_true", default=False)
-    parser.add_argument("--integral-only", action="store_true", default=False)
-    parser.add_argument("--integral-batch-size", type=int, default=1000)
-    parser.add_argument("--integral-quadrature-order", type=int, default=10)
+    parser.add_argument("--use-integral-loss", action="store_true", default=True)
+    parser.add_argument("--integral-only", action="store_true", default=True)
+    parser.add_argument("--integral-batch-size", type=int, default=256)
+    parser.add_argument("--integral-quadrature-order", type=int, default=4)
     parser.add_argument("--integral-local-enabled", action="store_true", default=True)
     parser.add_argument("--no-integral-local", dest="integral_local_enabled", action="store_false")
     parser.add_argument("--integral-local-weight", type=float, default=1.0)
     parser.add_argument("--integral-local-quadrature-order", type=int, default=4)
     parser.add_argument("--integral-local-hmax", type=float, default=0.05)
     parser.add_argument("--integral-local-segment-batch-size", type=int, default=256)
-    parser.add_argument("--integral-local-normalize-by-length", action="store_true", default=False)
-    parser.add_argument("--integral-local-contiguous-chain", action="store_true", default=False)
+    parser.add_argument("--integral-local-normalize-by-length", action="store_true", default=True)
+    parser.add_argument("--integral-local-contiguous-chain", action="store_true", default=True)
     parser.add_argument("--integral-t0-fraction", type=float, default=0.2)
     parser.add_argument("--integral-t-min", type=float, default=0.0)
-    parser.add_argument("--integral-resample-every", type=int, default=1)
+    parser.add_argument("--integral-resample-every", type=int, default=5)
     parser.add_argument("--integral-seed", type=int, default=None)
-    parser.add_argument("--integral-ic-enabled", action="store_true", default=False)
+    parser.add_argument("--integral-ic-enabled", action="store_true", default=True)
     parser.add_argument("--integral-ic-weight", type=float, default=100.0)
 
     parser.add_argument("--n-trajectories", type=int, default=100)
@@ -159,21 +159,14 @@ def main():
         },
     }
     optimizers = {
-        "PSO": {
-            "lr": [0.0, 1e-3, 1e-4],
-            "epochs": [100, 200, 300],
-        },
-        "SOAP": {
-            "lr": [1e-3, 3e-4, 3e-5],
-            "epochs": [100, 1000, 2500],
-        },
+        # "Adam": {"lr": [1e-2, 1e-3, 1e-4], "epochs": [100, 1000, 2500]},
+        "LBFGS": {"lr": [1, 5e-1, 1e-1], "epochs": [100, 500, 1000]},
+        "PSO": {"lr": [0.0, 1e-3, 1e-4], "epochs": [100, 200, 300]},
+        "SOAP": {"lr": [1e-2, 1e-3, 3e-4], "epochs": [100, 1000, 2500],},
+        "Muon": {"lr": [2e-2, 1e-2, 5e-3], "epochs": [100, 1000, 2500]},
         "PCGrad": {
             "lr": [1e-2, 1e-3, 1e-4],
             "epochs": [100, 1000, 2000],
-        },
-        "SSBroyden": {
-            "lr": [1.0, 5e-1, 1e-1],
-            "epochs": [100, 500, 1000],
         },
     }
 
