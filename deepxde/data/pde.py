@@ -184,7 +184,7 @@ class PDE(Data):
                 time_index = int(causal_options.get("time_index", -1))
                 pde_inputs = inputs[bcs_start[-1] :]
                 t = pde_inputs[:, time_index].reshape(-1, 1)
-                loss, diagnostics = causal_residual_loss(
+                loss, diagnostics, details = causal_residual_loss(
                     residual=error,
                     t=t,
                     num_chunks=int(causal_options.get("num_chunks", 16)),
@@ -196,10 +196,15 @@ class PDE(Data):
                     ic_weight_in_causal=float(
                         causal_options.get("ic_weight_in_causal", 0.0)
                     ),
+                    return_details=True,
                 )
                 losses.append(loss)
                 for key, value in diagnostics.items():
                     causal_diagnostics[f"pde_{i}_{key}"] = value
+                if i == 0:
+                    model.causal_loss_details = {
+                        key: value.detach().clone() for key, value in details.items()
+                    }
             else:
                 losses.append(loss_fn[i](bkd.zeros_like(error), error))
 

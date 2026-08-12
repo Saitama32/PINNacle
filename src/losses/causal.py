@@ -1,7 +1,7 @@
 import torch
 
 
-def temporal_chunk_losses(residual, t, num_chunks):
+def temporal_chunk_losses(residual, t, num_chunks, return_details=False):
     """Return time-ordered mean squared residuals for equal-sized chunks."""
     num_chunks = int(num_chunks)
     if num_chunks <= 0:
@@ -16,6 +16,7 @@ def temporal_chunk_losses(residual, t, num_chunks):
         )
 
     idx = torch.argsort(t)
+    sorted_t = t[idx]
     r2 = r2[idx]
 
     n = r2.numel()
@@ -24,7 +25,14 @@ def temporal_chunk_losses(residual, t, num_chunks):
 
     chunk_size = n // num_chunks
     used = chunk_size * num_chunks
-    return r2[:used].reshape(num_chunks, chunk_size).mean(dim=1)
+    sorted_t = sorted_t[:used].reshape(num_chunks, chunk_size)
+    chunk_losses = r2[:used].reshape(num_chunks, chunk_size).mean(dim=1)
+    if return_details:
+        return chunk_losses, {
+            "t_min": sorted_t[:, 0].detach(),
+            "t_max": sorted_t[:, -1].detach(),
+        }
+    return chunk_losses
 
 
 def causal_loss_with_fixed_weights(residual, t, num_chunks, fixed_weights):
@@ -54,7 +62,9 @@ def causal_residual_loss(
     return_details=False,
 ):
     """Reweight time-ordered PDE residual chunks for causal training."""
-    chunk_losses = temporal_chunk_losses(residual, t, num_chunks)
+    chunk_losses, chunk_details = temporal_chunk_losses(
+        residual, t, num_chunks, return_details=True
+    )
 
     matrix = torch.tril(
         torch.ones(
@@ -73,6 +83,9 @@ def causal_residual_loss(
         cumulative_prev = cumulative_prev + float(ic_weight_in_causal) * ic_loss.detach()
 
     weights = torch.exp(-float(tol) * cumulative_prev.detach())
+    post_chunk_weights = torch.exp(
+        -float(tol) * torch.cumsum(chunk_losses.detach(), dim=0)
+    )
     loss = torch.mean(weights * chunk_losses)
 
     diagnostics = {
@@ -87,6 +100,9 @@ def causal_residual_loss(
         details = {
             "weights": weights.detach(),
             "chunk_losses": chunk_losses.detach(),
+            "post_chunk_weights": post_chunk_weights.detach(),
+            "t_min": chunk_details["t_min"],
+            "t_max": chunk_details["t_max"],
         }
         return loss, diagnostics, details
     return loss, diagnostics

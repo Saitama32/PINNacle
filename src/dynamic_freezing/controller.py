@@ -9,7 +9,11 @@ import numpy as np
 import torch
 from scipy import interpolate, stats
 
-from src.losses.causal import causal_loss_with_fixed_weights, causal_residual_loss
+from src.losses.causal import (
+    causal_loss_with_fixed_weights,
+    causal_residual_loss,
+    temporal_chunk_losses,
+)
 
 from .optimizer_adapter import MaskedOptimizerAdapter
 from .weight_groups import WeightGroupCollection
@@ -19,10 +23,11 @@ from .weight_groups import WeightGroupCollection
 class DynamicFreezingConfig:
     enabled: bool = False
     group_size: int = 256
-    freeze_fraction: float = 0.25
+    max_freeze_fraction: float = 0.25
     good_tolerance: float = 1e-3
     freeze_events: int = 3
-    freeze_interval_steps: int = 2000
+    max_freeze_refresh_steps: int = 2000
+    causal_protect_weight: float = 0.9
     diagnostic_nt: int = 16
     diagnostic_nx: int = 64
     relative_eps: float = 1e-12
@@ -39,12 +44,14 @@ class DynamicFreezingConfig:
     def validate(self):
         if self.group_size <= 0:
             raise ValueError("weight group size must be positive")
-        if not 0 <= self.freeze_fraction < 1:
-            raise ValueError("freeze fraction must satisfy 0 <= value < 1")
+        if not 0 <= self.max_freeze_fraction <= 1:
+            raise ValueError("max freeze fraction must satisfy 0 <= value <= 1")
         if self.good_tolerance <= 0:
             raise ValueError("good tolerance must be positive")
-        if self.freeze_events <= 0 or self.freeze_interval_steps <= 0:
-            raise ValueError("freeze event count and interval must be positive")
+        if self.freeze_events <= 0 or self.max_freeze_refresh_steps <= 0:
+            raise ValueError("freeze event count and max refresh steps must be positive")
+        if not 0 < self.causal_protect_weight <= 1:
+            raise ValueError("causal protect weight must satisfy 0 < value <= 1")
         for value, name in (
             (self.diagnostic_nt, "diagnostic_nt"),
             (self.diagnostic_nx, "diagnostic_nx"),
@@ -74,7 +81,11 @@ class DynamicFreezingController(dde.callbacks.Callback):
         self.mask_history = {group.group_id: [] for group in self.groups.groups}
         self.training_rows = []
         self.temporal_rows = []
+        self.causal_front_rows = []
         self._last_logged_step = -1
+        self.last_event_step = None
+        self.previous_protected_front_chunk = None
+        self._pending_event_reason = None
         self._build_grids()
 
     @property
@@ -93,6 +104,20 @@ class DynamicFreezingController(dde.callbacks.Callback):
     @property
     def causal_options(self):
         return getattr(self.model, "causal_loss_options", {}) or {}
+
+    def _protected_front(self, details):
+        if not details:
+            return -1
+        post_weights = details["post_chunk_weights"].detach().reshape(-1)
+        front = -1
+        for index, weight in enumerate(post_weights):
+            if float(weight.cpu()) < self.config.causal_protect_weight:
+                break
+            front = index
+        return front
+
+    def _cached_protected_front(self):
+        return self._protected_front(getattr(self.model, "causal_loss_details", None))
 
     def _build_grids(self):
         bbox = np.asarray(self.model.pde.bbox, dtype=np.float64)
@@ -189,12 +214,22 @@ class DynamicFreezingController(dde.callbacks.Callback):
             return_details=return_details,
         )
 
+    def _causal_chunk_losses(self, residual):
+        time_index = int(self.causal_options.get("time_index", -1))
+        time_values = self._tensor(self.interior_np[:, time_index])
+        return temporal_chunk_losses(
+            residual,
+            time_values,
+            int(self.causal_options.get("num_chunks", 16)),
+        )
+
     def _evaluate_losses(
         self,
         good_mask,
         bad_mask,
         causal_weights=None,
         return_causal_details=False,
+        protected_front_chunk=-1,
     ):
         ic_loss = self._ic_loss()
         residual = self._residual(self.interior_np)
@@ -216,10 +251,20 @@ class DynamicFreezingController(dde.callbacks.Callback):
                     fixed_weights=causal_weights,
                 )
                 causal_details = None
+            if protected_front_chunk >= 0:
+                chunk_losses = (
+                    causal_details["chunk_losses"]
+                    if causal_details is not None
+                    else self._causal_chunk_losses(residual)
+                )
+                protected_pde = chunk_losses[: protected_front_chunk + 1].mean()
+            else:
+                protected_pde = torch.zeros((), dtype=self.dtype, device=self.device)
+            protected_loss = ic_loss + protected_pde
             result = {
                 "ic": float(ic_loss.cpu()),
-                "good_pde": math.nan,
-                "good": float(ic_loss.cpu()),
+                "good_pde": float(protected_pde.detach().cpu()),
+                "good": float(protected_loss.detach().cpu()),
                 "bad": float(causal_loss.detach().cpu()),
                 "pde": float(residual_sq.mean().cpu()) if residual_sq.numel() else 0.0,
             }
@@ -241,12 +286,28 @@ class DynamicFreezingController(dde.callbacks.Callback):
         }
 
     def should_trigger_before_step(self):
-        if not self.config.enabled or self.event_count >= self.config.freeze_events:
+        if not self.config.enabled:
             return False
         step = int(getattr(self.model.train_state, "step", 0)) + 1
+        if self.causal_enabled:
+            current_front = self._cached_protected_front()
+            if self.event_count == 0:
+                if float(self._ic_loss().cpu()) >= self.config.good_tolerance:
+                    return False
+                self._pending_event_reason = "initial_ic_ready"
+                return True
+            if current_front != self.previous_protected_front_chunk:
+                self._pending_event_reason = "front_changed"
+                return True
+            if step - self.last_event_step >= self.config.max_freeze_refresh_steps:
+                self._pending_event_reason = "max_refresh"
+                return True
+            return False
+        if self.event_count >= self.config.freeze_events:
+            return False
         if self.event_count == 0:
             return float(self._ic_loss().cpu()) < self.config.good_tolerance
-        return step >= self.first_event_step + self.event_count * self.config.freeze_interval_steps
+        return step >= self.first_event_step + self.event_count * self.config.max_freeze_refresh_steps
 
     def on_train_begin(self):
         os.makedirs(self.log_dir, exist_ok=True)
@@ -268,6 +329,8 @@ class DynamicFreezingController(dde.callbacks.Callback):
         if final_step != self._last_logged_step:
             self._last_logged_step = final_step
             self._log_training(final_step)
+        if self.config.responsibility_enabled and self.causal_enabled:
+            self._save_responsibility("final")
         if self.adapter is not None:
             self.adapter.uninstall()
         self._write_csv("training.csv", self.training_rows)
@@ -292,10 +355,13 @@ class DynamicFreezingController(dde.callbacks.Callback):
         if event_id == 1:
             self.first_event_step = step
         good_mask, bad_mask, _ = self._region(event_id)
+        event_reason = self._pending_event_reason or "legacy_schedule"
+        protected_front = self._cached_protected_front() if self.causal_enabled else -1
         base = self._evaluate_losses(
             good_mask,
             bad_mask,
             return_causal_details=self.causal_enabled,
+            protected_front_chunk=protected_front,
         )
         causal_weights = (
             base["causal_details"]["weights"] if self.causal_enabled else None
@@ -315,6 +381,7 @@ class DynamicFreezingController(dde.callbacks.Callback):
                 good_mask,
                 bad_mask,
                 causal_weights=causal_weights,
+                protected_front_chunk=protected_front,
             )
             with torch.no_grad():
                 group.parameter.reshape(-1)[group.flat_start : group.flat_end].copy_(before)
@@ -330,6 +397,18 @@ class DynamicFreezingController(dde.callbacks.Callback):
             protected = abs(d_good)
             utility = max(0.0, -d_bad)
             score = utility / (protected + eps)
+            violates = changed["good"] > self.config.good_tolerance
+            worsens = changed["good"] > base["good"] + eps
+            protected_risk = max(
+                0.0,
+                (changed["good"] - self.config.good_tolerance)
+                / self.config.good_tolerance,
+            )
+            incremental_worsening = max(
+                0.0,
+                (changed["good"] - base["good"])
+                / (max(base["good"], self.config.good_tolerance) + eps),
+            )
             rows.append({
                 "event_id": event_id,
                 "step": step,
@@ -343,13 +422,22 @@ class DynamicFreezingController(dde.callbacks.Callback):
                 "update_norm": float(torch.linalg.vector_norm(delta).cpu()),
                 "parameter_norm": float(torch.linalg.vector_norm(before).cpu()),
                 "loss_good_before": base["good"],
+                "loss_good_base": base["good"],
+                "loss_good_after": changed["good"],
                 "loss_bad_before": base["bad"],
+                "protected_tolerance": self.config.good_tolerance,
+                "protected_risk": protected_risk,
+                "incremental_worsening": incremental_worsening,
+                "violates_protected_tolerance": violates,
+                "worsens_protected": worsens,
+                "risky": violates and worsens,
                 "delta_good_abs": changed["good"] - base["good"],
                 "delta_bad_abs": changed["bad"] - base["bad"],
                 "d_ic_rel": d_ic,
                 "d_good_pde_rel": d_good_pde,
                 "d_good_rel": d_good,
                 "d_bad_rel": d_bad,
+                "d_causal_fixed": d_bad if self.causal_enabled else math.nan,
                 "P": protected,
                 "U": utility,
                 "S": score,
@@ -357,20 +445,32 @@ class DynamicFreezingController(dde.callbacks.Callback):
                 "_delta": delta,
             })
 
-        null_metrics = self._nullspace_metrics(good_mask, proposal)
+        protected_mask = (
+            self._protected_point_mask(protected_front)
+            if self.causal_enabled
+            else good_mask
+        )
+        null_metrics = self._nullspace_metrics(protected_mask, proposal)
         for row in rows:
             row.update(null_metrics.get(row["group_id"], {"jg_delta_norm": math.nan, "null_ratio": math.nan}))
 
-        eligible = [row for row in rows if not row["force_train"]]
-        eligible.sort(
-            key=lambda row: (
-                round(row["S"], 12) if np.isfinite(row["S"]) else math.inf,
-                -row["P"],
-                row["group_id"],
+        if self.causal_enabled:
+            selected, risky = self._select_causal_groups(rows)
+        else:
+            risky = []
+            eligible = [row for row in rows if not row["force_train"]]
+            eligible.sort(
+                key=lambda row: (
+                    round(row["S"], 12) if np.isfinite(row["S"]) else math.inf,
+                    -row["P"],
+                    row["group_id"],
+                )
             )
-        )
-        freeze_count = min(int(round(self.config.freeze_fraction * len(rows))), len(eligible))
-        selected = {row["group_id"] for row in eligible[:freeze_count]}
+            freeze_count = min(
+                int(round(self.config.max_freeze_fraction * len(rows))),
+                len(eligible),
+            )
+            selected = {row["group_id"] for row in eligible[:freeze_count]}
         self.groups.set_frozen(selected)
         for row in rows:
             row["selected_for_freeze"] = row["group_id"] in selected
@@ -378,26 +478,73 @@ class DynamicFreezingController(dde.callbacks.Callback):
             row.pop("_delta")
         self.event_count = event_id
         self.event_steps.append(step)
+        self.last_event_step = step
+        self.previous_protected_front_chunk = protected_front
+        self._pending_event_reason = None
         for group in self.groups.groups:
             self.mask_history[group.group_id].append("freeze" if group.is_frozen else "train")
         self._write_csv(f"event_{event_id:02d}_groups.csv", rows)
+        if self.causal_enabled:
+            self._write_causal_chunks(event_id, step, base["causal_details"], protected_front)
+            self._append_causal_front_history(
+                event_id,
+                step,
+                base["causal_details"],
+                protected_front,
+                len(selected),
+                len(risky),
+                event_reason,
+            )
         self._write_mask_history()
         self._write_correlations(event_id, rows)
         self._save_temporal_profile(step, event_id)
-        if self.config.responsibility_enabled:
+        if self.config.responsibility_enabled and (
+            not self.causal_enabled or event_reason == "front_changed"
+        ):
             self._save_responsibility(event_id)
         self._plot_event(event_id, rows)
+        event_total = "unbounded" if self.causal_enabled else str(self.config.freeze_events)
+        risky_text = f", risky={len(risky)}" if self.causal_enabled else ""
+        cap_text = ""
+        if self.causal_enabled:
+            max_frozen = int(math.floor(len(rows) * self.config.max_freeze_fraction))
+            if len(risky) > max_frozen:
+                cap_text = f", cap_reached={max_frozen}"
         print(
-            f"Dynamic freezing event {event_id}/{self.config.freeze_events} at step {step}: "
-            f"frozen {len(selected)}/{len(rows)} groups."
+            f"Dynamic freezing event {event_id}/{event_total} at step {step} "
+            f"({event_reason}, protected_front={protected_front}): "
+            f"frozen {len(selected)}/{len(rows)} groups{risky_text}{cap_text}."
         )
+
+    def _protected_point_mask(self, front_chunk):
+        mask = np.zeros(len(self.interior_np), dtype=bool)
+        if front_chunk < 0:
+            return mask
+        time_index = int(self.causal_options.get("time_index", -1))
+        order = np.argsort(self.interior_np[:, time_index], kind="stable")
+        num_chunks = int(self.causal_options.get("num_chunks", 16))
+        chunk_size = len(order) // num_chunks
+        protected_count = min((front_chunk + 1) * chunk_size, len(order))
+        mask[order[:protected_count]] = True
+        return mask
+
+    def _select_causal_groups(self, rows):
+        risky = [row for row in rows if row["risky"]]
+        risky.sort(
+            key=lambda row: (
+                -row["protected_risk"],
+                -row["incremental_worsening"],
+                row["group_id"],
+            )
+        )
+        max_frozen = int(math.floor(len(rows) * self.config.max_freeze_fraction))
+        selected = {row["group_id"] for row in risky[:max_frozen]}
+        return selected, risky
 
     def _selected_constraint_points(self, good_mask):
         max_points = self.config.nullspace_max_points
         ic_count = min(len(self.ic_np), max_points)
         ic_idx = np.linspace(0, len(self.ic_np) - 1, ic_count, dtype=int)
-        if self.causal_enabled:
-            return self.ic_np[ic_idx], np.empty((0, self.ic_np.shape[1]), dtype=np.float32)
         remaining = max_points - ic_count
         good_idx = np.flatnonzero(good_mask)
         if remaining <= 0:
@@ -480,11 +627,15 @@ class DynamicFreezingController(dde.callbacks.Callback):
                 if grad is not None:
                     part = grad.reshape(-1)[group.flat_start : group.flat_end]
                     result[point_index, group.group_id] = float(torch.sum(part.square()).detach().cpu())
-        denominator = result.sum(axis=1, keepdims=True)
-        zero = denominator[:, 0] <= self.config.relative_eps
-        result[~zero] /= denominator[~zero]
-        if np.any(zero):
-            result[zero] = 1.0 / len(self.groups)
+        layer_groups = {}
+        for group in self.groups.groups:
+            layer_groups.setdefault(group.parameter_name, []).append(group.group_id)
+        for group_ids in layer_groups.values():
+            denominator = result[:, group_ids].sum(axis=1, keepdims=True)
+            nonzero = denominator[:, 0] > self.config.relative_eps
+            result[np.ix_(np.flatnonzero(nonzero), group_ids)] /= denominator[nonzero]
+            if np.any(~nonzero):
+                result[np.ix_(np.flatnonzero(~nonzero), group_ids)] = 1.0 / len(group_ids)
         return result
 
     def _save_responsibility(self, event_id):
@@ -494,21 +645,37 @@ class DynamicFreezingController(dde.callbacks.Callback):
         xx, tt = np.meshgrid(x, t)
         points = np.column_stack([xx.reshape(-1), tt.reshape(-1)]).astype(np.float32)
         responsibility = self.responsibility(points).reshape(len(t), len(x), len(self.groups))
-        dominant = np.argmax(responsibility, axis=-1)
-        if len(self.groups) == 1:
-            entropy = np.zeros((len(t), len(x)))
-        else:
-            entropy = -np.sum(
-                responsibility * np.log(responsibility + self.config.relative_eps), axis=-1
-            ) / np.log(len(self.groups))
+        layer_names = []
+        dominant_layers = []
+        entropy_layers = []
+        for parameter_name in dict.fromkeys(group.parameter_name for group in self.groups.groups):
+            group_ids = [
+                group.group_id for group in self.groups.groups
+                if group.parameter_name == parameter_name
+            ]
+            layer_values = responsibility[:, :, group_ids]
+            dominant_layers.append(np.take(np.asarray(group_ids), np.argmax(layer_values, axis=-1)))
+            if len(group_ids) == 1:
+                entropy_layers.append(np.zeros((len(t), len(x))))
+            else:
+                entropy_layers.append(
+                    -np.sum(
+                        layer_values * np.log(layer_values + self.config.relative_eps), axis=-1
+                    ) / np.log(len(group_ids))
+                )
+            layer_names.append(parameter_name)
+        dominant = np.stack(dominant_layers, axis=-1)
+        entropy = np.stack(entropy_layers, axis=-1)
+        label = f"event_{event_id:02d}" if isinstance(event_id, int) else str(event_id)
         np.savez_compressed(
-            os.path.join(self.log_dir, f"event_{event_id:02d}_responsibility.npz"),
+            os.path.join(self.log_dir, f"{label}_responsibility.npz"),
             responsibility=responsibility,
             dominant_group=dominant,
             entropy=entropy,
             entropy_by_time=entropy.mean(axis=1),
             mean_responsibility_by_time=responsibility.mean(axis=1),
             mean_responsibility_entropy=float(entropy.mean()),
+            layer_names=np.asarray(layer_names),
             time=t,
             x=x,
         )
@@ -519,12 +686,12 @@ class DynamicFreezingController(dde.callbacks.Callback):
             import matplotlib.pyplot as plt
             fig, axes = plt.subplots(1, 2, figsize=(12, 4))
             dominant_image = axes[0].imshow(
-                dominant, origin="lower", aspect="auto", extent=[x[0], x[-1], t[0], t[-1]]
+                dominant[:, :, 0], origin="lower", aspect="auto", extent=[x[0], x[-1], t[0], t[-1]]
             )
             axes[0].set_title("Dominant weight group")
             fig.colorbar(dominant_image, ax=axes[0])
             entropy_image = axes[1].imshow(
-                entropy, origin="lower", aspect="auto", extent=[x[0], x[-1], t[0], t[-1]], vmin=0, vmax=1
+                entropy.mean(axis=-1), origin="lower", aspect="auto", extent=[x[0], x[-1], t[0], t[-1]], vmin=0, vmax=1
             )
             axes[1].set_title("Responsibility entropy")
             fig.colorbar(entropy_image, ax=axes[1])
@@ -532,7 +699,7 @@ class DynamicFreezingController(dde.callbacks.Callback):
                 axis.set_xlabel("x")
                 axis.set_ylabel("t")
             fig.tight_layout()
-            fig.savefig(os.path.join(self.log_dir, f"event_{event_id:02d}_responsibility.png"), dpi=150)
+            fig.savefig(os.path.join(self.log_dir, f"{label}_responsibility.png"), dpi=150)
             plt.close(fig)
         except Exception as error:
             print(f"Warning: could not plot responsibility maps: {error}")
@@ -572,12 +739,14 @@ class DynamicFreezingController(dde.callbacks.Callback):
     def _log_training(self, step):
         good_mask, bad_mask, squared = self._region(max(2, self.event_count + 1))
         losses = self._evaluate_losses(good_mask, bad_mask)
-        target_pde_loss = losses["bad"] if self.causal_enabled else losses["pde"]
+        causal_loss = losses["bad"] if self.causal_enabled else math.nan
+        target_pde_loss = causal_loss if self.causal_enabled else losses["pde"]
         self.training_rows.append({
             "step": step,
             "total_loss": self.config.ic_weight * losses["ic"] + target_pde_loss,
             "ic_loss": losses["ic"],
-            "pde_loss": target_pde_loss,
+            "causal_loss": causal_loss,
+            "pde_loss": losses["pde"],
             "current_num_good_points": int(np.sum(squared < self.config.good_tolerance)),
             "current_fraction_good": float(np.mean(squared < self.config.good_tolerance)),
             "num_frozen_groups": len(self.groups.frozen_groups),
@@ -606,6 +775,62 @@ class DynamicFreezingController(dde.callbacks.Callback):
             row.update({f"event{index + 1}": value for index, value in enumerate(values)})
             rows.append(row)
         self._write_csv("mask_history.csv", rows)
+
+    def _write_causal_chunks(self, event_id, step, details, protected_front):
+        rows = []
+        for chunk_id, (chunk_loss, weight, post_weight, t_min, t_max) in enumerate(zip(
+            details["chunk_losses"],
+            details["weights"],
+            details["post_chunk_weights"],
+            details["t_min"],
+            details["t_max"],
+        )):
+            loss_value = float(chunk_loss.cpu())
+            weight_value = float(weight.cpu())
+            rows.append({
+                "event_id": event_id,
+                "step": step,
+                "chunk_id": chunk_id,
+                "t_min": float(t_min.cpu()),
+                "t_max": float(t_max.cpu()),
+                "chunk_loss": loss_value,
+                "causal_weight": weight_value,
+                "post_chunk_weight": float(post_weight.cpu()),
+                "weighted_chunk_loss": weight_value * loss_value,
+                "is_protected": chunk_id <= protected_front,
+                "is_front_chunk": chunk_id == protected_front,
+            })
+        self._write_csv(f"event_{event_id:02d}_causal_chunks.csv", rows)
+
+    def _append_causal_front_history(
+        self,
+        event_id,
+        step,
+        details,
+        protected_front,
+        num_frozen,
+        num_risky,
+        reason,
+    ):
+        weights = details["weights"].detach().cpu().numpy()
+        front_time = (
+            float(details["t_max"][protected_front].cpu())
+            if protected_front >= 0 else math.nan
+        )
+        self.causal_front_rows.append({
+            "event_id": event_id,
+            "step": step,
+            "trigger_reason": reason,
+            "protected_front_chunk": protected_front,
+            "protected_front_t": front_time,
+            "num_protected_chunks": protected_front + 1,
+            "causal_weight_min": float(np.min(weights)),
+            "causal_weight_mean": float(np.mean(weights)),
+            "causal_weight_max": float(np.max(weights)),
+            "num_frozen_groups": num_frozen,
+            "num_risky_groups": num_risky,
+        })
+        self._write_csv("causal_front_history.csv", self.causal_front_rows)
 
     def _write_correlations(self, event_id, rows):
         protected = np.asarray([row["P"] for row in rows], dtype=float)
@@ -640,7 +865,12 @@ class DynamicFreezingController(dde.callbacks.Callback):
             import matplotlib.pyplot as plt
             ids = [row["group_id"] for row in rows]
             fig, axes = plt.subplots(4, 1, figsize=(12, 12), sharex=True)
-            for axis, field in zip(axes, ("S", "d_good_rel", "d_bad_rel", "null_ratio")):
+            fields = (
+                ("protected_risk", "incremental_worsening", "d_causal_fixed", "jg_delta_norm")
+                if self.causal_enabled
+                else ("S", "d_good_rel", "d_bad_rel", "null_ratio")
+            )
+            for axis, field in zip(axes, fields):
                 colors = ["tab:red" if row["selected_for_freeze"] else "tab:blue" for row in rows]
                 axis.scatter(ids, [row[field] for row in rows], c=colors, s=10)
                 axis.set_ylabel(field)
@@ -661,7 +891,10 @@ class DynamicFreezingController(dde.callbacks.Callback):
             import matplotlib.pyplot as plt
             steps = [row["step"] for row in self.training_rows]
             fig, axis = plt.subplots(figsize=(9, 5))
-            for field in ("total_loss", "ic_loss", "pde_loss"):
+            fields = ["total_loss", "ic_loss", "pde_loss"]
+            if self.causal_enabled:
+                fields.append("causal_loss")
+            for field in fields:
                 axis.semilogy(steps, [max(row[field], self.config.relative_eps) for row in self.training_rows], label=field)
             for step in self.event_steps:
                 axis.axvline(step, color="black", alpha=0.2)

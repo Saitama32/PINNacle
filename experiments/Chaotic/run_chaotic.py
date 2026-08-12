@@ -253,10 +253,11 @@ def validate_args(args):
         DynamicFreezingConfig(
             enabled=args.dynamic_freezing,
             group_size=args.weight_group_size,
-            freeze_fraction=args.freeze_fraction,
+            max_freeze_fraction=args.max_freeze_fraction,
             good_tolerance=args.good_tolerance,
             freeze_events=args.freeze_events,
-            freeze_interval_steps=args.freeze_interval_steps,
+            max_freeze_refresh_steps=args.max_freeze_refresh_steps,
+            causal_protect_weight=args.causal_protect_weight,
             diagnostic_nt=args.dynamic_freezing_nt,
             diagnostic_nx=args.dynamic_freezing_nx,
             nullspace_enabled=args.nullspace_enabled,
@@ -433,10 +434,11 @@ def dynamic_freezing_config(args):
     return DynamicFreezingConfig(
         enabled=args.dynamic_freezing,
         group_size=args.weight_group_size,
-        freeze_fraction=args.freeze_fraction,
+        max_freeze_fraction=args.max_freeze_fraction,
         good_tolerance=args.good_tolerance,
         freeze_events=args.freeze_events,
-        freeze_interval_steps=args.freeze_interval_steps,
+        max_freeze_refresh_steps=args.max_freeze_refresh_steps,
+        causal_protect_weight=args.causal_protect_weight,
         diagnostic_nt=args.dynamic_freezing_nt,
         diagnostic_nx=args.dynamic_freezing_nx,
         nullspace_enabled=args.nullspace_enabled,
@@ -757,10 +759,16 @@ def parse_args():
         default=True,
     )
     parser.add_argument("--weight-group-size", type=int, default=256)
-    parser.add_argument("--freeze-fraction", type=float, default=0.25)
+    parser.add_argument("--max-freeze-fraction", type=float, default=0.25)
     parser.add_argument("--good-tolerance", type=float, default=1e-3)
-    parser.add_argument("--freeze-events", type=int, default=3)
-    parser.add_argument("--freeze-interval-steps", type=int, default=2000)
+    parser.add_argument(
+        "--freeze-events",
+        type=int,
+        default=3,
+        help="Number of events for legacy non-causal freezing; ignored in causal mode.",
+    )
+    parser.add_argument("--max-freeze-refresh-steps", type=int, default=2000)
+    parser.add_argument("--causal-protect-weight", type=float, default=0.9)
     parser.add_argument("--dynamic-freezing-nt", type=int, default=16)
     parser.add_argument("--dynamic-freezing-nx", type=int, default=64)
     parser.add_argument("--nullspace-enabled", type=str2bool, nargs="?", const=True, default=True)
