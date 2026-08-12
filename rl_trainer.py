@@ -16,6 +16,7 @@ import deepxde as dde
 from RL.rl_environment import EnvRLOptimizer
 from RL.rl_algorithms import DQNAgent
 from src.utils.callbacks import ModelSaverCallback  
+from src.losses.global_integral import GlobalIntegralLoss, attach_integral_loss_train_step
 from deepxde.optimizers.config import set_LBFGS_options, set_MUON_options, set_PSO_options, LBFGS_options, PSO_options
 from deepxde.optimizers.pytorch.optimizers import get as get_pytorch_optimizer
 from deepxde.optimizers.pytorch.pcgrad import PCGrad
@@ -158,6 +159,40 @@ def _extract_weighted_train_loss(model) -> float:
     return loss_value
 
 
+def _maybe_attach_integral_loss(model, train_args: Dict[str, Any], seed: int):
+    integral_config = train_args.get("integral_loss")
+    if not integral_config or not integral_config.get("enabled", False):
+        model.integral_loss = None
+        model.integral_loss_diagnostics = None
+        return None
+
+    integral_only = bool(integral_config.get("integral_only", False))
+    integral_loss = GlobalIntegralLoss(
+        model=model,
+        pde=model.pde,
+        batch_size=int(integral_config.get("batch_size", 1000)),
+        weight=float(integral_config.get("weight", 1.0)),
+        warmup_steps=int(integral_config.get("warmup_steps", 0)),
+        start_step=int(integral_config.get("start_step", 0)),
+        quadrature_order=int(integral_config.get("quadrature_order", 10)),
+        local_enabled=bool(integral_config.get("local_enabled", True)),
+        local_weight=float(integral_config.get("local_weight", 1.0)),
+        local_quadrature_order=int(integral_config.get("local_quadrature_order", 4)),
+        local_hmax=float(integral_config.get("local_hmax", 0.05)),
+        local_segment_batch_size=int(integral_config.get("local_segment_batch_size", 256)),
+        local_normalize_by_length=bool(integral_config.get("local_normalize_by_length", False)),
+        local_contiguous_chain=bool(integral_config.get("local_contiguous_chain", False)),
+        t0_fraction=float(integral_config.get("t0_fraction", 0.2)),
+        t_min=float(integral_config.get("t_min", 0.0)),
+        seed=integral_config.get("seed", seed),
+        resample_every=int(integral_config.get("resample_every", 1)),
+        initial_condition_enabled=bool(integral_config.get("ic_enabled", False)),
+        initial_condition_weight=float(integral_config.get("ic_weight", 100.0)),
+    )
+    attach_integral_loss_train_step(model, integral_loss, integral_only=integral_only)
+    return integral_loss
+
+
 def run_deepxde_rl_training(
     model,
     loss_weights,
@@ -284,6 +319,7 @@ def run_deepxde_rl_training(
 
 
             model.compile(torch_opt, loss_weights=loss_weights)
+            _maybe_attach_integral_loss(model, train_args, seed=rl_agent_params.get("seed", 0))
             model.optimizer = torch_opt
             saver = ModelSaverCallback(total_iterations=chunk_iters, n_save_models=train_args['n_save_models'])
             callbacks = list(base_callbacks) + [saver]

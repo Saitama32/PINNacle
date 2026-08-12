@@ -23,7 +23,12 @@ import deepxde as dde
 
 from src.pde.chaotic import KuramotoSivashinskyEquation
 from src.utils.args import parse_hidden_layers
-from src.utils.callbacks import TesterCallback, PlotCallback, LossCallback
+from src.utils.callbacks import (
+    IntegralDiagnosticsCallback,
+    LossCallback,
+    PlotCallback,
+    TesterCallback,
+)
 from rl_trainer import train_process_rl
 
 experiment.log_parameters(
@@ -72,6 +77,24 @@ def main():
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--log-every", type=int, default=100)
     parser.add_argument("--plot-every", type=int, default=2000)
+    parser.add_argument("--use-integral-loss", action="store_true", default=False)
+    parser.add_argument("--integral-only", action="store_true", default=False)
+    parser.add_argument("--integral-batch-size", type=int, default=1000)
+    parser.add_argument("--integral-quadrature-order", type=int, default=10)
+    parser.add_argument("--integral-local-enabled", action="store_true", default=True)
+    parser.add_argument("--no-integral-local", dest="integral_local_enabled", action="store_false")
+    parser.add_argument("--integral-local-weight", type=float, default=1.0)
+    parser.add_argument("--integral-local-quadrature-order", type=int, default=4)
+    parser.add_argument("--integral-local-hmax", type=float, default=0.05)
+    parser.add_argument("--integral-local-segment-batch-size", type=int, default=256)
+    parser.add_argument("--integral-local-normalize-by-length", action="store_true", default=False)
+    parser.add_argument("--integral-local-contiguous-chain", action="store_true", default=False)
+    parser.add_argument("--integral-t0-fraction", type=float, default=0.2)
+    parser.add_argument("--integral-t-min", type=float, default=0.0)
+    parser.add_argument("--integral-resample-every", type=int, default=1)
+    parser.add_argument("--integral-seed", type=int, default=None)
+    parser.add_argument("--integral-ic-enabled", action="store_true", default=False)
+    parser.add_argument("--integral-ic-weight", type=float, default=100.0)
 
     parser.add_argument("--n-trajectories", type=int, default=100)
     parser.add_argument("--n-steps-max", type=int, default=1000)
@@ -82,6 +105,10 @@ def main():
     parser.add_argument("--out", type=str, default="runs_single")
 
     args = parser.parse_args()
+    if args.integral_only and not args.use_integral_loss:
+        raise ValueError("--integral-only requires --use-integral-loss.")
+    if args.integral_ic_enabled and not args.integral_only:
+        raise ValueError("--integral-ic-enabled requires --integral-only.")
 
     date_str = time.strftime("%m.%d-%H.%M.%S", time.localtime())
     save_path = os.path.join(args.out, f"{date_str}-{args.name}")
@@ -92,18 +119,44 @@ def main():
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
+    callbacks = [
+        TesterCallback(log_every=args.log_every),
+        PlotCallback(log_every=args.plot_every, fast=True),
+        LossCallback(verbose=True),
+    ]
+    if args.use_integral_loss:
+        callbacks.append(IntegralDiagnosticsCallback(log_every=args.log_every, verbose=True))
+
     train_args = {
         "iterations": 1,
         "display_every": args.log_every,
-        "callbacks": [
-            TesterCallback(log_every=args.log_every),
-            PlotCallback(log_every=args.plot_every, fast=True),
-            LossCallback(verbose=True),
-        ],
+        "callbacks": callbacks,
         "n_trajectories": 1000,
         "n_save_models": 10,
         "operator_coeff": 1,
         "bnd_coeff": 1,
+        "integral_loss": {
+            "enabled": args.use_integral_loss,
+            "integral_only": args.integral_only,
+            "batch_size": args.integral_batch_size,
+            "weight": 1.0,
+            "warmup_steps": 0,
+            "start_step": 0,
+            "quadrature_order": args.integral_quadrature_order,
+            "local_enabled": args.integral_local_enabled,
+            "local_weight": args.integral_local_weight,
+            "local_quadrature_order": args.integral_local_quadrature_order,
+            "local_hmax": args.integral_local_hmax,
+            "local_segment_batch_size": args.integral_local_segment_batch_size,
+            "local_normalize_by_length": args.integral_local_normalize_by_length,
+            "local_contiguous_chain": args.integral_local_contiguous_chain,
+            "t0_fraction": args.integral_t0_fraction,
+            "t_min": args.integral_t_min,
+            "resample_every": args.integral_resample_every,
+            "seed": args.integral_seed if args.integral_seed is not None else args.seed,
+            "ic_enabled": args.integral_ic_enabled,
+            "ic_weight": args.integral_ic_weight,
+        },
     }
     optimizers = {
         "PSO": {
@@ -214,6 +267,7 @@ def main():
         "agent_min_buffer": 32,
         "agent_update_iters": 5,
         "lr": 1e-3,
+        "seed": args.seed,
         "exp": experiment,
     }
 
