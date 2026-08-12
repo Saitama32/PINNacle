@@ -16,7 +16,8 @@ import deepxde as dde
 from RL.rl_environment import EnvRLOptimizer
 from RL.rl_algorithms import DQNAgent
 from src.utils.callbacks import ModelSaverCallback  
-from deepxde.optimizers.config import set_LBFGS_options, set_PSO_options, LBFGS_options, PSO_options
+from deepxde.optimizers.config import set_LBFGS_options, set_MUON_options, set_PSO_options, LBFGS_options, PSO_options
+from deepxde.optimizers.pytorch.optimizers import get as get_pytorch_optimizer
 from deepxde.optimizers.pytorch.pcgrad import PCGrad
 from deepxde.optimizers.pytorch.soap import SOAP
 from deepxde.optimizers.pytorch.ssbroyden import SSBroyden
@@ -73,7 +74,7 @@ def _serialize_solver_models(solver_models):
     return serialized_models
 
 
-def _build_torch_optimizer(opt_name: str, params, action: Dict[str, Any]):
+def _build_torch_optimizer(opt_name: str, params, action: Dict[str, Any], model=None):
 
     name = (opt_name or "").lower()
     opt_params = action.get("params", {})
@@ -89,6 +90,21 @@ def _build_torch_optimizer(opt_name: str, params, action: Dict[str, Any]):
             params,
             lr=lr,
         )
+
+    if name == "muon":
+        lr = float(opt_params.get("lr", 2e-2))
+        set_MUON_options(
+            momentum=float(opt_params.get("momentum", 0.95)),
+            ns_steps=int(opt_params.get("ns_steps", 5)),
+            adam_lr=float(opt_params.get("adam_lr", 3e-4)),
+        )
+        opt, _ = get_pytorch_optimizer(
+            params,
+            "muon",
+            learning_rate=lr,
+            model=model,
+        )
+        return opt
 
     if name == "pcgrad":
         lr = float(opt_params.get("lr", 1e-3))
@@ -127,7 +143,7 @@ def _build_torch_optimizer(opt_name: str, params, action: Dict[str, Any]):
         )
         return "PSO"  # deepxde/optimizers/pytorch/pso.PSO
 
-    raise ValueError(f"Unknown optimizer type: {opt_name}. Expected Adam / SOAP / PCGrad / SSBroyden / LBFGS / PSO.")
+    raise ValueError(f"Unknown optimizer type: {opt_name}. Expected Adam / SOAP / Muon / PCGrad / SSBroyden / LBFGS / PSO.")
 
 
 def _extract_weighted_train_loss(model) -> float:
@@ -264,7 +280,7 @@ def run_deepxde_rl_training(
 
             # --- compile optimizer for this chunk ---
             chunk_iters = int(action["epochs"])
-            torch_opt = _build_torch_optimizer(action["type"], model.net.parameters(), action)
+            torch_opt = _build_torch_optimizer(action["type"], model.net.parameters(), action, model=model.net)
 
 
             model.compile(torch_opt, loss_weights=loss_weights)
@@ -296,6 +312,10 @@ def run_deepxde_rl_training(
             if np.isfinite(train_loss):
                 print(f"Operator RMSE: {rmse}, Boundary RMSE: {b_rmse}")
                 print(f"Weighted train loss: {train_loss}")
+                old_raw_reward = float(
+                    (rmse if np.isfinite(rmse) else 0.0)
+                    + (b_rmse if np.isfinite(b_rmse) else 0.0)
+                )
 
                 env.solver_models = solver_models
                 env.reward_params = {
@@ -333,6 +353,7 @@ def run_deepxde_rl_training(
                     "opt_model_i": info["opt_model_i"],
                     "reward_scalar": float(info["reward_scalar"]),
                     "old_reward_model": float(reward_shaped.item()),
+                    "old_raw_reward": old_raw_reward,
                     "current_loss": float(train_loss),
                 })
                 trajectory_losses.append(float(train_loss))
@@ -418,6 +439,7 @@ def run_deepxde_rl_training(
                         'reward_model': chain_reward,
                         'reward_scheme': "env_chain_reward",
                         'old_reward_model': tr["old_reward_model"],
+                        'old_raw_reward': tr["old_raw_reward"],
                         'opt_model_i': tr["opt_model_i"],
                     }
                     torch.save(entry, file_path)

@@ -4,6 +4,7 @@ import torch
 
 # from .nncg import NNCG
 from .causal import CausalOptimizer
+from .muon import MuonWithAuxAdam
 from .pcgrad import PCGrad
 from .pso import PSO
 from .soap import SOAP
@@ -13,6 +14,7 @@ from ..config import (
     CAUSAL_options,
     LBFGS_options,
     NNCG_options,
+    MUON_options,
     PCGRAD_options,
     PSO_options,
     SSBROYDEN_options,
@@ -26,7 +28,81 @@ def is_external_optimizer(optimizer):
     return optimizer in ["L-BFGS", "L-BFGS-B", "NNCG", "PSO"]
 
 
-def _make_base_optimizer(params, optimizer, learning_rate=None, decay=None, weight_decay=0):
+def _iter_linear_modules(module):
+    if isinstance(module, torch.nn.Linear):
+        yield module
+        return
+    if isinstance(module, torch.nn.Module):
+        for child in module.children():
+            yield from _iter_linear_modules(child)
+
+
+def _hidden_linear_weight_ids(model):
+    if model is None:
+        return set()
+
+    if hasattr(model, "linears"):
+        layers = list(model.linears)
+        hidden_layers = layers[1:-1]
+    elif hasattr(model, "layers"):
+        layers = list(model.layers)
+        hidden_layers = layers[1:-1]
+    else:
+        layers = list(_iter_linear_modules(model))
+        hidden_layers = layers[1:-1]
+
+    muon_param_ids = set()
+    for layer in hidden_layers:
+        for linear in _iter_linear_modules(layer):
+            if linear.weight.requires_grad:
+                muon_param_ids.add(id(linear.weight))
+    return muon_param_ids
+
+
+def _make_muon_optimizer(params, learning_rate, weight_decay=0, model=None):
+    if learning_rate is None:
+        raise ValueError("No learning rate for muon.")
+
+    params = list(params)
+    muon_param_ids = _hidden_linear_weight_ids(model)
+    muon_params = [p for p in params if id(p) in muon_param_ids and p.ndim == 2]
+    muon_param_ids = {id(p) for p in muon_params}
+    aux_params = [p for p in params if id(p) not in muon_param_ids]
+
+    if not muon_params:
+        print(
+            "Warning: muon found no hidden Linear.weight parameters; "
+            "all parameters will use auxiliary Adam."
+        )
+
+    param_groups = []
+    if muon_params:
+        param_groups.append(
+            {
+                "params": muon_params,
+                "use_muon": True,
+                "lr": learning_rate,
+                "momentum": MUON_options["momentum"],
+                "nesterov": MUON_options["nesterov"],
+                "ns_steps": MUON_options["ns_steps"],
+                "weight_decay": MUON_options["muon_weight_decay"] or weight_decay,
+            }
+        )
+    if aux_params:
+        param_groups.append(
+            {
+                "params": aux_params,
+                "use_muon": False,
+                "lr": learning_rate if MUON_options["adam_lr"] is None else MUON_options["adam_lr"],
+                "betas": MUON_options["adam_betas"],
+                "eps": MUON_options["adam_eps"],
+                "weight_decay": MUON_options["adam_weight_decay"] or weight_decay,
+            }
+        )
+    return MuonWithAuxAdam(param_groups)
+
+
+def _make_base_optimizer(params, optimizer, learning_rate=None, decay=None, weight_decay=0, model=None):
     if optimizer in ["L-BFGS", "L-BFGS-B"]:
         if weight_decay > 0:
             raise ValueError("L-BFGS optimizer doesn't support weight_decay > 0")
@@ -97,13 +173,16 @@ def _make_base_optimizer(params, optimizer, learning_rate=None, decay=None, weig
             bias_correction=SOAP_options["bias_correction"],
         )
 
+    if optimizer in ["muon", "Muon"]:
+        return _make_muon_optimizer(params, learning_rate, weight_decay=weight_decay, model=model)
+
     raise NotImplementedError(
         f"Causal base optimizer {optimizer} is not supported. "
-        "Use one of: adam, soap, L-BFGS, L-BFGS-B, PSO."
+        "Use one of: adam, soap, muon, L-BFGS, L-BFGS-B, PSO."
     )
 
 
-def get(params, optimizer, learning_rate=None, decay=None, weight_decay=0):
+def get(params, optimizer, learning_rate=None, decay=None, weight_decay=0, model=None):
     """Retrieves an Optimizer instance."""
     # Custom Optimizer
     if isinstance(optimizer, torch.optim.Optimizer):
@@ -118,7 +197,7 @@ def get(params, optimizer, learning_rate=None, decay=None, weight_decay=0):
         ):
             raise ValueError(
                 "Causal cyclic_windows strategy does not support PSO yet. "
-                "Use adam, soap, L-BFGS, or L-BFGS-B."
+                "Use adam, soap, muon, L-BFGS, or L-BFGS-B."
             )
 
         base_optim = _make_base_optimizer(
@@ -127,6 +206,7 @@ def get(params, optimizer, learning_rate=None, decay=None, weight_decay=0):
             learning_rate=learning_rate,
             decay=decay,
             weight_decay=weight_decay,
+            model=model,
         )
         optim = CausalOptimizer(
             base_optimizer=base_optim,
@@ -153,6 +233,7 @@ def get(params, optimizer, learning_rate=None, decay=None, weight_decay=0):
             learning_rate=learning_rate,
             decay=decay,
             weight_decay=weight_decay,
+            model=model,
         )
     elif optimizer == "NNCG":
         if weight_decay > 0:
@@ -193,6 +274,13 @@ def get(params, optimizer, learning_rate=None, decay=None, weight_decay=0):
                 precondition_frequency=SOAP_options["precondition_frequency"],
                 max_precondition_dim=SOAP_options["max_precondition_dim"],
                 bias_correction=SOAP_options["bias_correction"],
+            )
+        elif optimizer in ["muon", "Muon"]:
+            optim = _make_muon_optimizer(
+                params,
+                learning_rate,
+                weight_decay=weight_decay,
+                model=model,
             )
         elif optimizer == "ZOCGE":
             optim = ZOCGE(

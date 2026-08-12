@@ -22,7 +22,7 @@ from RL.rl_utils.metrics import collect_policy_metrics_by_seq_position
 
 EPS_START = 0.95
 EPS_END = 0.05
-EPS_DECAY = 1000
+EPS_DECAY = 5000
 TAU = 0.01
 
 class DQNAgent:
