@@ -7,6 +7,7 @@ import torch
 _RESTORABLE_STATE_KEYS = {
     "Adam": {"exp_avg", "exp_avg_sq", "max_exp_avg_sq"},
     "AdamW": {"exp_avg", "exp_avg_sq", "max_exp_avg_sq"},
+    "PCGrad": {"exp_avg", "exp_avg_sq", "max_exp_avg_sq"},
     "MuonWithAuxAdam": {"momentum_buffer", "exp_avg", "exp_avg_sq"},
 }
 
@@ -34,14 +35,14 @@ def preview_optimizer_step(module, optimizer, closure=None):
 class MaskedOptimizerAdapter:
     """Apply a sub-tensor mask without changing the model or optimizer topology."""
 
-    SUPPORTED = {"Adam", "AdamW", "SOAP", "MuonWithAuxAdam"}
+    SUPPORTED = {"Adam", "AdamW", "PCGrad", "SOAP", "MuonWithAuxAdam"}
 
     def __init__(self, module, optimizer, groups, controller=None):
         optimizer_name = optimizer.__class__.__name__
         if optimizer_name not in self.SUPPORTED:
             raise ValueError(
                 f"Dynamic freezing does not support {optimizer_name}; "
-                "supported optimizers are Adam, SOAP and MuonWithAuxAdam."
+                "supported optimizers are Adam, PCGrad, SOAP and MuonWithAuxAdam."
             )
         self.module = module
         self.optimizer = optimizer

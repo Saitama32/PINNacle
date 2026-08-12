@@ -212,7 +212,7 @@ def configure_optimizer(args):
             muon_weight_decay=args.muon_weight_decay,
             adam_weight_decay=args.muon_adam_weight_decay,
         )
-    elif args.optimizer == "pcgrad":
+    elif args.optimizer in {"pcgrad", "pcg"}:
         dde.optimizers.set_PCGRAD_options(
             base_optimizer=args.pcgrad_base_optimizer,
         )
@@ -239,8 +239,10 @@ def validate_args(args):
     if args.dynamic_freezing:
         if args.equation not in {"ks", "kuramoto-sivashinsky"}:
             raise ValueError("Dynamic freezing is currently supported only for Kuramoto-Sivashinsky.")
-        if args.optimizer not in {"adam", "soap", "muon"}:
-            raise ValueError("Dynamic freezing supports --optimizer adam, soap, or muon.")
+        if args.optimizer not in {"adam", "pcgrad", "pcg", "soap", "muon"}:
+            raise ValueError(
+                "Dynamic freezing supports --optimizer adam, pcgrad/pcg, soap, or muon."
+            )
         if args.use_integral_loss:
             raise ValueError("Dynamic freezing is incompatible with the integral objective.")
         if args.use_causal_loss:
@@ -483,10 +485,12 @@ def run_one(equation_name, args):
         model.net.regularizer = ("l2", args.weight_decay)
     configure_optimizer(args)
     if args.sampling_method == "none":
-        model.compile(args.optimizer, lr=args.lr, loss_weights=loss_weights)
+        optimizer_name = "pcgrad" if args.optimizer == "pcg" else args.optimizer
+        model.compile(optimizer_name, lr=args.lr, loss_weights=loss_weights)
     else:
         loss_weight_adapter = LossWeightAdapter(np.ones_like(loss_weights))
-        model.compile(args.optimizer, lr=args.lr, loss_weights=loss_weight_adapter)
+        optimizer_name = "pcgrad" if args.optimizer == "pcg" else args.optimizer
+        model.compile(optimizer_name, lr=args.lr, loss_weights=loss_weight_adapter)
     maybe_attach_integral_loss(model, args)
 
     run_name = equation_name.replace("-", "_")
@@ -686,6 +690,7 @@ def parse_args():
         choices=[
             "adam",
             "pcgrad",
+            "pcg",
             "soap",
             "muon",
             "L-BFGS",
