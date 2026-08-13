@@ -152,7 +152,9 @@ class DynamicFreezingController(dde.callbacks.Callback):
         )
         front = -1
         for index in range(min(weight_front + 1, prefix_means.numel())):
-            if bool(prefix_means[index] > tolerance):
+            if bool(prefix_means[index] > tolerance) or bool(
+                chunk_losses[index] > tolerance
+            ):
                 break
             front = index
         return front
