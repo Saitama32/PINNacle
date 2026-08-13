@@ -28,7 +28,9 @@ class DynamicFreezingConfig:
     protected_pde_tolerance: float = 1e-3
     freeze_events: int = 3
     max_freeze_refresh_steps: int = 2000
-    causal_protect_weight: float = 0.9
+    causal_protect_weight: float = 0.999
+    causal_unprotect_weight: float = 0.995
+    causal_front_patience: int = 100
     diagnostic_nt: int = 16
     diagnostic_nx: int = 64
     relative_eps: float = 1e-12
@@ -53,8 +55,12 @@ class DynamicFreezingConfig:
             raise ValueError("protected PDE tolerance must be positive")
         if self.freeze_events <= 0 or self.max_freeze_refresh_steps <= 0:
             raise ValueError("freeze event count and max refresh steps must be positive")
-        if not 0 < self.causal_protect_weight <= 1:
-            raise ValueError("causal protect weight must satisfy 0 < value <= 1")
+        if not 0 < self.causal_unprotect_weight <= self.causal_protect_weight <= 1:
+            raise ValueError(
+                "causal weights must satisfy 0 < unprotect weight <= protect weight <= 1"
+            )
+        if self.causal_front_patience <= 0:
+            raise ValueError("causal front patience must be positive")
         for value, name in (
             (self.diagnostic_nt, "diagnostic_nt"),
             (self.diagnostic_nx, "diagnostic_nx"),
@@ -84,10 +90,13 @@ class DynamicFreezingController(dde.callbacks.Callback):
         self.mask_history = {group.group_id: [] for group in self.groups.groups}
         self.training_rows = []
         self.temporal_rows = []
-        self.causal_front_rows = []
         self._last_logged_step = -1
         self.last_event_step = None
-        self.previous_protected_front_chunk = None
+        self.candidate_front = -1
+        self.pending_front = None
+        self.pending_count = 0
+        self.committed_front = -1
+        self.last_event_front = None
         self._pending_event_reason = None
         self._build_grids()
 
@@ -108,19 +117,48 @@ class DynamicFreezingController(dde.callbacks.Callback):
     def causal_options(self):
         return getattr(self.model, "causal_loss_options", {}) or {}
 
-    def _protected_front(self, details):
+    @staticmethod
+    def _front_at_threshold(details, threshold):
         if not details:
             return -1
         post_weights = details["post_chunk_weights"].detach().reshape(-1)
         front = -1
         for index, weight in enumerate(post_weights):
-            if float(weight.cpu()) < self.config.causal_protect_weight:
+            if float(weight.cpu()) < threshold:
                 break
             front = index
         return front
 
     def _cached_protected_front(self):
-        return self._protected_front(getattr(self.model, "causal_loss_details", None))
+        details = getattr(self.model, "causal_loss_details", None)
+        return self._front_at_threshold(details, self.config.causal_protect_weight)
+
+    def _update_causal_front(self):
+        details = getattr(self.model, "causal_loss_details", None)
+        enter_front = self._front_at_threshold(details, self.config.causal_protect_weight)
+        exit_front = self._front_at_threshold(details, self.config.causal_unprotect_weight)
+        if enter_front > self.committed_front:
+            candidate = enter_front
+        elif exit_front < self.committed_front:
+            candidate = exit_front
+        else:
+            candidate = self.committed_front
+        self.candidate_front = candidate
+        if candidate == self.committed_front:
+            self.pending_front = None
+            self.pending_count = 0
+            return False
+        if candidate == self.pending_front:
+            self.pending_count += 1
+        else:
+            self.pending_front = candidate
+            self.pending_count = 1
+        if self.pending_count < self.config.causal_front_patience:
+            return False
+        self.committed_front = candidate
+        self.pending_front = None
+        self.pending_count = 0
+        return True
 
     def _build_grids(self):
         bbox = np.asarray(self.model.pde.bbox, dtype=np.float64)
@@ -293,13 +331,17 @@ class DynamicFreezingController(dde.callbacks.Callback):
             return False
         step = int(getattr(self.model.train_state, "step", 0)) + 1
         if self.causal_enabled:
-            current_front = self._cached_protected_front()
             if self.event_count == 0:
                 if float(self._ic_loss().cpu()) >= self.config.good_tolerance:
                     return False
+                self.candidate_front = self._cached_protected_front()
+                self.committed_front = self.candidate_front
+                self.pending_front = None
+                self.pending_count = 0
                 self._pending_event_reason = "initial_ic_ready"
                 return True
-            if current_front != self.previous_protected_front_chunk:
+            front_changed = self._update_causal_front()
+            if front_changed and self.committed_front != self.last_event_front:
                 self._pending_event_reason = "front_changed"
                 return True
             if step - self.last_event_step >= self.config.max_freeze_refresh_steps:
@@ -314,6 +356,12 @@ class DynamicFreezingController(dde.callbacks.Callback):
 
     def on_train_begin(self):
         os.makedirs(self.log_dir, exist_ok=True)
+        for filename in (
+            "dynamic_freezing_events.csv",
+            "dynamic_freezing_groups.csv",
+            "dynamic_freezing_chunks.csv",
+        ):
+            open(os.path.join(self.log_dir, filename), "w", encoding="utf-8").close()
         with open(os.path.join(self.log_dir, "dynamic_freezing_config.json"), "w", encoding="utf-8") as file_obj:
             json.dump(asdict(self.config), file_obj, indent=2, sort_keys=True)
         self._write_csv("weight_groups.csv", self.groups.metadata())
@@ -359,7 +407,7 @@ class DynamicFreezingController(dde.callbacks.Callback):
             self.first_event_step = step
         good_mask, bad_mask, _ = self._region(event_id)
         event_reason = self._pending_event_reason or "legacy_schedule"
-        protected_front = self._cached_protected_front() if self.causal_enabled else -1
+        protected_front = self.committed_front if self.causal_enabled else -1
         base = self._evaluate_losses(
             good_mask,
             bad_mask,
@@ -503,34 +551,59 @@ class DynamicFreezingController(dde.callbacks.Callback):
         for row in rows:
             row["selected_for_freeze"] = row["group_id"] in selected
             row["is_frozen_after"] = row["selected_for_freeze"]
+            row["frozen_before"] = row["is_frozen_before"]
+            row["frozen_after"] = row["is_frozen_after"]
+            row["ic_loss_after"] = row["loss_ic_after"]
+            row["protected_pde_loss_after"] = row["loss_protected_pde_after"]
+            row["ic_risk"] = row.get("ic_protected_risk", math.nan)
+            row["pde_risk"] = row.get("pde_protected_risk", math.nan)
             row.pop("_delta")
         self.event_count = event_id
         self.event_steps.append(step)
         self.last_event_step = step
-        self.previous_protected_front_chunk = protected_front
+        self.last_event_front = protected_front
         self._pending_event_reason = None
         for group in self.groups.groups:
             self.mask_history[group.group_id].append("freeze" if group.is_frozen else "train")
-        self._write_csv(f"event_{event_id:02d}_groups.csv", rows)
+        self._append_csv("dynamic_freezing_groups.csv", rows)
         if self.causal_enabled:
             self._write_causal_chunks(event_id, step, base["causal_details"], protected_front)
-            self._append_causal_front_history(
-                event_id,
-                step,
-                base["causal_details"],
-                protected_front,
-                len(selected),
-                len(risky),
-                event_reason,
-            )
-        self._write_mask_history()
-        self._write_correlations(event_id, rows)
+        correlations = self._correlations(rows)
+        previous_selected = {group_id for group_id, frozen in was_frozen.items() if frozen}
+        union = previous_selected | selected
+        mask_jaccard = len(previous_selected & selected) / len(union) if union else 1.0
+        causal_details = base.get("causal_details") or {}
+        causal_weights = causal_details.get("weights")
+        causal_weight_values = (
+            causal_weights.detach().cpu().numpy() if causal_weights is not None else np.asarray([])
+        )
+        max_frozen = int(math.floor(len(rows) * self.config.max_freeze_fraction))
+        self._append_csv("dynamic_freezing_events.csv", [{
+            "event_id": event_id,
+            "step": step,
+            "trigger": event_reason,
+            "candidate_front": self.candidate_front if self.causal_enabled else -1,
+            "committed_front": protected_front,
+            "front_changed": event_reason == "front_changed",
+            "num_risky_groups": len(risky),
+            "num_frozen_groups": len(selected),
+            "num_newly_frozen": len(selected - previous_selected),
+            "num_unfrozen": len(previous_selected - selected),
+            "ic_loss_base": base["ic"],
+            "protected_pde_loss_base": base["good_pde"],
+            "causal_loss_base": base["bad"] if self.causal_enabled else math.nan,
+            "causal_weight_min": float(np.min(causal_weight_values)) if causal_weight_values.size else math.nan,
+            "causal_weight_mean": float(np.mean(causal_weight_values)) if causal_weight_values.size else math.nan,
+            "causal_weight_max": float(np.max(causal_weight_values)) if causal_weight_values.size else math.nan,
+            "mask_jaccard": mask_jaccard,
+            "cap_reached": self.causal_enabled and len(risky) > max_frozen,
+            **correlations,
+        }])
         self._save_temporal_profile(step, event_id)
-        if self.config.responsibility_enabled and (
-            not self.causal_enabled or event_reason == "front_changed"
-        ):
-            self._save_responsibility(event_id)
-        self._plot_event(event_id, rows)
+        if not self.causal_enabled or event_reason == "max_refresh":
+            if self.config.responsibility_enabled:
+                self._save_responsibility(event_id)
+            self._plot_event(event_id, rows)
         event_total = "unbounded" if self.causal_enabled else str(self.config.freeze_events)
         risky_text = f", risky={len(risky)}" if self.causal_enabled else ""
         cap_text = ""
@@ -853,14 +926,6 @@ class DynamicFreezingController(dde.callbacks.Callback):
             / (np.linalg.norm(reference) + self.config.relative_eps)
         )
 
-    def _write_mask_history(self):
-        rows = []
-        for group_id, values in self.mask_history.items():
-            row = {"group_id": group_id}
-            row.update({f"event{index + 1}": value for index, value in enumerate(values)})
-            rows.append(row)
-        self._write_csv("mask_history.csv", rows)
-
     def _write_causal_chunks(self, event_id, step, details, protected_front):
         rows = []
         for chunk_id, (chunk_loss, weight, post_weight, t_min, t_max) in enumerate(zip(
@@ -883,45 +948,17 @@ class DynamicFreezingController(dde.callbacks.Callback):
                 "post_chunk_weight": float(post_weight.cpu()),
                 "weighted_chunk_loss": weight_value * loss_value,
                 "is_protected": chunk_id <= protected_front,
+                "is_candidate_protected": chunk_id <= self.candidate_front,
+                "is_committed_protected": chunk_id <= protected_front,
                 "is_front_chunk": chunk_id == protected_front,
             })
-        self._write_csv(f"event_{event_id:02d}_causal_chunks.csv", rows)
+        self._append_csv("dynamic_freezing_chunks.csv", rows)
 
-    def _append_causal_front_history(
-        self,
-        event_id,
-        step,
-        details,
-        protected_front,
-        num_frozen,
-        num_risky,
-        reason,
-    ):
-        weights = details["weights"].detach().cpu().numpy()
-        front_time = (
-            float(details["t_max"][protected_front].cpu())
-            if protected_front >= 0 else math.nan
-        )
-        self.causal_front_rows.append({
-            "event_id": event_id,
-            "step": step,
-            "trigger_reason": reason,
-            "protected_front_chunk": protected_front,
-            "protected_front_t": front_time,
-            "num_protected_chunks": protected_front + 1,
-            "causal_weight_min": float(np.min(weights)),
-            "causal_weight_mean": float(np.mean(weights)),
-            "causal_weight_max": float(np.max(weights)),
-            "num_frozen_groups": num_frozen,
-            "num_risky_groups": num_risky,
-        })
-        self._write_csv("causal_front_history.csv", self.causal_front_rows)
-
-    def _write_correlations(self, event_id, rows):
+    def _correlations(self, rows):
         protected = np.asarray([row["P"] for row in rows], dtype=float)
         jg = np.asarray([row["jg_delta_norm"] for row in rows], dtype=float)
         null_complement = 1 - np.asarray([row["null_ratio"] for row in rows], dtype=float)
-        payload = {"event_id": event_id}
+        payload = {}
         for name, values in (("jg_delta_norm", jg), ("one_minus_null_ratio", null_complement)):
             valid = np.isfinite(protected) & np.isfinite(values)
             if valid.sum() >= 2 and np.std(protected[valid]) > 0 and np.std(values[valid]) > 0:
@@ -930,8 +967,19 @@ class DynamicFreezingController(dde.callbacks.Callback):
             else:
                 payload[f"pearson_P_vs_{name}"] = math.nan
                 payload[f"spearman_P_vs_{name}"] = math.nan
-        with open(os.path.join(self.log_dir, f"event_{event_id:02d}_correlations.json"), "w", encoding="utf-8") as file_obj:
-            json.dump(payload, file_obj, indent=2)
+        return payload
+
+    def _append_csv(self, filename, rows):
+        if not rows:
+            return
+        path = os.path.join(self.log_dir, filename)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        write_header = not os.path.exists(path) or os.path.getsize(path) == 0
+        with open(path, "a", newline="", encoding="utf-8") as file_obj:
+            writer = csv.DictWriter(file_obj, fieldnames=list(rows[0].keys()), extrasaction="ignore")
+            if write_header:
+                writer.writeheader()
+            writer.writerows(rows)
 
     def _write_csv(self, filename, rows):
         if not rows:
