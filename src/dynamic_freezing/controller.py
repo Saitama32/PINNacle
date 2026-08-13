@@ -335,7 +335,7 @@ class DynamicFreezingController(dde.callbacks.Callback):
                 if float(self._ic_loss().cpu()) >= self.config.good_tolerance:
                     return False
                 self.candidate_front = self._cached_protected_front()
-                self.committed_front = self.candidate_front
+                self.committed_front = -1
                 self.pending_front = None
                 self.pending_count = 0
                 self._pending_event_reason = "initial_ic_ready"
