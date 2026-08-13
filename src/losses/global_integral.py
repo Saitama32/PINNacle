@@ -944,6 +944,7 @@ def attach_integral_loss_train_step(model, integral_loss, integral_only=False):
             total_loss = deepxde_loss_sum + integral_weighted_loss
             integral_loss.last_diagnostics["actual_total_loss"] = total_loss.detach()
             model.integral_loss_diagnostics = integral_loss.last_diagnostics
+        dde.grad.clear()
         if not skip_backward:
             model.opt.zero_grad()
             total_loss.backward()
