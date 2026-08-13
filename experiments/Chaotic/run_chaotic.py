@@ -775,7 +775,7 @@ def parse_args():
     parser.add_argument(
         "--protected-pde-tolerance",
         type=float,
-        default=1e-3,
+        default=5e-2,
         help=(
             "Independent tolerance for the mean residual loss over the protected "
             "causal prefix; does not affect legacy non-causal freezing."

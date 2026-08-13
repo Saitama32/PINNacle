@@ -25,7 +25,7 @@ class DynamicFreezingConfig:
     group_size: int = 256
     max_freeze_fraction: float = 0.25
     good_tolerance: float = 1e-3
-    protected_pde_tolerance: float = 1e-3
+    protected_pde_tolerance: float = 5e-2
     freeze_events: int = 3
     max_freeze_refresh_steps: int = 2000
     causal_protect_weight: float = 0.999
@@ -93,6 +93,8 @@ class DynamicFreezingController(dde.callbacks.Callback):
         self._last_logged_step = -1
         self.last_event_step = None
         self.candidate_front = -1
+        self.weight_enter_front = -1
+        self.pde_gated_enter_front = -1
         self.pending_front = None
         self.pending_count = 0
         self.committed_front = -1
@@ -133,9 +135,37 @@ class DynamicFreezingController(dde.callbacks.Callback):
         details = getattr(self.model, "causal_loss_details", None)
         return self._front_at_threshold(details, self.config.causal_protect_weight)
 
+    def _pde_gated_front(self, details, weight_front):
+        if not details or weight_front < 0:
+            return -1
+        chunk_losses = details["chunk_losses"].detach().reshape(-1)
+        prefix_means = torch.cumsum(chunk_losses, dim=0) / torch.arange(
+            1,
+            chunk_losses.numel() + 1,
+            dtype=chunk_losses.dtype,
+            device=chunk_losses.device,
+        )
+        tolerance = torch.as_tensor(
+            self.config.protected_pde_tolerance,
+            dtype=chunk_losses.dtype,
+            device=chunk_losses.device,
+        )
+        front = -1
+        for index in range(min(weight_front + 1, prefix_means.numel())):
+            if bool(prefix_means[index] > tolerance):
+                break
+            front = index
+        return front
+
     def _update_causal_front(self):
         details = getattr(self.model, "causal_loss_details", None)
-        enter_front = self._front_at_threshold(details, self.config.causal_protect_weight)
+        self.weight_enter_front = self._front_at_threshold(
+            details, self.config.causal_protect_weight
+        )
+        self.pde_gated_enter_front = self._pde_gated_front(
+            details, self.weight_enter_front
+        )
+        enter_front = self.pde_gated_enter_front
         exit_front = self._front_at_threshold(details, self.config.causal_unprotect_weight)
         if enter_front > self.committed_front:
             candidate = enter_front
@@ -334,7 +364,14 @@ class DynamicFreezingController(dde.callbacks.Callback):
             if self.event_count == 0:
                 if float(self._ic_loss().cpu()) >= self.config.good_tolerance:
                     return False
-                self.candidate_front = self._cached_protected_front()
+                details = getattr(self.model, "causal_loss_details", None)
+                self.weight_enter_front = self._front_at_threshold(
+                    details, self.config.causal_protect_weight
+                )
+                self.pde_gated_enter_front = self._pde_gated_front(
+                    details, self.weight_enter_front
+                )
+                self.candidate_front = self.pde_gated_enter_front
                 self.committed_front = -1
                 self.pending_front = None
                 self.pending_count = 0
@@ -583,6 +620,8 @@ class DynamicFreezingController(dde.callbacks.Callback):
             "step": step,
             "trigger": event_reason,
             "candidate_front": self.candidate_front if self.causal_enabled else -1,
+            "weight_enter_front": self.weight_enter_front if self.causal_enabled else -1,
+            "pde_gated_enter_front": self.pde_gated_enter_front if self.causal_enabled else -1,
             "committed_front": protected_front,
             "front_changed": event_reason == "front_changed",
             "num_risky_groups": len(risky),
