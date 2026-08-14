@@ -219,6 +219,8 @@ class FAMTrainConfig:
     integral_seed: Optional[int] = None
     integral_ic_enabled: bool = False
     integral_ic_weight: float = 100.0
+    integral_periodic_enabled: bool = False
+    integral_periodic_weight: float = 100.0
 
 
 class FAMTrainer:
@@ -295,6 +297,8 @@ class FAMTrainer:
         self.integral_only = bool(config.integral_only)
         if config.integral_ic_enabled and not (config.integral_loss_enabled and self.integral_only):
             raise ValueError("integral_ic_enabled requires integral_loss_enabled=True and integral_only=True.")
+        if config.integral_periodic_enabled and not config.integral_loss_enabled:
+            raise ValueError("integral_periodic_enabled requires integral_loss_enabled=True.")
         if self.causal_window_enabled:
             self._validate_causal_window_config()
         self._validate_pde_point_weighting_config()
@@ -358,6 +362,8 @@ class FAMTrainer:
             resample_every=self.config.integral_resample_every,
             initial_condition_enabled=self.config.integral_ic_enabled,
             initial_condition_weight=self.config.integral_ic_weight,
+            periodic_enabled=self.config.integral_periodic_enabled,
+            periodic_weight=self.config.integral_periodic_weight,
         )
         self.model.integral_loss = self.integral_loss
 

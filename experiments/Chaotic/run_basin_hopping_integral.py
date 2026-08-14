@@ -33,11 +33,11 @@ from src.losses.global_integral import GlobalIntegralLoss, attach_integral_loss_
 CANDIDATE_COLUMNS = [
     "candidate_id", "is_control", "sigma", "seed",
     "relative_parameter_displacement", "pre_total", "pre_global",
-    "pre_local", "pre_ic", "post_total", "post_global", "post_local",
-    "post_ic", "delta_vs_control_total", "delta_vs_original_total", "selected",
+    "pre_local", "pre_ic", "pre_periodic", "post_total", "post_global", "post_local",
+    "post_ic", "post_periodic", "delta_vs_control_total", "delta_vs_original_total", "selected",
 ]
 TRAJECTORY_COLUMNS = [
-    "candidate_id", "local_step", "train_total", "global", "local", "ic",
+    "candidate_id", "local_step", "train_total", "global", "local", "ic", "periodic",
 ]
 
 
@@ -143,6 +143,8 @@ class OneShotBasinHopper(dde.callbacks.Callback):
             resample_every=args.integral_resample_every,
             initial_condition_enabled=args.integral_ic_enabled,
             initial_condition_weight=args.integral_ic_weight,
+            periodic_enabled=args.integral_periodic_enabled,
+            periodic_weight=args.integral_periodic_weight,
         )
 
     @staticmethod
@@ -153,6 +155,7 @@ class OneShotBasinHopper(dde.callbacks.Callback):
             "global": float(diagnostics["global_integral_loss"].detach().cpu()),
             "local": float(diagnostics["local_integral_loss"].detach().cpu()),
             "ic": float(diagnostics["initial_condition_loss"].detach().cpu()),
+            "periodic": float(diagnostics["periodic_loss"].detach().cpu()),
         }
 
     def _fixed_evaluation_batches(self, loss):
@@ -179,7 +182,7 @@ class OneShotBasinHopper(dde.callbacks.Callback):
         loss._cached_local_endpoint_ptrs = loss._endpoint_ptrs(x, t)
 
     def _evaluate(self, loss, batches):
-        totals = {key: 0.0 for key in ("total", "global", "local", "ic")}
+        totals = {key: 0.0 for key in ("total", "global", "local", "ic", "periodic")}
         for batch_id, batch in enumerate(batches):
             self._activate_fixed_batch(loss, batch, batch_id)
             try:
@@ -236,6 +239,7 @@ class OneShotBasinHopper(dde.callbacks.Callback):
             "global": values["global"],
             "local": values["local"],
             "ic": values["ic"],
+            "periodic": values["periodic"],
         }
 
     @staticmethod
@@ -297,9 +301,9 @@ class OneShotBasinHopper(dde.callbacks.Callback):
                 "seed": seed,
                 "relative_parameter_displacement": displacement,
                 "pre_total": pre["total"], "pre_global": pre["global"],
-                "pre_local": pre["local"], "pre_ic": pre["ic"],
+                "pre_local": pre["local"], "pre_ic": pre["ic"], "pre_periodic": pre["periodic"],
                 "post_total": post["total"], "post_global": post["global"],
-                "post_local": post["local"], "post_ic": post["ic"],
+                "post_local": post["local"], "post_ic": post["ic"], "post_periodic": post["periodic"],
             })
             print(
                 f"[Basin hopping] candidate={candidate_id} sigma={sigma:g} "
@@ -388,6 +392,8 @@ def build_parser():
     parser.add_argument("--integral-seed", type=int, default=None)
     parser.add_argument("--integral-ic-enabled", type=chaotic.str2bool, nargs="?", const=True, default=True)
     parser.add_argument("--integral-ic-weight", type=float, default=10.0)
+    parser.add_argument("--integral-periodic-enabled", type=chaotic.str2bool, nargs="?", const=True, default=False)
+    parser.add_argument("--integral-periodic-weight", type=float, default=100.0)
 
     parser.add_argument("--basin-hopping", type=chaotic.str2bool, nargs="?", const=True, default=False)
     parser.add_argument("--basin-hopping-step", type=int, default=10000)
@@ -432,6 +438,8 @@ def validate_args(args):
         raise ValueError("Local learning rate and evaluation batch count must be positive.")
     if args.weight_decay < 0:
         raise ValueError("--weight-decay must be non-negative.")
+    if args.integral_periodic_weight < 0 or not np.isfinite(args.integral_periodic_weight):
+        raise ValueError("--integral-periodic-weight must be finite and non-negative.")
 
 
 def run(args):

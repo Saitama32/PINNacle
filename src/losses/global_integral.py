@@ -467,6 +467,8 @@ class GlobalIntegralLoss:
         initial_condition_fn=None,
         initial_condition_enabled=False,
         initial_condition_weight=100.0,
+        periodic_enabled=False,
+        periodic_weight=100.0,
     ):
         self.model = model
         self.pde = pde
@@ -489,6 +491,8 @@ class GlobalIntegralLoss:
         self.initial_condition_fn = initial_condition_fn or ks_initial_condition_torch
         self.initial_condition_enabled = bool(initial_condition_enabled)
         self.initial_condition_weight = float(initial_condition_weight)
+        self.periodic_enabled = bool(periodic_enabled)
+        self.periodic_weight = float(periodic_weight)
 
         if self.batch_size <= 0:
             raise ValueError("integral batch_size must be positive.")
@@ -514,6 +518,8 @@ class GlobalIntegralLoss:
             raise ValueError("integral resample_every must be positive.")
         if self.initial_condition_weight < 0 or not math.isfinite(self.initial_condition_weight):
             raise ValueError("integral initial_condition_weight must be finite and non-negative.")
+        if self.periodic_weight < 0 or not math.isfinite(self.periodic_weight):
+            raise ValueError("integral periodic_weight must be finite and non-negative.")
         if getattr(pde, "input_dim", 2) != 2:
             raise ValueError("GlobalIntegralLoss currently supports only 2D inputs ordered as (x, t).")
         if not hasattr(pde, "ks_spatial_operator"):
@@ -710,6 +716,44 @@ class GlobalIntegralLoss:
         target = self.initial_condition_fn(x)
         return torch.mean(torch.square(prediction - target))
 
+    def compute_periodic_boundary_loss(self, t=None):
+        if t is None:
+            t = self.cached_t
+        if t is None:
+            raise ValueError("Periodic boundary loss requires sampled integral endpoints.")
+
+        left_x = torch.full_like(t, self.x_min)
+        right_x = torch.full_like(t, self.x_max)
+        boundary_points = torch.cat(
+            [torch.cat([left_x, t], dim=1), torch.cat([right_x, t], dim=1)],
+            dim=0,
+        ).requires_grad_(True)
+        derivatives = [self.model.net(boundary_points)]
+        current = derivatives[0]
+        for _ in range(3):
+            gradient = torch.autograd.grad(
+                current,
+                boundary_points,
+                grad_outputs=torch.ones_like(current),
+                create_graph=True,
+                retain_graph=True,
+                allow_unused=True,
+            )[0]
+            spatial_derivative = (
+                torch.zeros_like(boundary_points[:, :1])
+                if gradient is None
+                else gradient[:, :1]
+            )
+            current = spatial_derivative + boundary_points[:, :1] * 0.0
+            derivatives.append(current)
+
+        batch_size = t.shape[0]
+        component_losses = []
+        for derivative in derivatives:
+            mismatch = derivative[:batch_size] - derivative[batch_size:]
+            component_losses.append(torch.mean(torch.square(mismatch)))
+        return torch.stack(component_losses).sum(), tuple(component_losses)
+
     def compute_local_raw_loss(self, step=None, endpoints=None):
         if endpoints is None:
             x, t = self.sample_endpoints(step=step)
@@ -756,10 +800,16 @@ class GlobalIntegralLoss:
             if self.initial_condition_enabled
             else torch.zeros_like(global_raw_loss)
         )
+        if self.periodic_enabled:
+            periodic_loss, periodic_component_losses = self.compute_periodic_boundary_loss(self.cached_t)
+        else:
+            periodic_loss = torch.zeros_like(global_raw_loss)
+            periodic_component_losses = (periodic_loss,) * 4
         raw_loss = (
             global_raw_loss
             + self.local_weight * local_raw_loss
             + self.initial_condition_weight * initial_condition_loss
+            + self.periodic_weight * periodic_loss
         )
         self.last_components = (
             global_raw_loss,
@@ -769,6 +819,7 @@ class GlobalIntegralLoss:
                 if self.initial_condition_enabled
                 else None
             ),
+            self.periodic_weight * periodic_loss if self.periodic_enabled else None,
         )
         self.last_diagnostics = self._build_diagnostics(
             raw_loss=raw_loss,
@@ -778,6 +829,8 @@ class GlobalIntegralLoss:
             local_diagnostics=local_diagnostics,
             local_segments=local_segments,
             initial_condition_loss=initial_condition_loss,
+            periodic_loss=periodic_loss,
+            periodic_component_losses=periodic_component_losses,
             deepxde_loss_sum=deepxde_loss_sum,
         )
         return raw_loss
@@ -795,12 +848,18 @@ class GlobalIntegralLoss:
             if self.last_components[2] is not None
             else torch.zeros_like(global_component)
         )
-        weighted_loss = global_component + local_component + initial_condition_component
+        periodic_component = (
+            self.last_components[3]
+            if self.last_components[3] is not None
+            else torch.zeros_like(global_component)
+        )
+        weighted_loss = global_component + local_component + initial_condition_component + periodic_component
         self.last_diagnostics["integral_weight"] = 1.0
         self.last_diagnostics["integral_loss_weighted"] = weighted_loss.detach()
         self.last_diagnostics["weighted_global_integral_loss"] = global_component.detach()
         self.last_diagnostics["weighted_local_integral_loss"] = local_component.detach()
         self.last_diagnostics["weighted_initial_condition_loss"] = initial_condition_component.detach()
+        self.last_diagnostics["weighted_periodic_loss"] = periodic_component.detach()
         if deepxde_loss_sum is not None:
             deepxde_loss_sum = deepxde_loss_sum.detach()
             self.last_diagnostics["deepxde_loss_sum"] = deepxde_loss_sum
@@ -822,6 +881,8 @@ class GlobalIntegralLoss:
         local_diagnostics,
         local_segments,
         initial_condition_loss,
+        periodic_loss,
+        periodic_component_losses,
         deepxde_loss_sum=None,
     ):
         residual_detached = global_residual.detach()
@@ -834,6 +895,12 @@ class GlobalIntegralLoss:
             "local_integral_loss": local_raw_loss.detach(),
             "initial_condition_loss": initial_condition_loss.detach(),
             "initial_condition_weight": self.initial_condition_weight,
+            "periodic_loss": periodic_loss.detach(),
+            "periodic_u_loss": periodic_component_losses[0].detach(),
+            "periodic_ux_loss": periodic_component_losses[1].detach(),
+            "periodic_uxx_loss": periodic_component_losses[2].detach(),
+            "periodic_uxxx_loss": periodic_component_losses[3].detach(),
+            "periodic_weight": self.periodic_weight,
             "local_integral_rms": local_diagnostics["local_residual_rms"].detach(),
             "local_integral_mae": local_diagnostics["local_residual_mae"].detach(),
             "local_integral_max": local_diagnostics["local_residual_max"].detach(),
@@ -857,6 +924,7 @@ class GlobalIntegralLoss:
             "weighted_global_integral_loss": global_raw_loss.detach() * 0.0,
             "weighted_local_integral_loss": local_raw_loss.detach() * 0.0,
             "weighted_initial_condition_loss": initial_condition_loss.detach() * 0.0,
+            "weighted_periodic_loss": periodic_loss.detach() * 0.0,
             "integral_weight": 0.0,
             "integral_loss_weighted": raw_loss.detach() * 0.0,
             "integral_residual_rms": torch.sqrt(torch.mean(residual_detached**2)),

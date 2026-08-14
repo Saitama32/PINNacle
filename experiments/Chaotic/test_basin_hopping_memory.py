@@ -41,6 +41,7 @@ class _EvaluationLoss:
             "global_integral_loss": value,
             "local_integral_loss": value * 0,
             "initial_condition_loss": value * 0,
+            "periodic_loss": value * 0,
         }
 
 
@@ -104,7 +105,7 @@ def test_local_relaxation_clears_cache_and_releases_gradients(monkeypatch):
     hopper = _hopper()
     hopper.args = SimpleNamespace(basin_hopping_local_steps=1, basin_hopping_step=10)
     hopper._evaluate = lambda loss, batches: {
-        "total": 1.0, "global": 1.0, "local": 0.0, "ic": 0.0,
+        "total": 1.0, "global": 1.0, "local": 0.0, "ic": 0.0, "periodic": 0.0,
     }
     optimizer = FakeOptimizer()
     trajectory = []
