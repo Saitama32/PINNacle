@@ -957,15 +957,16 @@ class DynamicFreezingController(dde.callbacks.Callback):
 
     def _ks_term_metrics(self, step):
         cache = getattr(self.model, "ks_causal_chunk_diagnostics", None)
-        if cache and int(cache.get("step", -1)) == int(step):
-            return cache.get("chunks", {})
+        if cache:
+            metrics_step = int(cache.get("step", -1))
+            return cache.get("chunks", {}), metrics_step, int(step) - metrics_step
         if not self._warned_missing_ks_cache:
             print(
-                "Warning: same-step KS chunk diagnostics are unavailable; "
+                "Warning: KS chunk diagnostics are unavailable; "
                 "boundary KS term metrics will be NaN."
             )
             self._warned_missing_ks_cache = True
-        return {}
+        return {}, math.nan, math.nan
 
     def _log_boundary_diagnostics(self, step):
         details = getattr(self.model, "causal_loss_details", None)
@@ -1016,7 +1017,7 @@ class DynamicFreezingController(dde.callbacks.Callback):
                 + self.config.relative_eps
             )
 
-        ks_metrics = self._ks_term_metrics(step)
+        ks_metrics, ks_metrics_step, ks_metrics_age_steps = self._ks_term_metrics(step)
         rows = []
         for chunk_id in range(num_chunks):
             history = self.boundary_drift_history.setdefault(
@@ -1043,8 +1044,10 @@ class DynamicFreezingController(dde.callbacks.Callback):
                 "boundary_drift_rel": float(drift_rel[chunk_id]),
                 "boundary_drift_rel_mean": rolling_mean,
                 "boundary_drift_rel_max": rolling_max,
-                "chunk_loss_abs_change": float(loss_abs_change[chunk_id]),
-                "chunk_loss_rel_change": float(loss_rel_change[chunk_id]),
+                "chunk_loss_delta": float(loss_abs_change[chunk_id]),
+                "chunk_loss_rel_delta": float(loss_rel_change[chunk_id]),
+                "ks_metrics_step": ks_metrics_step,
+                "ks_metrics_age_steps": ks_metrics_age_steps,
                 **terms,
                 "chunk_l2re": float(chunk_l2re[chunk_id]),
                 "boundary_l2re": float(boundary_l2re[chunk_id]),
