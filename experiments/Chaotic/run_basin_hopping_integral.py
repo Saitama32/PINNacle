@@ -182,10 +182,17 @@ class OneShotBasinHopper(dde.callbacks.Callback):
         totals = {key: 0.0 for key in ("total", "global", "local", "ic")}
         for batch_id, batch in enumerate(batches):
             self._activate_fixed_batch(loss, batch, batch_id)
-            loss.compute_raw_loss(step=batch_id, endpoints=(batch[0], batch[1]))
-            values = self._components(loss)
+            try:
+                loss.compute_raw_loss(step=batch_id, endpoints=(batch[0], batch[1]))
+                values = self._components(loss)
+            finally:
+                # KS uses derivatives up to u_xxxx. DeepXDE caches the
+                # intermediate Jacobians/Hessians globally, so direct loss
+                # calls outside Model.train_step must clear that cache too.
+                dde.grad.clear()
             for key in totals:
                 totals[key] += values[key]
+        self.model.net.zero_grad(set_to_none=True)
         return {key: value / len(batches) for key, value in totals.items()}
 
     def _fresh_optimizer(self, name, lr):
@@ -202,14 +209,20 @@ class OneShotBasinHopper(dde.callbacks.Callback):
         checkpoints = set(trajectory_steps(self.args.basin_hopping_local_steps))
         for local_step in range(1, self.args.basin_hopping_local_steps + 1):
             def closure():
-                optimizer.zero_grad()
-                total = loss.compute_weighted_loss(self.args.basin_hopping_step + local_step)
-                total.backward()
-                return total
+                optimizer.zero_grad(set_to_none=True)
+                try:
+                    total = loss.compute_weighted_loss(self.args.basin_hopping_step + local_step)
+                    total.backward()
+                    return total
+                finally:
+                    dde.grad.clear()
 
             optimizer.step(closure)
             if hasattr(optimizer, "after_train_step"):
                 optimizer.after_train_step()
+            # The update has already consumed the gradients; retaining them
+            # until the next step only increases the peak at fixed evaluation.
+            optimizer.zero_grad(set_to_none=True)
             if local_step in checkpoints:
                 values = self._evaluate(loss, fixed_batches)
                 trajectory.append(self._trajectory_row(candidate_id, local_step, values))
