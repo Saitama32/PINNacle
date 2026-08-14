@@ -2,6 +2,7 @@ import csv
 import json
 import math
 import os
+from collections import deque
 from dataclasses import asdict, dataclass
 
 import deepxde as dde
@@ -81,6 +82,7 @@ class DynamicFreezingController(dde.callbacks.Callback):
         config.validate()
         self.model = model
         self.config = config
+        self.model.dynamic_freezing_relative_eps = config.relative_eps
         self.log_dir = os.path.abspath(log_dir)
         self.groups = WeightGroupCollection(model.net, config.group_size)
         self.adapter = None
@@ -90,6 +92,11 @@ class DynamicFreezingController(dde.callbacks.Callback):
         self.mask_history = {group.group_id: [] for group in self.groups.groups}
         self.training_rows = []
         self.temporal_rows = []
+        self.previous_boundary_states = None
+        self.previous_boundary_chunk_losses = None
+        self.previous_boundary_step = None
+        self.boundary_drift_history = {}
+        self._warned_missing_ks_cache = False
         self._last_logged_step = -1
         self.last_event_step = None
         self.candidate_front = -1
@@ -399,6 +406,7 @@ class DynamicFreezingController(dde.callbacks.Callback):
             "dynamic_freezing_events.csv",
             "dynamic_freezing_groups.csv",
             "dynamic_freezing_chunks.csv",
+            "boundary_diagnostics.csv",
         ):
             open(os.path.join(self.log_dir, filename), "w", encoding="utf-8").close()
         with open(os.path.join(self.log_dir, "dynamic_freezing_config.json"), "w", encoding="utf-8") as file_obj:
@@ -413,6 +421,8 @@ class DynamicFreezingController(dde.callbacks.Callback):
             return
         self._last_logged_step = step
         self._log_training(step)
+        if self.causal_enabled:
+            self._log_boundary_diagnostics(step)
 
     def on_train_end(self):
         final_step = int(getattr(self.model.train_state, "step", 0))
@@ -902,6 +912,147 @@ class DynamicFreezingController(dde.callbacks.Callback):
             plt.close(fig)
         except Exception as error:
             print(f"Warning: could not plot responsibility maps: {error}")
+
+    def _predict_numpy(self, points_np):
+        was_training = self.model.net.training
+        self.model.net.train(False)
+        try:
+            with torch.no_grad():
+                return self.model.net(self._tensor(points_np)).detach().cpu().numpy()
+        finally:
+            self.model.net.train(was_training)
+
+    def _boundary_points(self, boundary_times):
+        xx, tt = np.meshgrid(self.x_values, boundary_times)
+        return np.column_stack([xx.reshape(-1), tt.reshape(-1)]).astype(np.float32)
+
+    def _chunk_relative_l2(self, num_chunks):
+        result = np.full(num_chunks, np.nan, dtype=float)
+        if self._reference_nearest is None:
+            return result
+        prediction = self._predict_numpy(self.interior_np)
+        reference = np.asarray(self._reference_nearest(self.interior_np)).reshape(prediction.shape)
+        time_index = int(self.causal_options.get("time_index", -1))
+        order = np.argsort(self.interior_np[:, time_index], kind="stable")
+        chunk_size = len(order) // num_chunks
+        if chunk_size <= 0:
+            return result
+        ordered = order[: chunk_size * num_chunks].reshape(num_chunks, chunk_size)
+        for chunk_id, indices in enumerate(ordered):
+            numerator = np.linalg.norm(prediction[indices] - reference[indices])
+            denominator = np.linalg.norm(reference[indices]) + self.config.relative_eps
+            result[chunk_id] = numerator / denominator
+        return result
+
+    @staticmethod
+    def _empty_ks_term_metrics():
+        return {
+            "ut_rms": math.nan,
+            "nonlinear_rms": math.nan,
+            "uxx_rms": math.nan,
+            "uxxxx_rms": math.nan,
+            "ks_term_scale_rms": math.nan,
+            "residual_to_term_scale_ratio": math.nan,
+        }
+
+    def _ks_term_metrics(self, step):
+        cache = getattr(self.model, "ks_causal_chunk_diagnostics", None)
+        if cache and int(cache.get("step", -1)) == int(step):
+            return cache.get("chunks", {})
+        if not self._warned_missing_ks_cache:
+            print(
+                "Warning: same-step KS chunk diagnostics are unavailable; "
+                "boundary KS term metrics will be NaN."
+            )
+            self._warned_missing_ks_cache = True
+        return {}
+
+    def _log_boundary_diagnostics(self, step):
+        details = getattr(self.model, "causal_loss_details", None)
+        if not details:
+            return
+        chunk_losses = details["chunk_losses"].detach().cpu().numpy().reshape(-1)
+        weights = details["weights"].detach().cpu().numpy().reshape(-1)
+        post_weights = details["post_chunk_weights"].detach().cpu().numpy().reshape(-1)
+        t_min = details["t_min"].detach().cpu().numpy().reshape(-1)
+        t_max = details["t_max"].detach().cpu().numpy().reshape(-1)
+        num_chunks = len(chunk_losses)
+        boundary_points = self._boundary_points(t_max)
+        boundary_states = self._predict_numpy(boundary_points).reshape(
+            num_chunks, len(self.x_values), -1
+        )
+
+        drift_abs = np.full(num_chunks, np.nan, dtype=float)
+        drift_rel = np.full(num_chunks, np.nan, dtype=float)
+        loss_abs_change = np.full(num_chunks, np.nan, dtype=float)
+        loss_rel_change = np.full(num_chunks, np.nan, dtype=float)
+        compatible_previous = (
+            self.previous_boundary_states is not None
+            and self.previous_boundary_states.shape == boundary_states.shape
+            and self.previous_boundary_chunk_losses is not None
+            and self.previous_boundary_chunk_losses.shape == chunk_losses.shape
+        )
+        if compatible_previous:
+            difference = boundary_states - self.previous_boundary_states
+            drift_abs = np.sqrt(np.mean(difference ** 2, axis=(1, 2)))
+            drift_rel = np.linalg.norm(difference, axis=(1, 2)) / (
+                np.linalg.norm(boundary_states, axis=(1, 2)) + self.config.relative_eps
+            )
+            loss_abs_change = chunk_losses - self.previous_boundary_chunk_losses
+            loss_rel_change = loss_abs_change / (
+                self.previous_boundary_chunk_losses + self.config.relative_eps
+            )
+
+        chunk_l2re = self._chunk_relative_l2(num_chunks)
+        boundary_l2re = np.full(num_chunks, np.nan, dtype=float)
+        if self._reference_nearest is not None:
+            boundary_reference = np.asarray(
+                self._reference_nearest(boundary_points)
+            ).reshape(boundary_states.shape)
+            boundary_l2re = np.linalg.norm(
+                boundary_states - boundary_reference, axis=(1, 2)
+            ) / (
+                np.linalg.norm(boundary_reference, axis=(1, 2))
+                + self.config.relative_eps
+            )
+
+        ks_metrics = self._ks_term_metrics(step)
+        rows = []
+        for chunk_id in range(num_chunks):
+            history = self.boundary_drift_history.setdefault(
+                chunk_id, deque(maxlen=5)
+            )
+            if np.isfinite(drift_rel[chunk_id]):
+                history.append(float(drift_rel[chunk_id]))
+            rolling_mean = float(np.mean(history)) if history else math.nan
+            rolling_max = float(np.max(history)) if history else math.nan
+            terms = self._empty_ks_term_metrics()
+            terms.update(ks_metrics.get(chunk_id, {}))
+            rows.append({
+                "step": step,
+                "chunk_id": chunk_id,
+                "t_min": float(t_min[chunk_id]),
+                "t_max": float(t_max[chunk_id]),
+                "boundary_t": float(t_max[chunk_id]),
+                "chunk_loss": float(chunk_losses[chunk_id]),
+                "causal_weight": float(weights[chunk_id]),
+                "post_chunk_weight": float(post_weights[chunk_id]),
+                "is_candidate_protected": chunk_id <= self.candidate_front,
+                "is_committed_protected": chunk_id <= self.committed_front,
+                "boundary_drift_abs": float(drift_abs[chunk_id]),
+                "boundary_drift_rel": float(drift_rel[chunk_id]),
+                "boundary_drift_rel_mean": rolling_mean,
+                "boundary_drift_rel_max": rolling_max,
+                "chunk_loss_abs_change": float(loss_abs_change[chunk_id]),
+                "chunk_loss_rel_change": float(loss_rel_change[chunk_id]),
+                **terms,
+                "chunk_l2re": float(chunk_l2re[chunk_id]),
+                "boundary_l2re": float(boundary_l2re[chunk_id]),
+            })
+        self._append_csv("boundary_diagnostics.csv", rows)
+        self.previous_boundary_states = boundary_states.copy()
+        self.previous_boundary_chunk_losses = chunk_losses.copy()
+        self.previous_boundary_step = int(step)
 
     def _temporal_profile(self):
         residual_sq = self._residual(self.grid_np).square().reshape(self.config.diagnostic_nt, self.config.diagnostic_nx).cpu().numpy()

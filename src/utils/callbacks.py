@@ -335,6 +335,7 @@ class KSDiagnosticsCallback(Callback):
         self.save_path = self.model.model_save_path + "/ks_diagnostics.txt"
         self.chunk_save_path = self.model.model_save_path + "/ks_time_chunks.csv"
         self.pde = self.model.pde
+        self.model.ks_causal_chunk_diagnostics = None
         self.eval_ready = isinstance(self.pde, KuramotoSivashinskyEquation)
         if not self.eval_ready:
             return
@@ -570,6 +571,59 @@ class KSDiagnosticsCallback(Callback):
                 f"worst_chunk_t_max={worst[3]:.10e}"
             )
 
+    def _cache_causal_chunk_terms(self, step, grid_terms):
+        details = getattr(self.model, "causal_loss_details", None)
+        options = getattr(self.model, "causal_loss_options", None) or {}
+        if not details or not options.get("enabled", False):
+            self.model.ks_causal_chunk_diagnostics = None
+            return
+        num_chunks = int(details["chunk_losses"].numel())
+        time_index = int(options.get("time_index", -1))
+        order = np.argsort(self.grid_points[:, time_index], kind="stable")
+        chunk_size = len(order) // num_chunks
+        if chunk_size <= 0:
+            self.model.ks_causal_chunk_diagnostics = None
+            return
+        used = chunk_size * num_chunks
+        ordered = order[:used].reshape(num_chunks, chunk_size)
+        relative_eps = float(
+            getattr(self.model, "dynamic_freezing_relative_eps", 1e-12)
+        )
+        chunks = {}
+        for chunk_id, indices in enumerate(ordered):
+            idx = torch.as_tensor(indices, device=grid_terms["u"].device, dtype=torch.long)
+            values = {
+                key: self._rms(grid_terms[key].index_select(0, idx))
+                for key in ("term_t", "term_adv", "term_diff", "term_hyper", "residual")
+            }
+            scale = torch.sqrt(
+                values["term_t"] ** 2
+                + values["term_adv"] ** 2
+                + values["term_diff"] ** 2
+                + values["term_hyper"] ** 2
+            )
+            denominator = (
+                values["term_t"]
+                + values["term_adv"]
+                + values["term_diff"]
+                + values["term_hyper"]
+                + relative_eps
+            )
+            chunks[chunk_id] = {
+                "ut_rms": float(values["term_t"].detach().cpu().item()),
+                "nonlinear_rms": float(values["term_adv"].detach().cpu().item()),
+                "uxx_rms": float(values["term_diff"].detach().cpu().item()),
+                "uxxxx_rms": float(values["term_hyper"].detach().cpu().item()),
+                "ks_term_scale_rms": float(scale.detach().cpu().item()),
+                "residual_to_term_scale_ratio": float(
+                    (values["residual"] / denominator).detach().cpu().item()
+                ),
+            }
+        self.model.ks_causal_chunk_diagnostics = {
+            "step": int(step),
+            "chunks": chunks,
+        }
+
     def _save_heatmaps(self, step, grid_terms):
         x = self.grid_points[:, 0]
         t = self.grid_points[:, 1]
@@ -619,6 +673,7 @@ class KSDiagnosticsCallback(Callback):
 
         if do_global:
             self.epochs_since_last_log = 0
+            self._cache_causal_chunk_terms(step, grid_terms)
             row = [step] + [stats[key] for key in self.keys]
             self.rows.append(row)
             if self.verbose:
