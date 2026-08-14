@@ -32,6 +32,10 @@ class DynamicFreezingConfig:
     causal_protect_weight: float = 0.999
     causal_unprotect_weight: float = 0.995
     causal_front_patience: int = 100
+    transfer_boundary_enabled: bool = True
+    transfer_boundary_weight_threshold: float = 0.9
+    transfer_boundary_drift_threshold: float = 0.01
+    transfer_boundary_patience: int = 5
     diagnostic_nt: int = 16
     diagnostic_nx: int = 64
     relative_eps: float = 1e-12
@@ -62,6 +66,12 @@ class DynamicFreezingConfig:
             )
         if self.causal_front_patience <= 0:
             raise ValueError("causal front patience must be positive")
+        if not 0 < self.transfer_boundary_weight_threshold <= 1:
+            raise ValueError("transfer boundary weight threshold must satisfy 0 < value <= 1")
+        if self.transfer_boundary_drift_threshold < 0:
+            raise ValueError("transfer boundary drift threshold must be non-negative")
+        if self.transfer_boundary_patience <= 0:
+            raise ValueError("transfer boundary patience must be positive")
         for value, name in (
             (self.diagnostic_nt, "diagnostic_nt"),
             (self.diagnostic_nx, "diagnostic_nx"),
@@ -96,6 +106,7 @@ class DynamicFreezingController(dde.callbacks.Callback):
         self.previous_boundary_chunk_losses = None
         self.previous_boundary_step = None
         self.boundary_drift_history = {}
+        self.transfer_ready_counts = {}
         self._warned_missing_ks_cache = False
         self._last_logged_step = -1
         self.last_event_step = None
@@ -407,6 +418,7 @@ class DynamicFreezingController(dde.callbacks.Callback):
             "dynamic_freezing_groups.csv",
             "dynamic_freezing_chunks.csv",
             "boundary_diagnostics.csv",
+            "transfer_boundary_history.csv",
         ):
             open(os.path.join(self.log_dir, filename), "w", encoding="utf-8").close()
         with open(os.path.join(self.log_dir, "dynamic_freezing_config.json"), "w", encoding="utf-8") as file_obj:
@@ -1018,15 +1030,53 @@ class DynamicFreezingController(dde.callbacks.Callback):
             )
 
         ks_metrics, ks_metrics_step, ks_metrics_age_steps = self._ks_term_metrics(step)
-        rows = []
+        rolling_mean = np.full(num_chunks, np.nan, dtype=float)
+        rolling_max = np.full(num_chunks, np.nan, dtype=float)
         for chunk_id in range(num_chunks):
             history = self.boundary_drift_history.setdefault(
                 chunk_id, deque(maxlen=5)
             )
             if np.isfinite(drift_rel[chunk_id]):
                 history.append(float(drift_rel[chunk_id]))
-            rolling_mean = float(np.mean(history)) if history else math.nan
-            rolling_max = float(np.max(history)) if history else math.nan
+            if history:
+                rolling_mean[chunk_id] = float(np.mean(history))
+                rolling_max[chunk_id] = float(np.max(history))
+
+        transfer_raw_ready = np.zeros(num_chunks, dtype=bool)
+        transfer_ready_count = np.zeros(num_chunks, dtype=int)
+        transfer_ready_stable = np.zeros(num_chunks, dtype=bool)
+        if self.config.transfer_boundary_enabled:
+            transfer_raw_ready = (
+                (post_weights >= self.config.transfer_boundary_weight_threshold)
+                & np.isfinite(drift_rel)
+                & np.isfinite(rolling_mean)
+                & (rolling_mean <= self.config.transfer_boundary_drift_threshold)
+            )
+            for chunk_id in range(num_chunks):
+                previous_count = self.transfer_ready_counts.get(chunk_id, 0)
+                count = previous_count + 1 if transfer_raw_ready[chunk_id] else 0
+                self.transfer_ready_counts[chunk_id] = count
+                transfer_ready_count[chunk_id] = count
+            transfer_ready_stable = (
+                transfer_ready_count >= self.config.transfer_boundary_patience
+            )
+        else:
+            self.transfer_ready_counts.clear()
+
+        domain_t_min = float(np.asarray(self.model.pde.bbox, dtype=float)[2])
+        real_boundaries = t_max > domain_t_min + self.config.relative_eps
+        transfer_candidate = -1
+        for chunk_id in np.flatnonzero(real_boundaries):
+            if not transfer_ready_stable[chunk_id]:
+                break
+            transfer_candidate = int(chunk_id)
+
+        transfer_is_candidate = np.zeros(num_chunks, dtype=bool)
+        if transfer_candidate >= 0:
+            transfer_is_candidate[transfer_candidate] = True
+
+        rows = []
+        for chunk_id in range(num_chunks):
             terms = self._empty_ks_term_metrics()
             terms.update(ks_metrics.get(chunk_id, {}))
             rows.append({
@@ -1042,10 +1092,14 @@ class DynamicFreezingController(dde.callbacks.Callback):
                 "is_committed_protected": chunk_id <= self.committed_front,
                 "boundary_drift_abs": float(drift_abs[chunk_id]),
                 "boundary_drift_rel": float(drift_rel[chunk_id]),
-                "boundary_drift_rel_mean": rolling_mean,
-                "boundary_drift_rel_max": rolling_max,
+                "boundary_drift_rel_mean": float(rolling_mean[chunk_id]),
+                "boundary_drift_rel_max": float(rolling_max[chunk_id]),
                 "chunk_loss_delta": float(loss_abs_change[chunk_id]),
                 "chunk_loss_rel_delta": float(loss_rel_change[chunk_id]),
+                "transfer_raw_ready": bool(transfer_raw_ready[chunk_id]),
+                "transfer_ready_count": int(transfer_ready_count[chunk_id]),
+                "transfer_ready_stable": bool(transfer_ready_stable[chunk_id]),
+                "transfer_is_candidate": bool(transfer_is_candidate[chunk_id]),
                 "ks_metrics_step": ks_metrics_step,
                 "ks_metrics_age_steps": ks_metrics_age_steps,
                 **terms,
@@ -1053,6 +1107,50 @@ class DynamicFreezingController(dde.callbacks.Callback):
                 "boundary_l2re": float(boundary_l2re[chunk_id]),
             })
         self._append_csv("boundary_diagnostics.csv", rows)
+
+        oracle_fronts = {}
+        for threshold in (0.1, 0.2):
+            if not np.any(np.isfinite(chunk_l2re)):
+                oracle_fronts[threshold] = math.nan
+                continue
+            oracle_front = -1
+            for chunk_id in np.flatnonzero(real_boundaries):
+                if not np.isfinite(chunk_l2re[chunk_id]) or chunk_l2re[chunk_id] >= threshold:
+                    break
+                oracle_front = int(chunk_id)
+            oracle_fronts[threshold] = oracle_front
+
+        candidate_values = (
+            {
+                "transfer_boundary_t": float(t_max[transfer_candidate]),
+                "candidate_post_chunk_weight": float(post_weights[transfer_candidate]),
+                "candidate_boundary_drift_rel": float(drift_rel[transfer_candidate]),
+                "candidate_boundary_drift_rel_mean": float(rolling_mean[transfer_candidate]),
+                "candidate_ready_count": int(transfer_ready_count[transfer_candidate]),
+                "oracle_candidate_chunk_l2re": float(chunk_l2re[transfer_candidate]),
+                "oracle_candidate_boundary_l2re": float(boundary_l2re[transfer_candidate]),
+            }
+            if transfer_candidate >= 0
+            else {
+                "transfer_boundary_t": math.nan,
+                "candidate_post_chunk_weight": math.nan,
+                "candidate_boundary_drift_rel": math.nan,
+                "candidate_boundary_drift_rel_mean": math.nan,
+                "candidate_ready_count": math.nan,
+                "oracle_candidate_chunk_l2re": math.nan,
+                "oracle_candidate_boundary_l2re": math.nan,
+            }
+        )
+        eligible = np.flatnonzero(real_boundaries)
+        self._append_csv("transfer_boundary_history.csv", [{
+            "step": step,
+            "transfer_boundary_candidate": transfer_candidate,
+            **candidate_values,
+            "num_raw_ready_boundaries": int(np.sum(transfer_raw_ready[eligible])),
+            "num_stable_ready_boundaries": int(np.sum(transfer_ready_stable[eligible])),
+            "oracle_farthest_chunk_l2re_lt_0_1": oracle_fronts[0.1],
+            "oracle_farthest_chunk_l2re_lt_0_2": oracle_fronts[0.2],
+        }])
         self.previous_boundary_states = boundary_states.copy()
         self.previous_boundary_chunk_losses = chunk_losses.copy()
         self.previous_boundary_step = int(step)
