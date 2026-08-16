@@ -96,6 +96,7 @@ class DynamicFreezingController(dde.callbacks.Callback):
         self.model = model
         self.config = config
         self.model.dynamic_freezing_relative_eps = config.relative_eps
+        self.model.dynamic_freezing_controller = self
         self.log_dir = os.path.abspath(log_dir)
         self.groups = WeightGroupCollection(model.net, config.group_size)
         self.adapter = None
@@ -113,10 +114,11 @@ class DynamicFreezingController(dde.callbacks.Callback):
         self.transfer_anchor_active = False
         self.transfer_anchor_chunk_id = -1
         self.transfer_anchor_t = None
-        self.transfer_anchor_x = None
+        self.transfer_anchor_points = None
         self.transfer_anchor_u = None
         self.transfer_anchor_step = None
         self._original_outputs_losses_train = None
+        self._original_train_step = None
         self._warned_missing_ks_cache = False
         self._last_logged_step = -1
         self.last_event_step = None
@@ -260,7 +262,7 @@ class DynamicFreezingController(dde.callbacks.Callback):
     def transfer_loss(self, keep_graph=True):
         if not self.transfer_anchor_active:
             return torch.zeros((), dtype=self.dtype, device=self.device)
-        prediction = self.model.net(self.transfer_anchor_x)
+        prediction = self.model.net(self.transfer_anchor_points)
         loss = torch.mean((prediction - self.transfer_anchor_u) ** 2)
         return loss if keep_graph else loss.detach()
 
@@ -268,7 +270,7 @@ class DynamicFreezingController(dde.callbacks.Callback):
         if not self.transfer_anchor_active:
             return 0.0, 0.0
         with torch.no_grad():
-            prediction = self.model.net(self.transfer_anchor_x)
+            prediction = self.model.net(self.transfer_anchor_points)
             difference = prediction - self.transfer_anchor_u
             mse = torch.mean(difference.square())
             relative_drift = torch.linalg.vector_norm(difference) / (
@@ -286,7 +288,7 @@ class DynamicFreezingController(dde.callbacks.Callback):
         anchor_x = self._tensor(points_np)
         with torch.no_grad():
             anchor_u = self.model.net(anchor_x).detach().clone()
-        self.transfer_anchor_x = anchor_x.detach().clone()
+        self.transfer_anchor_points = anchor_x.detach().clone()
         self.transfer_anchor_u = anchor_u
         self.transfer_anchor_t = float(boundary_t)
         self.transfer_anchor_chunk_id = int(chunk_id)
@@ -305,24 +307,68 @@ class DynamicFreezingController(dde.callbacks.Callback):
         if not self.config.transfer_boundary_enabled:
             return
         original = getattr(self.model, "outputs_losses_train", None)
-        if not callable(original) or self._original_outputs_losses_train is not None:
+        if callable(original) and self._original_outputs_losses_train is None:
+            self._original_outputs_losses_train = original
+
+        original_train_step = getattr(self.model, "train_step", None)
+        if not callable(original_train_step) or self._original_train_step is not None:
             return
-        self._original_outputs_losses_train = original
+        if self._original_outputs_losses_train is None:
+            raise RuntimeError(
+                "Cannot install transfer loss train step without outputs_losses_train."
+            )
+        self._original_train_step = original_train_step
 
-        def outputs_losses_train(inputs, targets):
-            outputs, losses = original(inputs, targets)
-            if self.transfer_anchor_active:
-                weighted_transfer_loss = (
-                    self.config.transfer_boundary_loss_weight * self.transfer_loss()
-                )
-                losses = torch.cat((losses, weighted_transfer_loss.reshape(1)))
-            return outputs, losses
+        def train_step(inputs, targets):
+            def closure(*, skip_backward=False, **_unused):
+                def compute(active_inputs, active_targets):
+                    losses = self._original_outputs_losses_train(
+                        active_inputs, active_targets
+                    )[1]
+                    if hasattr(self.model.opt, "window_ic_loss"):
+                        ic_loss = self.model.opt.window_ic_loss()
+                        if ic_loss is not None:
+                            losses = torch.cat((losses, ic_loss.reshape(1)))
+                    if self.transfer_anchor_active:
+                        weighted_transfer_loss = (
+                            self.config.transfer_boundary_loss_weight
+                            * self.transfer_loss()
+                        )
+                        losses = torch.cat(
+                            (losses, weighted_transfer_loss.reshape(1))
+                        )
+                    self.model.opt.losses = losses
+                    total_loss = torch.sum(losses)
+                    if not skip_backward:
+                        self.model.opt.zero_grad()
+                        total_loss.backward()
+                    return total_loss
 
-        self.model.outputs_losses_train = outputs_losses_train
+                if hasattr(self.model.opt, "causal_context"):
+                    with self.model.opt.causal_context(
+                        inputs, targets, self.model.data
+                    ) as (active_inputs, active_targets):
+                        return compute(active_inputs, active_targets)
+                return compute(inputs, targets)
+
+            loss = self.model.opt.step(closure)
+            if hasattr(self.model.opt, "after_train_step"):
+                self.model.opt.after_train_step()
+            scheduler = getattr(self.model, "lr_scheduler", None)
+            if scheduler is not None:
+                if scheduler.__class__.__name__ == "ReduceLROnPlateau":
+                    scheduler.step(loss)
+                else:
+                    scheduler.step()
+            return loss
+
+        self.model.train_step = train_step
 
     def _uninstall_transfer_loss(self):
+        if self._original_train_step is not None:
+            self.model.train_step = self._original_train_step
+            self._original_train_step = None
         if self._original_outputs_losses_train is not None:
-            self.model.outputs_losses_train = self._original_outputs_losses_train
             self._original_outputs_losses_train = None
 
     def _residual(self, points_np, keep_graph=False):
@@ -526,6 +572,8 @@ class DynamicFreezingController(dde.callbacks.Callback):
         if self.adapter is not None:
             self.adapter.uninstall()
         self._uninstall_transfer_loss()
+        if getattr(self.model, "dynamic_freezing_controller", None) is self:
+            self.model.dynamic_freezing_controller = None
         self._write_csv("training.csv", self.training_rows)
         self._write_csv("temporal_profiles.csv", self.temporal_rows)
         summary = {

@@ -684,6 +684,18 @@ class FAMTrainer:
         weighted_losses = self._compute_weighted_losses_tensor()
         deepxde_loss_sum = torch.sum(weighted_losses)
         theta_loss = deepxde_loss_sum
+        transfer_controller = getattr(
+            self.model, "dynamic_freezing_controller", None
+        )
+        if transfer_controller is not None and transfer_controller.transfer_anchor_active:
+            weighted_transfer_loss = (
+                transfer_controller.config.transfer_boundary_loss_weight
+                * transfer_controller.transfer_loss()
+            )
+            weighted_losses = torch.cat(
+                (weighted_losses, weighted_transfer_loss.reshape(1))
+            )
+            theta_loss = theta_loss + weighted_transfer_loss
         if self.integral_loss is not None:
             step = self.model.train_state.step
             integral_weighted_loss = self.integral_loss.compute_weighted_loss(
