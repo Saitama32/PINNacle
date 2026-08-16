@@ -267,6 +267,7 @@ def validate_args(args):
             transfer_boundary_weight_threshold=args.transfer_boundary_weight_threshold,
             transfer_boundary_drift_threshold=args.transfer_boundary_drift_threshold,
             transfer_boundary_patience=args.transfer_boundary_patience,
+            transfer_boundary_loss_weight=args.transfer_boundary_loss_weight,
             diagnostic_nt=args.dynamic_freezing_nt,
             diagnostic_nx=args.dynamic_freezing_nx,
             nullspace_enabled=args.nullspace_enabled,
@@ -455,6 +456,7 @@ def dynamic_freezing_config(args):
         transfer_boundary_weight_threshold=args.transfer_boundary_weight_threshold,
         transfer_boundary_drift_threshold=args.transfer_boundary_drift_threshold,
         transfer_boundary_patience=args.transfer_boundary_patience,
+        transfer_boundary_loss_weight=args.transfer_boundary_loss_weight,
         diagnostic_nt=args.dynamic_freezing_nt,
         diagnostic_nx=args.dynamic_freezing_nx,
         nullspace_enabled=args.nullspace_enabled,
@@ -803,6 +805,7 @@ def parse_args():
     parser.add_argument("--transfer-boundary-weight-threshold", type=float, default=0.9)
     parser.add_argument("--transfer-boundary-drift-threshold", type=float, default=0.01)
     parser.add_argument("--transfer-boundary-patience", type=int, default=5)
+    parser.add_argument("--transfer-boundary-loss-weight", type=float, default=100.0)
     parser.add_argument("--dynamic-freezing-nt", type=int, default=16)
     parser.add_argument("--dynamic-freezing-nx", type=int, default=64)
     parser.add_argument("--nullspace-enabled", type=str2bool, nargs="?", const=True, default=True)

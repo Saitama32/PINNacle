@@ -36,6 +36,7 @@ class DynamicFreezingConfig:
     transfer_boundary_weight_threshold: float = 0.9
     transfer_boundary_drift_threshold: float = 0.01
     transfer_boundary_patience: int = 5
+    transfer_boundary_loss_weight: float = 100.0
     diagnostic_nt: int = 16
     diagnostic_nx: int = 64
     relative_eps: float = 1e-12
@@ -72,6 +73,8 @@ class DynamicFreezingConfig:
             raise ValueError("transfer boundary drift threshold must be non-negative")
         if self.transfer_boundary_patience <= 0:
             raise ValueError("transfer boundary patience must be positive")
+        if self.transfer_boundary_loss_weight < 0:
+            raise ValueError("transfer boundary loss weight must be non-negative")
         for value, name in (
             (self.diagnostic_nt, "diagnostic_nt"),
             (self.diagnostic_nx, "diagnostic_nx"),
@@ -107,6 +110,13 @@ class DynamicFreezingController(dde.callbacks.Callback):
         self.previous_boundary_step = None
         self.boundary_drift_history = {}
         self.transfer_ready_counts = {}
+        self.transfer_anchor_active = False
+        self.transfer_anchor_chunk_id = -1
+        self.transfer_anchor_t = None
+        self.transfer_anchor_x = None
+        self.transfer_anchor_u = None
+        self.transfer_anchor_step = None
+        self._original_outputs_losses_train = None
         self._warned_missing_ks_cache = False
         self._last_logged_step = -1
         self.last_event_step = None
@@ -246,6 +256,74 @@ class DynamicFreezingController(dde.callbacks.Callback):
         points = self._tensor(self.ic_np, requires_grad=keep_graph)
         loss = torch.mean((self.model.net(points) - self._ic_target(points)) ** 2)
         return loss if keep_graph else loss.detach()
+
+    def transfer_loss(self, keep_graph=True):
+        if not self.transfer_anchor_active:
+            return torch.zeros((), dtype=self.dtype, device=self.device)
+        prediction = self.model.net(self.transfer_anchor_x)
+        loss = torch.mean((prediction - self.transfer_anchor_u) ** 2)
+        return loss if keep_graph else loss.detach()
+
+    def _transfer_anchor_metrics(self):
+        if not self.transfer_anchor_active:
+            return 0.0, 0.0
+        with torch.no_grad():
+            prediction = self.model.net(self.transfer_anchor_x)
+            difference = prediction - self.transfer_anchor_u
+            mse = torch.mean(difference.square())
+            relative_drift = torch.linalg.vector_norm(difference) / (
+                torch.linalg.vector_norm(self.transfer_anchor_u) + self.config.relative_eps
+            )
+        return float(mse.cpu()), float(relative_drift.cpu())
+
+    def _create_transfer_anchor(self, step, chunk_id, boundary_t):
+        if self.transfer_anchor_active or not self.config.transfer_boundary_enabled:
+            return False
+        domain_t_min = float(np.asarray(self.model.pde.bbox, dtype=float)[2])
+        if boundary_t <= domain_t_min + self.config.relative_eps:
+            return False
+        points_np = self._boundary_points(np.asarray([boundary_t], dtype=np.float64))
+        anchor_x = self._tensor(points_np)
+        with torch.no_grad():
+            anchor_u = self.model.net(anchor_x).detach().clone()
+        self.transfer_anchor_x = anchor_x.detach().clone()
+        self.transfer_anchor_u = anchor_u
+        self.transfer_anchor_t = float(boundary_t)
+        self.transfer_anchor_chunk_id = int(chunk_id)
+        self.transfer_anchor_step = int(step)
+        self.transfer_anchor_active = True
+        initial_loss = float(self.transfer_loss(keep_graph=False).cpu())
+        tolerance = max(self.config.relative_eps, 10 * torch.finfo(self.dtype).eps)
+        if not math.isfinite(initial_loss) or initial_loss > tolerance:
+            raise RuntimeError(
+                "Transfer anchor sanity check failed: loss immediately after creation "
+                f"is {initial_loss:.6e}, expected <= {tolerance:.6e}."
+            )
+        return True
+
+    def _install_transfer_loss(self):
+        if not self.config.transfer_boundary_enabled:
+            return
+        original = getattr(self.model, "outputs_losses_train", None)
+        if not callable(original) or self._original_outputs_losses_train is not None:
+            return
+        self._original_outputs_losses_train = original
+
+        def outputs_losses_train(inputs, targets):
+            outputs, losses = original(inputs, targets)
+            if self.transfer_anchor_active:
+                weighted_transfer_loss = (
+                    self.config.transfer_boundary_loss_weight * self.transfer_loss()
+                )
+                losses = torch.cat((losses, weighted_transfer_loss.reshape(1)))
+            return outputs, losses
+
+        self.model.outputs_losses_train = outputs_losses_train
+
+    def _uninstall_transfer_loss(self):
+        if self._original_outputs_losses_train is not None:
+            self.model.outputs_losses_train = self._original_outputs_losses_train
+            self._original_outputs_losses_train = None
 
     def _residual(self, points_np, keep_graph=False):
         if len(points_np) == 0:
@@ -419,11 +497,13 @@ class DynamicFreezingController(dde.callbacks.Callback):
             "dynamic_freezing_chunks.csv",
             "boundary_diagnostics.csv",
             "transfer_boundary_history.csv",
+            "transfer_anchor_events.csv",
         ):
             open(os.path.join(self.log_dir, filename), "w", encoding="utf-8").close()
         with open(os.path.join(self.log_dir, "dynamic_freezing_config.json"), "w", encoding="utf-8") as file_obj:
             json.dump(asdict(self.config), file_obj, indent=2, sort_keys=True)
         self._write_csv("weight_groups.csv", self.groups.metadata())
+        self._install_transfer_loss()
         if self.config.enabled:
             self.adapter = MaskedOptimizerAdapter(self.model.net, self.model.opt, self.groups, self).install()
 
@@ -445,6 +525,7 @@ class DynamicFreezingController(dde.callbacks.Callback):
             self._save_responsibility("final")
         if self.adapter is not None:
             self.adapter.uninstall()
+        self._uninstall_transfer_loss()
         self._write_csv("training.csv", self.training_rows)
         self._write_csv("temporal_profiles.csv", self.temporal_rows)
         summary = {
@@ -1141,6 +1222,26 @@ class DynamicFreezingController(dde.callbacks.Callback):
                 "oracle_candidate_boundary_l2re": math.nan,
             }
         )
+        if transfer_candidate >= 0 and not self.transfer_anchor_active:
+            anchor_created = self._create_transfer_anchor(
+                step=step,
+                chunk_id=transfer_candidate,
+                boundary_t=float(t_max[transfer_candidate]),
+            )
+            if anchor_created:
+                self._append_csv("transfer_anchor_events.csv", [{
+                    "step": int(step),
+                    "chunk_id": int(transfer_candidate),
+                    "boundary_t": float(t_max[transfer_candidate]),
+                    "post_chunk_weight": float(post_weights[transfer_candidate]),
+                    "boundary_drift_rel": float(drift_rel[transfer_candidate]),
+                    "boundary_drift_rel_mean": float(rolling_mean[transfer_candidate]),
+                    "ready_count": int(transfer_ready_count[transfer_candidate]),
+                    "chunk_loss": float(chunk_losses[transfer_candidate]),
+                    "oracle_chunk_l2re": float(chunk_l2re[transfer_candidate]),
+                    "oracle_boundary_l2re": float(boundary_l2re[transfer_candidate]),
+                    "transfer_loss_weight": self.config.transfer_boundary_loss_weight,
+                }])
         eligible = np.flatnonzero(real_boundaries)
         self._append_csv("transfer_boundary_history.csv", [{
             "step": step,
@@ -1150,6 +1251,8 @@ class DynamicFreezingController(dde.callbacks.Callback):
             "num_stable_ready_boundaries": int(np.sum(transfer_ready_stable[eligible])),
             "oracle_farthest_chunk_l2re_lt_0_1": oracle_fronts[0.1],
             "oracle_farthest_chunk_l2re_lt_0_2": oracle_fronts[0.2],
+            "transfer_anchor_active": self.transfer_anchor_active,
+            "transfer_anchor_chunk_id": self.transfer_anchor_chunk_id,
         }])
         self.previous_boundary_states = boundary_states.copy()
         self.previous_boundary_chunk_losses = chunk_losses.copy()
@@ -1192,12 +1295,27 @@ class DynamicFreezingController(dde.callbacks.Callback):
         losses = self._evaluate_losses(good_mask, bad_mask)
         causal_loss = losses["bad"] if self.causal_enabled else math.nan
         target_pde_loss = causal_loss if self.causal_enabled else losses["pde"]
+        transfer_loss, transfer_anchor_relative_drift = self._transfer_anchor_metrics()
+        weighted_transfer_loss = self.config.transfer_boundary_loss_weight * transfer_loss
         self.training_rows.append({
             "step": step,
-            "total_loss": self.config.ic_weight * losses["ic"] + target_pde_loss,
+            "total_loss": (
+                self.config.ic_weight * losses["ic"]
+                + target_pde_loss
+                + weighted_transfer_loss
+            ),
             "ic_loss": losses["ic"],
             "causal_loss": causal_loss,
             "pde_loss": losses["pde"],
+            "transfer_loss": transfer_loss,
+            "weighted_transfer_loss": weighted_transfer_loss,
+            "transfer_anchor_active": self.transfer_anchor_active,
+            "transfer_anchor_t": (
+                self.transfer_anchor_t if self.transfer_anchor_active else math.nan
+            ),
+            "transfer_anchor_chunk_id": self.transfer_anchor_chunk_id,
+            "transfer_anchor_relative_drift": transfer_anchor_relative_drift,
+            "transfer_anchor_mse": transfer_loss,
             "current_num_good_points": int(np.sum(squared < self.config.good_tolerance)),
             "current_fraction_good": float(np.mean(squared < self.config.good_tolerance)),
             "num_frozen_groups": len(self.groups.frozen_groups),
