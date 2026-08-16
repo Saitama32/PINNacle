@@ -960,13 +960,25 @@ class GlobalIntegralLoss:
         return torch.mean(torch.square(residual.reshape(-1)[mask])).detach()
 
 
-def attach_integral_loss_train_step(model, integral_loss, integral_only=False):
+def attach_integral_loss_train_step(
+    model,
+    integral_loss,
+    integral_only=False,
+    maximize=False,
+    maximize_residual_only=False,
+):
     if dde.backend.backend_name != "pytorch":
         raise ValueError("Integral loss train-step attachment currently supports only the PyTorch backend.")
 
     model.integral_loss = integral_loss
     model.integral_loss_diagnostics = None
     integral_only = bool(integral_only)
+    maximize = bool(maximize)
+    maximize_residual_only = bool(maximize_residual_only)
+    if maximize_residual_only and not maximize:
+        raise ValueError("maximize_residual_only=True requires maximize=True.")
+    if maximize and not integral_only:
+        raise ValueError("Integral-loss maximization requires integral_only=True.")
     if integral_loss.initial_condition_enabled and not integral_only:
         raise ValueError("Integral initial-condition loss is supported only with integral_only=True.")
 
@@ -977,16 +989,42 @@ def attach_integral_loss_train_step(model, integral_loss, integral_only=False):
                 deepxde_loss_sum=None,
             )
             integral_weighted_loss = sum_integral_task_losses(integral_task_losses)
+            if maximize_residual_only:
+                optimizer_task_losses = tuple(
+                    -loss if index < 2 and loss is not None else loss
+                    for index, loss in enumerate(integral_task_losses)
+                )
+                optimization_loss = sum_integral_task_losses(optimizer_task_losses)
+            elif maximize:
+                optimizer_task_losses = tuple(
+                    -loss if loss is not None else None
+                    for loss in integral_task_losses
+                )
+                optimization_loss = -integral_weighted_loss
+            else:
+                optimizer_task_losses = integral_task_losses
+                optimization_loss = integral_weighted_loss
+            residual_loss = sum_integral_task_losses(integral_task_losses[:2])
+            constraint_losses = integral_task_losses[2:]
+            active_constraints = [loss for loss in constraint_losses if loss is not None]
+            constraint_loss = (
+                sum_integral_task_losses(constraint_losses)
+                if active_constraints
+                else torch.zeros_like(residual_loss)
+            )
             model.opt.losses = compose_optimizer_task_losses(
                 base_losses=None,
-                integral_weighted_loss=integral_weighted_loss,
+                integral_weighted_loss=optimization_loss,
                 integral_only=True,
                 opt_name=getattr(model, "opt_name", None),
                 opt=model.opt,
-                integral_task_losses=integral_task_losses,
+                integral_task_losses=optimizer_task_losses,
             )
             integral_loss.last_diagnostics["actual_total_loss"] = integral_weighted_loss.detach()
             integral_loss.last_diagnostics["deepxde_loss_sum"] = torch.zeros_like(integral_weighted_loss.detach())
+            integral_loss.last_diagnostics["residual_integral_loss"] = residual_loss.detach()
+            integral_loss.last_diagnostics["integral_constraint_loss"] = constraint_loss.detach()
+            integral_loss.last_diagnostics["optimization_objective"] = optimization_loss.detach()
             model.integral_loss_diagnostics = integral_loss.last_diagnostics
             total_loss = integral_weighted_loss
         else:
@@ -1010,13 +1048,23 @@ def attach_integral_loss_train_step(model, integral_loss, integral_only=False):
                 integral_task_losses=integral_task_losses,
             )
             total_loss = deepxde_loss_sum + integral_weighted_loss
+            optimization_loss = total_loss
             integral_loss.last_diagnostics["actual_total_loss"] = total_loss.detach()
+            integral_loss.last_diagnostics["optimization_objective"] = optimization_loss.detach()
             model.integral_loss_diagnostics = integral_loss.last_diagnostics
+        if maximize and (
+            not bool(torch.isfinite(total_loss.detach()).item())
+            or not bool(torch.isfinite(optimization_loss.detach()).item())
+        ):
+            raise FloatingPointError(
+                "Integral loss became non-finite during maximization at "
+                f"step {model.train_state.step}."
+            )
         dde.grad.clear()
         if not skip_backward:
             model.opt.zero_grad()
-            total_loss.backward()
-        return total_loss
+            optimization_loss.backward()
+        return optimization_loss
 
     def _with_causal_context(inputs, targets, fn):
         if hasattr(model.opt, "causal_context"):

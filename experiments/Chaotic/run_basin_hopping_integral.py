@@ -1,8 +1,10 @@
-"""One-shot basin-hopping experiment for the KS integral-only objective.
+"""Residual deoptimization followed by one-shot basin hopping for KS.
 
-This file intentionally leaves ``run_chaotic.py`` and the integral-loss
-implementation untouched.  Candidates are processed sequentially on one
-network, so the experiment does not keep N model replicas on the GPU.
+The first phase maximizes the global plus weighted-local residual objective
+while minimizing IC/periodic penalties. At the switching step, perturbed
+candidates are processed sequentially on one network and normally minimize
+the full positive integral loss. The winning minimum then continues ordinary
+descent, so the experiment never keeps N model replicas on the GPU.
 """
 
 import argparse
@@ -27,6 +29,10 @@ import numpy as np
 import torch
 
 from experiments.Chaotic import run_chaotic as chaotic
+from experiments.Chaotic.run_maximize_integral import (
+    install_box_projection,
+    project_parameters,
+)
 from src.losses.global_integral import GlobalIntegralLoss, attach_integral_loss_train_step
 
 
@@ -251,7 +257,10 @@ class OneShotBasinHopper(dde.callbacks.Callback):
 
     def run_event(self):
         args = self.args
-        print(f"\n[Basin hopping] one-shot event at global step {self.model.train_state.step}")
+        print(
+            f"\n[Basin hopping] ending residual deoptimization and starting "
+            f"candidate descent at global step {self.model.train_state.step}"
+        )
         main_integral_loss = self.model.integral_loss
         base_state = cpu_state_dict(self.model.net)
         self._save_checkpoint(
@@ -259,6 +268,12 @@ class OneShotBasinHopper(dde.callbacks.Callback):
             base_state,
             self.model.train_state.step,
         )
+        if args.save_model:
+            self._save_checkpoint(
+                os.path.join(self.save_path, "deoptimization_maximized.pt"),
+                base_state,
+                self.model.train_state.step,
+            )
 
         rng_state = random.getstate()
         numpy_state = np.random.get_state()
@@ -327,7 +342,8 @@ class OneShotBasinHopper(dde.callbacks.Callback):
         self._write_csv("basin_hopping_candidates.csv", CANDIDATE_COLUMNS, rows)
         self._write_csv("basin_hopping_trajectory.csv", TRAJECTORY_COLUMNS, trajectory)
 
-        # The winner always continues with a fresh main optimizer state.
+        # The winner continues ordinary descent with a fresh optimizer. The
+        # ascent optimizer's box projection is deliberately not carried over.
         self.model.opt = self._fresh_optimizer(args.optimizer, args.lr)
         self.model.lr_scheduler = None
         attach_integral_loss_train_step(self.model, main_integral_loss, integral_only=True)
@@ -349,7 +365,9 @@ class OneShotBasinHopper(dde.callbacks.Callback):
 
 
 def build_parser():
-    parser = argparse.ArgumentParser(description="One-shot basin hopping for KS integral-only PINNs.")
+    parser = argparse.ArgumentParser(
+        description="KS residual deoptimization followed by integral-loss basin hopping."
+    )
     parser.add_argument("--hidden-layers", default="100*5")
     parser.add_argument("--net", choices=["mlp", "resnet", "fourier-mlp"], default="mlp")
     parser.add_argument("--fourier-features", type=int, default=10)
@@ -371,12 +389,14 @@ def build_parser():
     parser.add_argument("--save-model", type=chaotic.str2bool, nargs="?", const=True, default=True)
     parser.add_argument("--weight-decay", type=float, default=0.0)
     parser.add_argument("--optimizer", choices=["adam", "muon", "soap"], default="adam")
+    parser.add_argument("--parameter-lower", type=float, default=-1.0)
+    parser.add_argument("--parameter-upper", type=float, default=1.0)
 
     parser.add_argument("--use-integral-loss", action="store_true", default=True)
     parser.add_argument("--integral-only", action="store_true", default=True)
     parser.add_argument("--integral-loss-weight", type=float, default=1.0)
     parser.add_argument("--integral-batch-size", type=int, default=512)
-    parser.add_argument("--integral-warmup-steps", type=int, default=1000)
+    parser.add_argument("--integral-warmup-steps", type=int, default=0)
     parser.add_argument("--integral-start-step", type=int, default=0)
     parser.add_argument("--integral-quadrature-order", type=int, default=6)
     parser.add_argument("--integral-local-enabled", type=chaotic.str2bool, nargs="?", const=True, default=True)
@@ -392,11 +412,11 @@ def build_parser():
     parser.add_argument("--integral-seed", type=int, default=None)
     parser.add_argument("--integral-ic-enabled", type=chaotic.str2bool, nargs="?", const=True, default=True)
     parser.add_argument("--integral-ic-weight", type=float, default=10.0)
-    parser.add_argument("--integral-periodic-enabled", type=chaotic.str2bool, nargs="?", const=True, default=False)
+    parser.add_argument("--integral-periodic-enabled", type=chaotic.str2bool, nargs="?", const=True, default=True)
     parser.add_argument("--integral-periodic-weight", type=float, default=100.0)
 
-    parser.add_argument("--basin-hopping", type=chaotic.str2bool, nargs="?", const=True, default=False)
-    parser.add_argument("--basin-hopping-step", type=int, default=10000)
+    parser.add_argument("--basin-hopping", type=chaotic.str2bool, nargs="?", const=True, default=True)
+    parser.add_argument("--basin-hopping-step", type=int, default=1000)
     parser.add_argument("--basin-hopping-candidates", type=int, default=12)
     parser.add_argument("--basin-hopping-scales", type=parse_scales, default=parse_scales("0.005,0.01,0.02,0.05,0.1"))
     parser.add_argument("--basin-hopping-local-optimizer", choices=["adam", "muon", "soap"], default="adam")
@@ -438,6 +458,12 @@ def validate_args(args):
         raise ValueError("Local learning rate and evaluation batch count must be positive.")
     if args.weight_decay < 0:
         raise ValueError("--weight-decay must be non-negative.")
+    if (
+        not np.isfinite(args.parameter_lower)
+        or not np.isfinite(args.parameter_upper)
+        or args.parameter_lower >= args.parameter_upper
+    ):
+        raise ValueError("Finite parameter bounds must satisfy lower < upper.")
     if args.integral_periodic_weight < 0 or not np.isfinite(args.integral_periodic_weight):
         raise ValueError("--integral-periodic-weight must be finite and non-negative.")
 
@@ -480,13 +506,35 @@ def run(args):
     main_loss = loss_builder._new_integral_loss(
         args.integral_seed if args.integral_seed is not None else args.seed
     )
-    attach_integral_loss_train_step(model, main_loss, integral_only=True)
+    if args.basin_hopping:
+        project_parameters(model.net, args.parameter_lower, args.parameter_upper)
+        install_box_projection(
+            model.opt,
+            model.net,
+            args.parameter_lower,
+            args.parameter_upper,
+        )
+        attach_integral_loss_train_step(
+            model,
+            main_loss,
+            integral_only=True,
+            maximize=True,
+            maximize_residual_only=True,
+        )
+    else:
+        attach_integral_loss_train_step(model, main_loss, integral_only=True)
 
     timestamp = time.strftime("%m.%d-%H.%M.%S", time.localtime())
     save_path = os.path.join(args.out, f"{timestamp}-ks-integral-basin-{args.optimizer}")
     os.makedirs(save_path, exist_ok=True)
     with open(os.path.join(save_path, "run_config.json"), "w", encoding="utf-8") as file_obj:
         json.dump(vars(args), file_obj, indent=2, sort_keys=True)
+    if args.save_model and args.basin_hopping:
+        OneShotBasinHopper._save_checkpoint(
+            os.path.join(save_path, "deoptimization_initial.pt"),
+            cpu_state_dict(model.net),
+            0,
+        )
 
     callbacks = [] if args.no_callbacks else chaotic.make_callbacks(
         argparse.Namespace(
@@ -502,6 +550,7 @@ def run(args):
         callbacks.append(OneShotBasinHopper(args, save_path, loss_weights))
     print(
         f"Training KS integral-only PINN with {args.optimizer} for {args.iterations} iterations; "
+        f"residual_ascent_steps={args.basin_hopping_step if args.basin_hopping else 0}, "
         f"basin_hopping={args.basin_hopping}."
     )
     return model.train(

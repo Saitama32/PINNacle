@@ -5,7 +5,11 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from experiments.Chaotic.run_basin_hopping_integral import OneShotBasinHopper
+from experiments.Chaotic.run_basin_hopping_integral import (
+    OneShotBasinHopper,
+    build_parser,
+    validate_args,
+)
 
 
 class _FakeNet:
@@ -115,3 +119,27 @@ def test_local_relaxation_clears_cache_and_releases_gradients(monkeypatch):
     assert clear_calls == [True]
     assert optimizer.zero_grad_calls == [True, True]
     assert trajectory[0]["local_step"] == 1
+
+
+def test_deoptimization_phase_is_enabled_for_first_1000_steps_by_default():
+    args = build_parser().parse_args([])
+
+    assert args.basin_hopping is True
+    assert args.basin_hopping_step == 1000
+    assert args.integral_warmup_steps == 0
+    assert args.parameter_lower == -1.0
+    assert args.parameter_upper == 1.0
+    assert args.integral_periodic_enabled is True
+
+
+@pytest.mark.parametrize(
+    "lower, upper",
+    [(1.0, 1.0), (2.0, -2.0), (float("nan"), 1.0)],
+)
+def test_deoptimization_parameter_bounds_are_validated(lower, upper):
+    args = build_parser().parse_args([])
+    args.parameter_lower = lower
+    args.parameter_upper = upper
+
+    with pytest.raises(ValueError, match="parameter bounds"):
+        validate_args(args)
