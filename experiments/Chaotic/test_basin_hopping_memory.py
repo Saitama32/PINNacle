@@ -130,6 +130,18 @@ def test_deoptimization_phase_is_enabled_for_first_1000_steps_by_default():
     assert args.parameter_lower == -1.0
     assert args.parameter_upper == 1.0
     assert args.integral_periodic_enabled is True
+    assert args.save_model is False
+    assert args.basin_hopping_save_all_candidates is False
+
+
+def test_deprecated_checkpoint_flags_remain_parseable():
+    args = build_parser().parse_args([
+        "--save-model", "true",
+        "--basin-hopping-save-all-candidates", "true",
+    ])
+
+    assert args.save_model is True
+    assert args.basin_hopping_save_all_candidates is True
 
 
 @pytest.mark.parametrize(

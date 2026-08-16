@@ -248,13 +248,6 @@ class OneShotBasinHopper(dde.callbacks.Callback):
             "periodic": values["periodic"],
         }
 
-    @staticmethod
-    def _save_checkpoint(path, state, step, candidate_id=None):
-        payload = {"model_state_dict": state, "global_step": int(step)}
-        if candidate_id is not None:
-            payload["candidate_id"] = int(candidate_id)
-        torch.save(payload, path)
-
     def run_event(self):
         args = self.args
         print(
@@ -263,17 +256,6 @@ class OneShotBasinHopper(dde.callbacks.Callback):
         )
         main_integral_loss = self.model.integral_loss
         base_state = cpu_state_dict(self.model.net)
-        self._save_checkpoint(
-            os.path.join(self.save_path, "basin_hopping_pre.pt"),
-            base_state,
-            self.model.train_state.step,
-        )
-        if args.save_model:
-            self._save_checkpoint(
-                os.path.join(self.save_path, "deoptimization_maximized.pt"),
-                base_state,
-                self.model.train_state.step,
-            )
 
         rng_state = random.getstate()
         numpy_state = np.random.get_state()
@@ -302,13 +284,6 @@ class OneShotBasinHopper(dde.callbacks.Callback):
             post = self._evaluate(candidate_loss, fixed_batches)
             state = cpu_state_dict(self.model.net)
             final_states.append(state)
-            if args.basin_hopping_save_all_candidates:
-                self._save_checkpoint(
-                    os.path.join(self.save_path, f"basin_hopping_candidate_{candidate_id}.pt"),
-                    state,
-                    self.model.train_state.step,
-                    candidate_id,
-                )
             rows.append({
                 "candidate_id": candidate_id,
                 "is_control": candidate_id == 0,
@@ -333,12 +308,6 @@ class OneShotBasinHopper(dde.callbacks.Callback):
             row["selected"] = index == winner
 
         self.model.net.load_state_dict(final_states[winner])
-        self._save_checkpoint(
-            os.path.join(self.save_path, "basin_hopping_selected.pt"),
-            final_states[winner],
-            self.model.train_state.step,
-            winner,
-        )
         self._write_csv("basin_hopping_candidates.csv", CANDIDATE_COLUMNS, rows)
         self._write_csv("basin_hopping_trajectory.csv", TRAJECTORY_COLUMNS, trajectory)
 
@@ -386,7 +355,14 @@ def build_parser():
     parser.add_argument("--ks-diagnostics-verbose", type=chaotic.str2bool, nargs="?", const=True, default=False)
     parser.add_argument("--ks-diagnostics-chunk-every", type=int, default=1000)
     parser.add_argument("--no-callbacks", action="store_true")
-    parser.add_argument("--save-model", type=chaotic.str2bool, nargs="?", const=True, default=True)
+    parser.add_argument(
+        "--save-model",
+        type=chaotic.str2bool,
+        nargs="?",
+        const=True,
+        default=False,
+        help="Deprecated compatibility option; .pt checkpoint saving is always disabled.",
+    )
     parser.add_argument("--weight-decay", type=float, default=0.0)
     parser.add_argument("--optimizer", choices=["adam", "muon", "soap"], default="adam")
     parser.add_argument("--parameter-lower", type=float, default=-1.0)
@@ -425,7 +401,14 @@ def build_parser():
     parser.add_argument("--basin-hopping-eval-batches", type=int, default=4)
     parser.add_argument("--basin-hopping-eval-seed", type=int, default=98765)
     parser.add_argument("--basin-hopping-seed", type=int, default=12345)
-    parser.add_argument("--basin-hopping-save-all-candidates", type=chaotic.str2bool, nargs="?", const=True, default=False)
+    parser.add_argument(
+        "--basin-hopping-save-all-candidates",
+        type=chaotic.str2bool,
+        nargs="?",
+        const=True,
+        default=False,
+        help="Deprecated compatibility option; candidate .pt saving is always disabled.",
+    )
 
     # Existing optimizer implementations are configured with these values.
     parser.add_argument("--soap-beta1", type=float, default=0.99)
@@ -529,13 +512,6 @@ def run(args):
     os.makedirs(save_path, exist_ok=True)
     with open(os.path.join(save_path, "run_config.json"), "w", encoding="utf-8") as file_obj:
         json.dump(vars(args), file_obj, indent=2, sort_keys=True)
-    if args.save_model and args.basin_hopping:
-        OneShotBasinHopper._save_checkpoint(
-            os.path.join(save_path, "deoptimization_initial.pt"),
-            cpu_state_dict(model.net),
-            0,
-        )
-
     callbacks = [] if args.no_callbacks else chaotic.make_callbacks(
         argparse.Namespace(
             no_callbacks=False, log_every=args.log_every, loss_verbose=args.loss_verbose,
@@ -558,7 +534,7 @@ def run(args):
         display_every=args.log_every,
         callbacks=callbacks,
         model_save_path=save_path,
-        save_model=args.save_model,
+        save_model=False,
     )
 
 
