@@ -72,6 +72,55 @@ def temporal_chunk_losses(
     return chunk_losses
 
 
+def temporal_equal_count_chunk_losses(
+    residual,
+    t,
+    num_chunks,
+    return_details=False,
+):
+    """Return JAX-PI causal chunks after sorting samples by time.
+
+    JAX-PI reshapes the sorted residual vector into equally sized chunks.  It
+    therefore requires the residual batch size to be divisible by the number
+    of chunks; keeping that restriction catches configuration mistakes early.
+    """
+    num_chunks = int(num_chunks)
+    if num_chunks <= 0:
+        raise ValueError("num_chunks must be positive")
+    t = t.reshape(-1)
+    residual = residual.reshape(-1)
+    if residual.numel() != t.numel():
+        raise ValueError(
+            "residual and t must contain the same number of scalar values, "
+            f"got {residual.numel()} and {t.numel()}"
+        )
+    if residual.numel() == 0:
+        raise ValueError("residual must contain at least one value")
+    if residual.numel() % num_chunks:
+        raise ValueError(
+            "equal-count causal chunking requires the PDE batch size to be "
+            f"divisible by num_chunks, got {residual.numel()} and {num_chunks}"
+        )
+
+    order = torch.argsort(t)
+    sorted_t = t[order].reshape(num_chunks, -1)
+    sorted_r2 = residual[order].pow(2).reshape(num_chunks, -1)
+    chunk_losses = torch.mean(sorted_r2, dim=1)
+    if return_details:
+        count = sorted_r2.shape[1]
+        return chunk_losses, {
+            "t_min": sorted_t[:, 0].detach(),
+            "t_max": sorted_t[:, -1].detach(),
+            "counts": torch.full(
+                (num_chunks,),
+                count,
+                dtype=torch.long,
+                device=t.device,
+            ),
+        }
+    return chunk_losses
+
+
 def causal_loss_with_fixed_weights(
     residual, t, num_chunks, fixed_weights, t_min, t_max
 ):
@@ -102,17 +151,31 @@ def causal_residual_loss(
     include_ic_in_weights=False,
     ic_loss=None,
     ic_weight_in_causal=0.0,
+    chunking="fixed_width",
     return_details=False,
 ):
     """Reweight time-ordered PDE residual chunks for causal training."""
-    chunk_losses, chunk_details = temporal_chunk_losses(
-        residual,
-        t,
-        num_chunks,
-        t_min=t_min,
-        t_max=t_max,
-        return_details=True,
-    )
+    if chunking == "fixed_width":
+        chunk_losses, chunk_details = temporal_chunk_losses(
+            residual,
+            t,
+            num_chunks,
+            t_min=t_min,
+            t_max=t_max,
+            return_details=True,
+        )
+    elif chunking == "equal_count":
+        chunk_losses, chunk_details = temporal_equal_count_chunk_losses(
+            residual,
+            t,
+            num_chunks,
+            return_details=True,
+        )
+    else:
+        raise ValueError(
+            "chunking must be either 'fixed_width' or 'equal_count', "
+            f"got {chunking!r}"
+        )
 
     matrix = torch.tril(
         torch.ones(

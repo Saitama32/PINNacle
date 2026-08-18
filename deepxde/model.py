@@ -95,6 +95,7 @@ class Model:
                 - For backend PyTorch:
 
                     - `StepLR <https://pytorch.org/docs/stable/generated/torch.optim.lr_scheduler.StepLR.html>`_: ("step", step_size, gamma)
+                    - smooth exponential decay: ("exponential", decay_steps, decay_rate)
 
                 - For backend PaddlePaddle:
 

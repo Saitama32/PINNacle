@@ -205,6 +205,7 @@ class PDE(Data):
                     ic_weight_in_causal=float(
                         causal_options.get("ic_weight_in_causal", 0.0)
                     ),
+                    chunking=str(causal_options.get("chunking", "fixed_width")),
                     return_details=True,
                 )
                 losses.append(loss)

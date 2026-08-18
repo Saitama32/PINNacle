@@ -342,6 +342,18 @@ def _get_learningrate_scheduler(optim, decay):
             optim, step_size=decay[1], gamma=decay[2]
         )
 
+    if decay[0] == "exponential":
+        decay_steps = int(decay[1])
+        decay_rate = float(decay[2])
+        if decay_steps <= 0:
+            raise ValueError("exponential decay_steps must be positive")
+        if decay_rate <= 0:
+            raise ValueError("exponential decay_rate must be positive")
+        return torch.optim.lr_scheduler.LambdaLR(
+            optim,
+            lr_lambda=lambda step: decay_rate ** (step / decay_steps),
+        )
+
     # TODO: More learning rate scheduler
     raise NotImplementedError(
         f"{decay[0]} learning rate scheduler to be implemented for backend pytorch."
