@@ -149,6 +149,13 @@ class DynamicFreezingController(dde.callbacks.Callback):
     def causal_options(self):
         return getattr(self.model, "causal_loss_options", {}) or {}
 
+    def _causal_time_bounds(self):
+        bbox = np.asarray(self.model.pde.bbox, dtype=float)
+        return (
+            float(self.causal_options.get("t_min", bbox[-2])),
+            float(self.causal_options.get("t_max", bbox[-1])),
+        )
+
     @staticmethod
     def _front_at_threshold(details, threshold):
         if not details:
@@ -230,7 +237,16 @@ class DynamicFreezingController(dde.callbacks.Callback):
         self.t_values = np.linspace(bbox[2], bbox[3], self.config.diagnostic_nt)
         xx, tt = np.meshgrid(self.x_values, self.t_values)
         self.grid_np = np.column_stack([xx.reshape(-1), tt.reshape(-1)]).astype(np.float32)
-        self.interior_np = self.grid_np[self.grid_np[:, 1] > bbox[2] + 1e-12]
+        num_interior_times = max(
+            self.config.diagnostic_nt - 1,
+            int(self.causal_options.get("num_chunks", 1)) if self.causal_enabled else 1,
+        )
+        interior_edges = np.linspace(bbox[2], bbox[3], num_interior_times + 1)
+        interior_times = 0.5 * (interior_edges[:-1] + interior_edges[1:])
+        interior_xx, interior_tt = np.meshgrid(self.x_values, interior_times)
+        self.interior_np = np.column_stack(
+            [interior_xx.reshape(-1), interior_tt.reshape(-1)]
+        ).astype(np.float32)
         self.ic_np = np.column_stack(
             [self.x_values, np.full_like(self.x_values, bbox[2])]
         ).astype(np.float32)
@@ -409,6 +425,7 @@ class DynamicFreezingController(dde.callbacks.Callback):
         if residual is None:
             residual = self._residual(self.interior_np)
         num_chunks = int(options.get("num_chunks", 16))
+        t_min, t_max = self._causal_time_bounds()
         if fixed_weights is not None:
             if return_details:
                 raise ValueError("return_details is not supported with fixed causal weights")
@@ -417,12 +434,16 @@ class DynamicFreezingController(dde.callbacks.Callback):
                 t=self._tensor(time_values),
                 num_chunks=num_chunks,
                 fixed_weights=fixed_weights,
+                t_min=t_min,
+                t_max=t_max,
             )
         return causal_residual_loss(
             residual=residual,
             t=self._tensor(time_values),
             num_chunks=num_chunks,
             tol=float(options.get("tol", 0.1)),
+            t_min=t_min,
+            t_max=t_max,
             include_ic_in_weights=bool(options.get("include_ic_in_weights", False)),
             ic_loss=self._ic_loss(),
             ic_weight_in_causal=float(options.get("ic_weight_in_causal", 0.0)),
@@ -432,10 +453,13 @@ class DynamicFreezingController(dde.callbacks.Callback):
     def _causal_chunk_losses(self, residual):
         time_index = int(self.causal_options.get("time_index", -1))
         time_values = self._tensor(self.interior_np[:, time_index])
+        t_min, t_max = self._causal_time_bounds()
         return temporal_chunk_losses(
             residual,
             time_values,
             int(self.causal_options.get("num_chunks", 16)),
+            t_min=t_min,
+            t_max=t_max,
         )
 
     def _evaluate_losses(
@@ -814,11 +838,15 @@ class DynamicFreezingController(dde.callbacks.Callback):
         if front_chunk < 0:
             return mask
         time_index = int(self.causal_options.get("time_index", -1))
-        order = np.argsort(self.interior_np[:, time_index], kind="stable")
         num_chunks = int(self.causal_options.get("num_chunks", 16))
-        chunk_size = len(order) // num_chunks
-        protected_count = min((front_chunk + 1) * chunk_size, len(order))
-        mask[order[:protected_count]] = True
+        t_min, t_max = self._causal_time_bounds()
+        edges = np.linspace(t_min, t_max, num_chunks + 1)
+        protected_until = edges[min(front_chunk + 1, num_chunks)]
+        times = self.interior_np[:, time_index]
+        if front_chunk >= num_chunks - 1:
+            mask = (times >= t_min) & (times <= protected_until)
+        else:
+            mask = (times >= t_min) & (times < protected_until)
         return mask
 
     def _select_causal_groups(self, rows):
@@ -1074,12 +1102,14 @@ class DynamicFreezingController(dde.callbacks.Callback):
         prediction = self._predict_numpy(self.interior_np)
         reference = np.asarray(self._reference_nearest(self.interior_np)).reshape(prediction.shape)
         time_index = int(self.causal_options.get("time_index", -1))
-        order = np.argsort(self.interior_np[:, time_index], kind="stable")
-        chunk_size = len(order) // num_chunks
-        if chunk_size <= 0:
-            return result
-        ordered = order[: chunk_size * num_chunks].reshape(num_chunks, chunk_size)
-        for chunk_id, indices in enumerate(ordered):
+        t_min, t_max = self._causal_time_bounds()
+        edges = np.linspace(t_min, t_max, num_chunks + 1)
+        times = self.interior_np[:, time_index]
+        bin_ids = np.searchsorted(edges[1:-1], times, side="right")
+        for chunk_id in range(num_chunks):
+            indices = np.flatnonzero(bin_ids == chunk_id)
+            if len(indices) == 0:
+                continue
             numerator = np.linalg.norm(prediction[indices] - reference[indices])
             denominator = np.linalg.norm(reference[indices]) + self.config.relative_eps
             result[chunk_id] = numerator / denominator

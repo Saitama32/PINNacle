@@ -184,11 +184,20 @@ class PDE(Data):
                 time_index = int(causal_options.get("time_index", -1))
                 pde_inputs = inputs[bcs_start[-1] :]
                 t = pde_inputs[:, time_index].reshape(-1, 1)
+                timedomain = getattr(self.geom, "timedomain", None)
+                t_min = causal_options.get("t_min", getattr(timedomain, "t0", None))
+                t_max = causal_options.get("t_max", getattr(timedomain, "t1", None))
+                if t_min is None or t_max is None:
+                    raise ValueError(
+                        "causal loss requires fixed PDE time bounds t_min and t_max"
+                    )
                 loss, diagnostics, details = causal_residual_loss(
                     residual=error,
                     t=t,
                     num_chunks=int(causal_options.get("num_chunks", 16)),
                     tol=float(causal_options.get("tol", 0.1)),
+                    t_min=float(t_min),
+                    t_max=float(t_max),
                     include_ic_in_weights=bool(
                         causal_options.get("include_ic_in_weights", False)
                     ),

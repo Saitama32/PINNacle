@@ -245,13 +245,6 @@ def validate_args(args):
             )
         if args.use_integral_loss:
             raise ValueError("Dynamic freezing is incompatible with the integral objective.")
-        if args.use_causal_loss:
-            diagnostic_points = (args.dynamic_freezing_nt - 1) * args.dynamic_freezing_nx
-            if args.causal_num_chunks > diagnostic_points:
-                raise ValueError(
-                    "--causal-num-chunks must not exceed the number of interior dynamic-freezing "
-                    f"diagnostic points ({diagnostic_points})."
-                )
         DynamicFreezingConfig(
             enabled=args.dynamic_freezing,
             group_size=args.weight_group_size,
@@ -354,6 +347,7 @@ def validate_integral_loss_geometry(pde, args):
 
 def apply_causal_loss_options(model, args):
     if args.use_causal_loss:
+        bbox = np.asarray(model.pde.bbox, dtype=float)
         model.causal_loss_options = {
             "enabled": True,
             "num_chunks": args.causal_num_chunks,
@@ -361,6 +355,8 @@ def apply_causal_loss_options(model, args):
             "time_index": args.causal_time_index,
             "include_ic_in_weights": args.causal_include_ic,
             "ic_weight_in_causal": args.causal_ic_weight,
+            "t_min": float(bbox[-2]),
+            "t_max": float(bbox[-1]),
         }
 
 

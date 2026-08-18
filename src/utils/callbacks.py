@@ -579,18 +579,28 @@ class KSDiagnosticsCallback(Callback):
             return
         num_chunks = int(details["chunk_losses"].numel())
         time_index = int(options.get("time_index", -1))
-        order = np.argsort(self.grid_points[:, time_index], kind="stable")
-        chunk_size = len(order) // num_chunks
-        if chunk_size <= 0:
-            self.model.ks_causal_chunk_diagnostics = None
-            return
-        used = chunk_size * num_chunks
-        ordered = order[:used].reshape(num_chunks, chunk_size)
+        if "t_min" in details and "t_max" in details:
+            t_min = float(details["t_min"].reshape(-1)[0].detach().cpu())
+            t_max = float(details["t_max"].reshape(-1)[-1].detach().cpu())
+        else:
+            pde = getattr(self, "pde", getattr(self.model, "pde", None))
+            bbox = None if pde is None else np.asarray(pde.bbox, dtype=float)
+            fallback_min = np.min(self.grid_points[:, time_index]) if bbox is None else bbox[-2]
+            fallback_max = np.max(self.grid_points[:, time_index]) if bbox is None else bbox[-1]
+            t_min = float(options.get("t_min", fallback_min))
+            t_max = float(options.get("t_max", fallback_max))
+        edges = np.linspace(t_min, t_max, num_chunks + 1)
+        bin_ids = np.searchsorted(
+            edges[1:-1], self.grid_points[:, time_index], side="right"
+        )
         relative_eps = float(
             getattr(self.model, "dynamic_freezing_relative_eps", 1e-12)
         )
         chunks = {}
-        for chunk_id, indices in enumerate(ordered):
+        for chunk_id in range(num_chunks):
+            indices = np.flatnonzero(bin_ids == chunk_id)
+            if len(indices) == 0:
+                continue
             idx = torch.as_tensor(indices, device=grid_terms["u"].device, dtype=torch.long)
             values = {
                 key: self._rms(grid_terms[key].index_select(0, idx))
