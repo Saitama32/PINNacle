@@ -156,26 +156,37 @@ class SOAP(torch.optim.Optimizer):
             grad.t(), grad, beta=1, alpha=1 - shampoo_beta
         )
 
-        if force or state["step"] % group["precondition_frequency"] == 0:
-            q_left = self._orthogonal_matrix(state["ggt_left"])
-            q_right = self._orthogonal_matrix(state["ggt_right"])
+        if force:
+            state["q_left"] = self._orthogonal_matrix(state["ggt_left"])
+            state["q_right"] = self._orthogonal_matrix(state["ggt_right"])
+            return
 
-            # Keep stored Adam moments in the current eigenbasis after Q refresh.
-            if "q_left" in state and "q_right" in state and state["step"] > 0:
-                state["exp_avg"] = q_left.t().matmul(
-                    state["q_left"].matmul(state["exp_avg"]).matmul(
-                        state["q_right"].t()
-                    )
-                ).matmul(q_right)
-                state["exp_avg_sq"] = q_left.t().matmul(
-                    state["q_left"].matmul(state["exp_avg_sq"]).matmul(
-                        state["q_right"].t()
-                    )
-                ).matmul(q_right)
-                state["exp_avg_sq"].abs_()
+        if state["step"] % group["precondition_frequency"]:
+            return
 
-            state["q_left"] = q_left
-            state["q_right"] = q_right
+        old_q_left = state["q_left"]
+        old_q_right = state["q_right"]
+        q_left, left_order = self._orthogonal_matrix_qr(
+            state["ggt_left"], old_q_left
+        )
+        q_right, right_order = self._orthogonal_matrix_qr(
+            state["ggt_right"], old_q_right
+        )
+
+        # The first moment is a vector expressed in the old eigenbasis, so it
+        # can be projected back to parameter space and into the refreshed one.
+        state["exp_avg"] = q_left.t().matmul(
+            old_q_left.matmul(state["exp_avg"]).matmul(old_q_right.t())
+        ).matmul(q_right)
+
+        # Adam's second moment is elementwise and must not be matrix-rotated.
+        # The QR refresh only reorders eigen-directions, exactly as in the
+        # official SOAP implementation.
+        state["exp_avg_sq"] = state["exp_avg_sq"].index_select(
+            0, left_order
+        ).index_select(1, right_order)
+        state["q_left"] = q_left
+        state["q_right"] = q_right
 
     @staticmethod
     def _project(grad, state):
@@ -195,3 +206,17 @@ class SOAP(torch.optim.Optimizer):
             return eye
         order = torch.argsort(eigvals, descending=True)
         return eigvecs[:, order]
+
+    @staticmethod
+    def _orthogonal_matrix_qr(matrix, basis):
+        """Refresh one eigenbasis with power iteration and QR."""
+        original_dtype = matrix.dtype
+        work_matrix = matrix.float()
+        work_basis = basis.float()
+        estimated_eigenvalues = torch.diag(
+            work_basis.t().matmul(work_matrix).matmul(work_basis)
+        )
+        order = torch.argsort(estimated_eigenvalues, descending=True)
+        work_basis = work_basis[:, order]
+        refreshed_basis, _ = torch.linalg.qr(work_matrix.matmul(work_basis))
+        return refreshed_basis.to(original_dtype), order
