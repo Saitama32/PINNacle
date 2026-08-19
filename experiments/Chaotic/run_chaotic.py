@@ -251,6 +251,9 @@ def validate_args(args):
             max_freeze_fraction=args.max_freeze_fraction,
             good_tolerance=args.good_tolerance,
             protected_pde_tolerance=args.protected_pde_tolerance,
+            protected_pde_unprotect_tolerance=(
+                args.protected_pde_unprotect_tolerance
+            ),
             freeze_events=args.freeze_events,
             max_freeze_refresh_steps=args.max_freeze_refresh_steps,
             causal_protect_weight=args.causal_protect_weight,
@@ -443,6 +446,9 @@ def dynamic_freezing_config(args):
         max_freeze_fraction=args.max_freeze_fraction,
         good_tolerance=args.good_tolerance,
         protected_pde_tolerance=args.protected_pde_tolerance,
+        protected_pde_unprotect_tolerance=(
+            args.protected_pde_unprotect_tolerance
+        ),
         freeze_events=args.freeze_events,
         max_freeze_refresh_steps=args.max_freeze_refresh_steps,
         causal_protect_weight=args.causal_protect_weight,
@@ -788,6 +794,15 @@ def parse_args():
         ),
     )
     parser.add_argument(
+        "--protected-pde-unprotect-tolerance",
+        type=float,
+        default=5e-2,
+        help=(
+            "PDE tolerance used to retreat an already protected causal prefix; "
+            "must be greater than or equal to --protected-pde-tolerance."
+        ),
+    )
+    parser.add_argument(
         "--freeze-events",
         type=int,
         default=3,
@@ -796,7 +811,12 @@ def parse_args():
     parser.add_argument("--max-freeze-refresh-steps", type=int, default=2000)
     parser.add_argument("--causal-protect-weight", type=float, default=0.999)
     parser.add_argument("--causal-unprotect-weight", type=float, default=0.995)
-    parser.add_argument("--causal-front-patience", type=int, default=100)
+    parser.add_argument(
+        "--causal-front-patience",
+        type=int,
+        default=5,
+        help="Number of consecutive fixed-grid checks required to move the causal front.",
+    )
     parser.add_argument("--transfer-boundary-enabled", type=str2bool, nargs="?", const=True, default=True)
     parser.add_argument("--transfer-boundary-weight-threshold", type=float, default=0.9)
     parser.add_argument("--transfer-boundary-drift-threshold", type=float, default=0.01)
