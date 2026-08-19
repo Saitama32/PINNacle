@@ -10,8 +10,24 @@ from deepxde import config
 from deepxde.nn.pytorch.fnn import FNN
 from deepxde.nn.pytorch.nn import NN
 
+from .rwf import RWFLinear, RWFMLP
 
-def _linear(in_features: int, out_features: int) -> torch.nn.Linear:
+
+def _linear(
+    in_features: int,
+    out_features: int,
+    *,
+    use_rwf: bool = False,
+    rwf_mu: float = 1.0,
+    rwf_sigma: float = 0.1,
+) -> torch.nn.Module:
+    if use_rwf:
+        return RWFLinear(
+            in_features,
+            out_features,
+            mu=rwf_mu,
+            sigma=rwf_sigma,
+        )
     layer = torch.nn.Linear(
         in_features,
         out_features,
@@ -97,6 +113,9 @@ class JaxpiKSNetwork(NN):
         periodic_encoding: bool = True,
         fourier_dim: int = 256,
         fourier_scale: float = 1.0,
+        use_rwf: bool = False,
+        rwf_mu: float = 1.0,
+        rwf_sigma: float = 0.1,
     ):
         super().__init__()
         if num_layers <= 0:
@@ -105,6 +124,7 @@ class JaxpiKSNetwork(NN):
             raise ValueError("hidden_dim must be positive")
 
         self.modified_mlp = bool(modified_mlp)
+        self.use_rwf = bool(use_rwf)
         self.features = JaxpiKSFeatures(
             time_scale=time_scale,
             use_fourier=fourier_features,
@@ -113,20 +133,25 @@ class JaxpiKSNetwork(NN):
             fourier_scale=fourier_scale,
         )
         input_dim = self.features.out_dim
+        linear_options = {
+            "use_rwf": self.use_rwf,
+            "rwf_mu": rwf_mu,
+            "rwf_sigma": rwf_sigma,
+        }
         self.hidden_layers = torch.nn.ModuleList()
         if self.modified_mlp:
-            self.encoder_u = _linear(input_dim, hidden_dim)
-            self.encoder_v = _linear(input_dim, hidden_dim)
-            self.hidden_layers.append(_linear(input_dim, hidden_dim))
+            self.encoder_u = _linear(input_dim, hidden_dim, **linear_options)
+            self.encoder_v = _linear(input_dim, hidden_dim, **linear_options)
+            self.hidden_layers.append(_linear(input_dim, hidden_dim, **linear_options))
             for _ in range(1, num_layers):
-                self.hidden_layers.append(_linear(hidden_dim, hidden_dim))
+                self.hidden_layers.append(_linear(hidden_dim, hidden_dim, **linear_options))
         else:
             self.register_module("encoder_u", None)
             self.register_module("encoder_v", None)
-            self.hidden_layers.append(_linear(input_dim, hidden_dim))
+            self.hidden_layers.append(_linear(input_dim, hidden_dim, **linear_options))
             for _ in range(1, num_layers):
-                self.hidden_layers.append(_linear(hidden_dim, hidden_dim))
-        self.output_layer = _linear(hidden_dim, 1)
+                self.hidden_layers.append(_linear(hidden_dim, hidden_dim, **linear_options))
+        self.output_layer = _linear(hidden_dim, 1, **linear_options)
 
     def forward(self, inputs: torch.Tensor) -> torch.Tensor:
         original_inputs = inputs
@@ -162,6 +187,9 @@ class PinnacleKSFNN(NN):
         periodic_encoding: bool = False,
         fourier_dim: int = 256,
         fourier_scale: float = 1.0,
+        use_rwf: bool = False,
+        rwf_mu: float = 1.0,
+        rwf_sigma: float = 0.1,
     ):
         super().__init__()
         if num_layers <= 0:
@@ -175,10 +203,11 @@ class PinnacleKSFNN(NN):
             fourier_dim=fourier_dim,
             fourier_scale=fourier_scale,
         )
-        self.fnn = FNN(
-            [self.features.out_dim, *([hidden_dim] * num_layers), 1],
-            "tanh",
-            "Glorot normal",
+        layer_sizes = [self.features.out_dim, *([hidden_dim] * num_layers), 1]
+        self.fnn = (
+            RWFMLP(layer_sizes, mu=rwf_mu, sigma=rwf_sigma)
+            if use_rwf
+            else FNN(layer_sizes, "tanh", "Glorot normal")
         )
 
     def forward(self, inputs: torch.Tensor) -> torch.Tensor:

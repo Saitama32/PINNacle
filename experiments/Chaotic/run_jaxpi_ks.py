@@ -34,6 +34,9 @@ from src.utils.callbacks import LossCallback, TesterCallback
 from src.utils.grad_norm import AdaptiveLossWeights, GradNormCallback
 
 
+NETWORK_CHOICES = ("mlp", "rwf-mlp", "modified-mlp", "rwf-modified-mlp")
+
+
 PRESETS = {
     "ablation": {
         "time_fraction": 0.1,
@@ -52,7 +55,8 @@ PRESETS = {
         "grad_norm": True,
         "causal": False,
         "jaxpi_network": True,
-        "periodic_encoding": True,
+        "periodic_encoding": False,
+        "net": "mlp",
     },
     "sota": {
         "time_fraction": 1.0,
@@ -71,7 +75,8 @@ PRESETS = {
         "grad_norm": True,
         "causal": False,
         "jaxpi_network": True,
-        "periodic_encoding": True,
+        "periodic_encoding": False,
+        "net": "mlp",
     },
 }
 
@@ -173,6 +178,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     parser.set_defaults(_preset_overrides=set())
     parser.add_argument(
+        "--net",
+        choices=NETWORK_CHOICES,
+        default="mlp",
+        action=PresetOverrideAction,
+        help="Network architecture. This is the canonical architecture selector.",
+    )
+    parser.add_argument(
         "--steps-per-window",
         type=int,
         default=10_000,
@@ -222,8 +234,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--fourier-dim", type=int, default=256)
     parser.add_argument("--fourier-scale", type=float, default=1.0)
-    parser.add_argument("--optimizer", choices=("adam", "muon", "soap"), default="adam")
+    parser.add_argument("--rwf-mu", type=float, default=1.0)
+    parser.add_argument("--rwf-sigma", type=float, default=0.1)
+    parser.add_argument(
+        "--optimizer",
+        choices=("adam", "muon", "soap", "pcgrad"),
+        default="adam",
+    )
     parser.add_argument("--weight-decay", type=float, default=0.0)
+    parser.add_argument("--pcgrad-base-optimizer", choices=("adam",), default="adam")
     parser.add_argument("--soap-beta1", type=float, default=0.99)
     parser.add_argument("--soap-beta2", type=float, default=0.999)
     parser.add_argument("--soap-shampoo-beta", type=float, default=None)
@@ -284,6 +303,7 @@ def resolve_config(args: argparse.Namespace) -> dict:
         "causal",
         "jaxpi_network",
         "periodic_encoding",
+        "net",
     ):
         if name in preset_overrides:
             config[name] = getattr(args, name)
@@ -292,8 +312,11 @@ def resolve_config(args: argparse.Namespace) -> dict:
             "preset": args.preset,
             "fourier_dim": args.fourier_dim,
             "fourier_scale": args.fourier_scale,
+            "rwf_mu": args.rwf_mu,
+            "rwf_sigma": args.rwf_sigma,
             "optimizer": args.optimizer,
             "weight_decay": args.weight_decay,
+            "pcgrad_base_optimizer": args.pcgrad_base_optimizer,
             "soap_beta1": args.soap_beta1,
             "soap_beta2": args.soap_beta2,
             "soap_shampoo_beta": args.soap_shampoo_beta,
@@ -320,6 +343,18 @@ def resolve_config(args: argparse.Namespace) -> dict:
             "log_every": args.log_every,
         }
     )
+    # Keep the old boolean architecture flags usable by existing notebooks.
+    # An explicit --net is canonical and takes precedence over them.
+    if "net" not in preset_overrides and (
+        "modified_mlp" in preset_overrides or "jaxpi_network" in preset_overrides
+    ):
+        config["net"] = "modified-mlp" if config["modified_mlp"] else "mlp"
+    config["modified_mlp"] = config["net"] in {
+        "modified-mlp",
+        "rwf-modified-mlp",
+    }
+    config["jaxpi_network"] = config["modified_mlp"]
+    config["use_rwf"] = config["net"] in {"rwf-mlp", "rwf-modified-mlp"}
     validate_config(config)
     return config
 
@@ -344,6 +379,10 @@ def validate_config(config: dict):
             raise ValueError(f"{name} must be positive")
     if config["save_every"] < 0:
         raise ValueError("save_every must be non-negative")
+    if not math.isfinite(config["rwf_mu"]):
+        raise ValueError("rwf_mu must be finite")
+    if not math.isfinite(config["rwf_sigma"]) or config["rwf_sigma"] < 0:
+        raise ValueError("rwf_sigma must be non-negative and finite")
     for name in (
         "learning_rate",
         "decay_rate",
@@ -378,8 +417,6 @@ def validate_config(config: dict):
         raise ValueError(
             "batch_size must be divisible by causal_num_chunks for JAX-PI equal-count chunking"
         )
-    if config["modified_mlp"] and not config["jaxpi_network"]:
-        raise ValueError("modified_mlp requires jaxpi_network")
 
 
 def load_reference(path: os.PathLike) -> KSReference:
@@ -468,14 +505,28 @@ def build_model(config: dict, reference: KSReference, window: TimeWindow, initia
         "periodic_encoding": config["periodic_encoding"],
         "fourier_dim": config["fourier_dim"],
         "fourier_scale": config["fourier_scale"],
+        "use_rwf": config["use_rwf"],
+        "rwf_mu": config["rwf_mu"],
+        "rwf_sigma": config["rwf_sigma"],
     }
-    if config["jaxpi_network"]:
+    if config["modified_mlp"]:
         network = JaxpiKSNetwork(
-            modified_mlp=config["modified_mlp"],
+            modified_mlp=True,
             **network_options,
         ).float()
     else:
         network = PinnacleKSFNN(**network_options).float()
+    trainable_parameters = sum(
+        parameter.numel() for parameter in network.parameters() if parameter.requires_grad
+    )
+    print(
+        f"Network: {config['net']} | hidden: {config['hidden_dim']}x{config['num_layers']} | "
+        f"gating: {'on' if config['modified_mlp'] else 'off'} | "
+        f"RWF: {'on' if config['use_rwf'] else 'off'} | "
+        f"trainable parameters: {trainable_parameters}"
+    )
+    if config["use_rwf"]:
+        print(f"RWF mu: {config['rwf_mu']} | RWF sigma: {config['rwf_sigma']}")
     model = dde.Model(data, network)
     reference_points = prediction_grid(reference.x, window.local_t)
     reference_values = reference.u[
@@ -534,6 +585,10 @@ def build_model(config: dict, reference: KSReference, window: TimeWindow, initia
             muon_weight_decay=config["muon_weight_decay"],
             adam_weight_decay=config["muon_adam_weight_decay"],
         )
+    elif config["optimizer"] == "pcgrad":
+        dde.optimizers.set_PCGRAD_options(
+            base_optimizer=config["pcgrad_base_optimizer"],
+        )
     model.compile(
         config["optimizer"],
         lr=config["learning_rate"],
@@ -590,11 +645,10 @@ def save_solution_plot(path: Path, exact, prediction, title: str):
 def feature_tag(config: dict):
     return "_".join(
         (
-            f"mmlp-{'on' if config['modified_mlp'] else 'off'}",
+            f"net-{config['net']}",
             f"ff-{'on' if config['fourier_features'] else 'off'}",
             f"gn-{'on' if config['grad_norm'] else 'off'}",
             f"causal-{'on' if config['causal'] else 'off'}",
-            f"jaxnet-{'on' if config['jaxpi_network'] else 'off'}",
             f"periodic-{'on' if config['periodic_encoding'] else 'off'}",
         )
     )
