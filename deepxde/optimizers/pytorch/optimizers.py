@@ -29,7 +29,12 @@ def is_external_optimizer(optimizer):
 
 
 def _iter_linear_modules(module):
-    if isinstance(module, torch.nn.Linear):
+    if isinstance(module, torch.nn.Linear) or (
+        isinstance(module, torch.nn.Module)
+        and isinstance(getattr(module, "V", None), torch.nn.Parameter)
+        and isinstance(getattr(module, "s", None), torch.nn.Parameter)
+        and module.V.ndim == 2
+    ):
         yield module
         return
     if isinstance(module, torch.nn.Module):
@@ -54,8 +59,9 @@ def _hidden_linear_weight_ids(model):
     muon_param_ids = set()
     for layer in hidden_layers:
         for linear in _iter_linear_modules(layer):
-            if linear.weight.requires_grad:
-                muon_param_ids.add(id(linear.weight))
+            matrix = linear.V if hasattr(linear, "V") else linear.weight
+            if matrix.requires_grad:
+                muon_param_ids.add(id(matrix))
     return muon_param_ids
 
 
