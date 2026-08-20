@@ -3,6 +3,13 @@ from .features import PeriodicFourierFeatures
 from .hard_constraint import hard_constraint_wrapper
 from .jaxpi_ks import JaxpiKSFeatures, JaxpiKSNetwork, PinnacleKSFNN
 from .resnet import ResNet
+from .repnn import (
+    RepNN,
+    RepNNFirstLayer,
+    RepNNRWF,
+    RepNNRWFFirstLayer,
+    build_network,
+)
 from .rwf import RWFLinear, RWFMLP
 from .sfli import (
     CosineSFLIInitialization,
