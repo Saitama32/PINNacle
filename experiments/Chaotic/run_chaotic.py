@@ -16,7 +16,7 @@ import numpy as np
 import torch
 import deepxde as dde
 
-from src.model import PeriodicFourierFeatures, ResNet
+from src.model import PeriodicFourierFeatures, ResNet, RWFMLP
 from src.dynamic_freezing import DynamicFreezingConfig, DynamicFreezingController
 from src.losses.global_integral import (
     GlobalIntegralLoss,
@@ -84,6 +84,8 @@ def build_network(
     fourier_sigma=None,
     fourier_include_raw_x=False,
     fourier_include_bias=True,
+    rwf_mu=1.0,
+    rwf_sigma=0.1,
 ):
     hidden = parse_hidden_layers(argparse.Namespace(hidden_layers=hidden_layers))
     if net_type == "mlp":
@@ -93,6 +95,14 @@ def build_network(
             pde.output_dim,
         ]
         return dde.nn.FNN(layers, "tanh", "Glorot normal").float()
+
+    if net_type == "rwf-mlp":
+        layers = [
+            pde.input_dim,
+            *hidden,
+            pde.output_dim,
+        ]
+        return RWFMLP(layers, mu=rwf_mu, sigma=rwf_sigma).float()
 
     if net_type == "resnet":
         width, num_blocks = parse_resnet_shape(hidden_layers)
@@ -147,6 +157,8 @@ def build_model(
     fourier_sigma=None,
     fourier_include_raw_x=False,
     fourier_include_bias=True,
+    rwf_mu=1.0,
+    rwf_sigma=0.1,
 ):
     pde = EQUATIONS[equation_name]()
     net = build_network(
@@ -157,6 +169,8 @@ def build_model(
         fourier_sigma=fourier_sigma,
         fourier_include_raw_x=fourier_include_raw_x,
         fourier_include_bias=fourier_include_bias,
+        rwf_mu=rwf_mu,
+        rwf_sigma=rwf_sigma,
     )
     return pde.create_model(
         net,
@@ -232,6 +246,11 @@ def configure_optimizer(args):
 def validate_args(args):
     if args.weight_decay < 0:
         raise ValueError("--weight-decay must be non-negative.")
+
+    if not np.isfinite(args.rwf_mu):
+        raise ValueError("--rwf-mu must be finite.")
+    if args.rwf_sigma < 0 or not np.isfinite(args.rwf_sigma):
+        raise ValueError("--rwf-sigma must be non-negative and finite.")
 
     if args.optimizer == "adamw" and args.weight_decay == 0:
         raise ValueError(
@@ -508,6 +527,8 @@ def run_one(equation_name, args):
         fourier_sigma=args.fourier_sigma,
         fourier_include_raw_x=args.fourier_include_raw_x,
         fourier_include_bias=args.fourier_include_bias,
+        rwf_mu=args.rwf_mu,
+        rwf_sigma=args.rwf_sigma,
     )
     validate_integral_loss_geometry(model.pde, args)
     apply_causal_loss_options(model, args)
@@ -627,7 +648,13 @@ def parse_args():
         default="kuramoto-sivashinsky",
     )
     parser.add_argument("--hidden-layers", type=str, default="100*5")
-    parser.add_argument("--net", choices=["mlp", "resnet", "fourier-mlp"], default="mlp")
+    parser.add_argument(
+        "--net",
+        choices=["mlp", "rwf-mlp", "resnet", "fourier-mlp"],
+        default="mlp",
+    )
+    parser.add_argument("--rwf-mu", type=float, default=1.0)
+    parser.add_argument("--rwf-sigma", type=float, default=0.1)
     parser.add_argument("--fourier-features", type=int, default=10)
     parser.add_argument("--fourier-sigma", type=float, default=5.0)
     parser.add_argument("--fourier-include-raw-x", type=str2bool, nargs="?", const=True, default=True)

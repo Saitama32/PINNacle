@@ -8,6 +8,7 @@ _RESTORABLE_STATE_KEYS = {
     "Adam": {"exp_avg", "exp_avg_sq", "max_exp_avg_sq"},
     "AdamW": {"exp_avg", "exp_avg_sq", "max_exp_avg_sq"},
     "PCGrad": {"exp_avg", "exp_avg_sq", "max_exp_avg_sq"},
+    "SOAP": {"exp_avg", "exp_avg_sq"},
     "MuonWithAuxAdam": {"momentum_buffer", "exp_avg", "exp_avg_sq"},
 }
 
@@ -97,9 +98,9 @@ class MaskedOptimizerAdapter:
                 if mask is None:
                     continue
                 parameter[mask] = before[mask]
-                # SOAP moments are expressed in a rotating eigenbasis, so only
-                # physical weights can safely be restored elementwise.
-                if self.optimizer_name == "SOAP":
+                # SOAP matrix moments use a rotating basis; one-dimensional
+                # fallback parameters use ordinary Adam moments.
+                if self.optimizer_name == "SOAP" and parameter.ndim == 2:
                     continue
                 state = self.optimizer.state.get(parameter, {})
                 old_state = state_before.get(parameter, {})

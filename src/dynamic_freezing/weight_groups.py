@@ -23,7 +23,7 @@ class WeightGroup:
 
 
 class WeightGroupCollection:
-    """Stable groups that never cross parameter-matrix boundaries."""
+    """Stable groups over dense weights, or RWF scales when present."""
 
     def __init__(self, module, group_size):
         if group_size <= 0:
@@ -33,10 +33,23 @@ class WeightGroupCollection:
         self.groups = []
         self.weight_parameters = []
         self._groups_by_parameter = {}
+        rwf_scale_ids = {
+            id(child.s)
+            for child in module.modules()
+            if isinstance(getattr(child, "s", None), torch.nn.Parameter)
+            and isinstance(getattr(child, "V", None), torch.nn.Parameter)
+            and child.s.ndim == 1
+            and child.V.ndim == 2
+        }
+        self.grouping_mode = "rwf_scales" if rwf_scale_ids else "dense_weights"
         offset = 0
         for parameter_name, parameter in module.named_parameters():
-            # In the supported PINNs, matrices are weights and vectors are biases.
-            if parameter.ndim < 2 or not parameter.requires_grad:
+            selected = (
+                id(parameter) in rwf_scale_ids
+                if rwf_scale_ids
+                else parameter.ndim >= 2
+            )
+            if not selected or not parameter.requires_grad:
                 continue
             self.weight_parameters.append((parameter_name, parameter, offset))
             parameter_groups = []
@@ -56,7 +69,7 @@ class WeightGroupCollection:
             offset += parameter.numel()
         self.num_weights = offset
         if not self.groups:
-            raise ValueError("No trainable weight matrices were found")
+            raise ValueError("No trainable freezing parameters were found")
 
     def __len__(self):
         return len(self.groups)
@@ -89,6 +102,7 @@ class WeightGroupCollection:
                 "flat_start": group.flat_start,
                 "flat_end": group.flat_end,
                 "num_weights": group.num_weights,
+                "grouping_mode": self.grouping_mode,
                 "is_frozen": group.is_frozen,
             }
             for group in self.groups
