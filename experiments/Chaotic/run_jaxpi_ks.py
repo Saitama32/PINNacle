@@ -34,7 +34,14 @@ from src.utils.callbacks import LossCallback, TesterCallback
 from src.utils.grad_norm import AdaptiveLossWeights, GradNormCallback
 
 
-NETWORK_CHOICES = ("mlp", "rwf-mlp", "modified-mlp", "rwf-modified-mlp")
+NETWORK_CHOICES = (
+    "mlp",
+    "rwf-mlp",
+    "modified-mlp",
+    "rwf-modified-mlp",
+    "repnn",
+    "repnn-rwf",
+)
 INITIALIZATION_CHOICES = (
     "none",
     "stfli_cos",
@@ -257,6 +264,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--rwf-mu", type=float, default=1.0)
     parser.add_argument("--rwf-sigma", type=float, default=0.1)
     parser.add_argument(
+        "--repnn-nu-s",
+        type=float,
+        default=10.0,
+        help="Standard deviation of the RepNN first-layer effective weights.",
+    )
+    parser.add_argument(
         "--optimizer",
         choices=("adam", "muon", "soap", "pcgrad"),
         default="adam",
@@ -334,6 +347,7 @@ def resolve_config(args: argparse.Namespace) -> dict:
             "fourier_scale": args.fourier_scale,
             "rwf_mu": args.rwf_mu,
             "rwf_sigma": args.rwf_sigma,
+            "repnn_nu_s": args.repnn_nu_s,
             "optimizer": args.optimizer,
             "weight_decay": args.weight_decay,
             "pcgrad_base_optimizer": args.pcgrad_base_optimizer,
@@ -375,7 +389,11 @@ def resolve_config(args: argparse.Namespace) -> dict:
         "rwf-modified-mlp",
     }
     config["jaxpi_network"] = config["modified_mlp"]
-    config["use_rwf"] = config["net"] in {"rwf-mlp", "rwf-modified-mlp"}
+    config["use_rwf"] = config["net"] in {
+        "rwf-mlp",
+        "rwf-modified-mlp",
+        "repnn-rwf",
+    }
     validate_config(config)
     return config
 
@@ -408,6 +426,8 @@ def validate_config(config: dict):
         raise ValueError("rwf_mu must be finite")
     if not math.isfinite(config["rwf_sigma"]) or config["rwf_sigma"] < 0:
         raise ValueError("rwf_sigma must be non-negative and finite")
+    if not math.isfinite(config["repnn_nu_s"]) or config["repnn_nu_s"] <= 0:
+        raise ValueError("repnn_nu_s must be positive and finite")
     for name in (
         "learning_rate",
         "decay_rate",
@@ -442,7 +462,10 @@ def validate_config(config: dict):
         raise ValueError(
             "batch_size must be divisible by causal_num_chunks for JAX-PI equal-count chunking"
         )
-    if config.get("initialization", "none") != "none" and config["modified_mlp"]:
+    if config.get("initialization", "none") != "none" and config["net"] not in {
+        "mlp",
+        "rwf-mlp",
+    }:
         raise ValueError(
             "STFLI initialization supports only --net mlp and --net rwf-mlp"
         )
@@ -570,7 +593,13 @@ def build_model(config: dict, reference: KSReference, window: TimeWindow, initia
                 bounds=sfli_input_bounds(config, reference, window),
                 type=INITIALIZATION_TO_SFLI_TYPE[initialization],
             )
-        network = PinnacleKSFNN(sfli=sfli, **network_options).float()
+        network = PinnacleKSFNN(
+            sfli=sfli,
+            network_type=config["net"],
+            repnn_nu_s=config["repnn_nu_s"],
+            input_bounds=sfli_input_bounds(config, reference, window),
+            **network_options,
+        ).float()
     trainable_parameters = sum(
         parameter.numel() for parameter in network.parameters() if parameter.requires_grad
     )
@@ -583,6 +612,8 @@ def build_model(config: dict, reference: KSReference, window: TimeWindow, initia
     )
     if config["use_rwf"]:
         print(f"RWF mu: {config['rwf_mu']} | RWF sigma: {config['rwf_sigma']}")
+    if config["net"] in {"repnn", "repnn-rwf"}:
+        print(f"RepNN nu_s: {config['repnn_nu_s']}")
     model = dde.Model(data, network)
     reference_points = prediction_grid(reference.x, window.local_t)
     reference_values = reference.u[

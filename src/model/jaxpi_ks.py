@@ -10,6 +10,7 @@ from deepxde import config
 from deepxde.nn.pytorch.fnn import FNN
 from deepxde.nn.pytorch.nn import NN
 
+from .repnn import RepNN, RepNNRWF
 from .rwf import RWFLinear, RWFMLP
 from .sfli import SFLIConfig
 
@@ -193,6 +194,9 @@ class PinnacleKSFNN(NN):
         rwf_mu: float = 1.0,
         rwf_sigma: float = 0.1,
         sfli: SFLIConfig = None,
+        network_type: str = None,
+        repnn_nu_s: float = 10.0,
+        input_bounds=None,
     ):
         super().__init__()
         if num_layers <= 0:
@@ -207,11 +211,43 @@ class PinnacleKSFNN(NN):
             fourier_scale=fourier_scale,
         )
         layer_sizes = [self.features.out_dim, *([hidden_dim] * num_layers), 1]
-        self.fnn = (
-            RWFMLP(layer_sizes, mu=rwf_mu, sigma=rwf_sigma, sfli=sfli)
-            if use_rwf
-            else FNN(layer_sizes, "tanh", "Glorot normal", sfli=sfli)
+        self.network_type = (
+            ("rwf-mlp" if use_rwf else "mlp")
+            if network_type is None
+            else str(network_type).lower().replace("_", "-")
         )
+        if self.network_type == "mlp":
+            self.fnn = FNN(layer_sizes, "tanh", "Glorot normal", sfli=sfli)
+        elif self.network_type == "rwf-mlp":
+            self.fnn = RWFMLP(
+                layer_sizes, mu=rwf_mu, sigma=rwf_sigma, sfli=sfli
+            )
+        elif self.network_type in {"repnn", "repnn-rwf"}:
+            if sfli is not None:
+                raise ValueError("SFLI initialization is not supported by RepNN")
+            if input_bounds is None:
+                raise ValueError("RepNN networks require input_bounds")
+            bounds = tuple(input_bounds)
+            if len(bounds) != self.features.out_dim or any(
+                len(bound) != 2 for bound in bounds
+            ):
+                raise ValueError(
+                    f"input_bounds must contain {self.features.out_dim} (lower, upper) pairs"
+                )
+            lb, ub = zip(*bounds)
+            if self.network_type == "repnn":
+                self.fnn = RepNN(layer_sizes, lb=lb, ub=ub, nu_s=repnn_nu_s)
+            else:
+                self.fnn = RepNNRWF(
+                    layer_sizes,
+                    lb=lb,
+                    ub=ub,
+                    nu_s=repnn_nu_s,
+                    mu=rwf_mu,
+                    sigma=rwf_sigma,
+                )
+        else:
+            raise ValueError(f"unsupported PinnacleKSFNN network_type: {network_type!r}")
 
     def forward(self, inputs: torch.Tensor) -> torch.Tensor:
         original_inputs = inputs
