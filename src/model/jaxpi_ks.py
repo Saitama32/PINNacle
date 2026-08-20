@@ -162,9 +162,10 @@ class JaxpiKSNetwork(NN):
         if self.modified_mlp:
             u = torch.tanh(self.encoder_u(x))
             v = torch.tanh(self.encoder_v(x))
+            delta = u - v
             for layer in self.hidden_layers:
                 gate = torch.tanh(layer(x))
-                x = gate * u + (1.0 - gate) * v
+                x = v + gate * delta
         else:
             for layer in self.hidden_layers:
                 x = torch.tanh(layer(x))
