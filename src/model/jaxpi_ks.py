@@ -11,6 +11,7 @@ from deepxde.nn.pytorch.fnn import FNN
 from deepxde.nn.pytorch.nn import NN
 
 from .rwf import RWFLinear, RWFMLP
+from .sfli import SFLIConfig
 
 
 def _linear(
@@ -191,6 +192,7 @@ class PinnacleKSFNN(NN):
         use_rwf: bool = False,
         rwf_mu: float = 1.0,
         rwf_sigma: float = 0.1,
+        sfli: SFLIConfig = None,
     ):
         super().__init__()
         if num_layers <= 0:
@@ -206,9 +208,9 @@ class PinnacleKSFNN(NN):
         )
         layer_sizes = [self.features.out_dim, *([hidden_dim] * num_layers), 1]
         self.fnn = (
-            RWFMLP(layer_sizes, mu=rwf_mu, sigma=rwf_sigma)
+            RWFMLP(layer_sizes, mu=rwf_mu, sigma=rwf_sigma, sfli=sfli)
             if use_rwf
-            else FNN(layer_sizes, "tanh", "Glorot normal")
+            else FNN(layer_sizes, "tanh", "Glorot normal", sfli=sfli)
         )
 
     def forward(self, inputs: torch.Tensor) -> torch.Tensor:

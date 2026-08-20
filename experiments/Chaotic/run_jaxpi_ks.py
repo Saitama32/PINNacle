@@ -29,12 +29,23 @@ import deepxde as dde
 import numpy as np
 import torch
 
-from src.model import JaxpiKSNetwork, PinnacleKSFNN
+from src.model import JaxpiKSNetwork, PinnacleKSFNN, SFLIConfig
 from src.utils.callbacks import LossCallback, TesterCallback
 from src.utils.grad_norm import AdaptiveLossWeights, GradNormCallback
 
 
 NETWORK_CHOICES = ("mlp", "rwf-mlp", "modified-mlp", "rwf-modified-mlp")
+INITIALIZATION_CHOICES = (
+    "none",
+    "stfli_cos",
+    "stfli_gauss",
+    "stfli_tanh",
+)
+INITIALIZATION_TO_SFLI_TYPE = {
+    "stfli_cos": "cosine",
+    "stfli_gauss": "gaussian",
+    "stfli_tanh": "tanh",
+}
 
 
 PRESETS = {
@@ -183,6 +194,15 @@ def build_parser() -> argparse.ArgumentParser:
         default="mlp",
         action=PresetOverrideAction,
         help="Network architecture. This is the canonical architecture selector.",
+    )
+    parser.add_argument(
+        "--initialization",
+        choices=INITIALIZATION_CHOICES,
+        default="none",
+        help=(
+            "First-layer initialization for mlp or rwf-mlp: none, "
+            "stfli_cos, stfli_gauss, or stfli_tanh."
+        ),
     )
     parser.add_argument(
         "--steps-per-window",
@@ -337,6 +357,7 @@ def resolve_config(args: argparse.Namespace) -> dict:
             "grad_norm_update_every": args.grad_norm_update_every,
             "causal_tol": args.causal_tol,
             "causal_num_chunks": args.causal_num_chunks,
+            "initialization": args.initialization,
             "seed": args.seed,
             "out": str(args.out),
             "reference": str(args.reference),
@@ -360,6 +381,10 @@ def resolve_config(args: argparse.Namespace) -> dict:
 
 
 def validate_config(config: dict):
+    if config.get("initialization", "none") not in INITIALIZATION_CHOICES:
+        raise ValueError(
+            f"initialization must be one of: {', '.join(INITIALIZATION_CHOICES)}"
+        )
     positive_ints = (
         "steps_per_window",
         "num_time_windows",
@@ -416,6 +441,10 @@ def validate_config(config: dict):
     if config["causal"] and config["batch_size"] % config["causal_num_chunks"]:
         raise ValueError(
             "batch_size must be divisible by causal_num_chunks for JAX-PI equal-count chunking"
+        )
+    if config.get("initialization", "none") != "none" and config["modified_mlp"]:
+        raise ValueError(
+            "STFLI initialization supports only --net mlp and --net rwf-mlp"
         )
 
 
@@ -478,6 +507,25 @@ def _ks_residual(points, values):
     )
 
 
+def sfli_input_bounds(config: dict, reference: KSReference, window: TimeWindow):
+    """Return box bounds in the coordinates received by the inner MLP."""
+
+    if config["fourier_features"]:
+        return tuple((-1.0, 1.0) for _ in range(int(config["fourier_dim"])))
+
+    normalized_time_max = float(window.train_t_max / window.time_scale)
+    if config["periodic_encoding"]:
+        return (
+            (0.0, normalized_time_max),
+            (-1.0, 1.0),
+            (-1.0, 1.0),
+        )
+    return (
+        (float(reference.x[0]), float(reference.x[-1])),
+        (0.0, normalized_time_max),
+    )
+
+
 def build_model(config: dict, reference: KSReference, window: TimeWindow, initial_values):
     geometry = dde.geometry.Interval(float(reference.x[0]), float(reference.x[-1]))
     time_domain = dde.geometry.TimeDomain(0.0, window.train_t_max)
@@ -515,7 +563,14 @@ def build_model(config: dict, reference: KSReference, window: TimeWindow, initia
             **network_options,
         ).float()
     else:
-        network = PinnacleKSFNN(**network_options).float()
+        sfli = None
+        initialization = config.get("initialization", "none")
+        if initialization != "none":
+            sfli = SFLIConfig(
+                bounds=sfli_input_bounds(config, reference, window),
+                type=INITIALIZATION_TO_SFLI_TYPE[initialization],
+            )
+        network = PinnacleKSFNN(sfli=sfli, **network_options).float()
     trainable_parameters = sum(
         parameter.numel() for parameter in network.parameters() if parameter.requires_grad
     )
@@ -523,6 +578,7 @@ def build_model(config: dict, reference: KSReference, window: TimeWindow, initia
         f"Network: {config['net']} | hidden: {config['hidden_dim']}x{config['num_layers']} | "
         f"gating: {'on' if config['modified_mlp'] else 'off'} | "
         f"RWF: {'on' if config['use_rwf'] else 'off'} | "
+        f"initialization: {config.get('initialization', 'none')} | "
         f"trainable parameters: {trainable_parameters}"
     )
     if config["use_rwf"]:
@@ -646,6 +702,7 @@ def feature_tag(config: dict):
     return "_".join(
         (
             f"net-{config['net']}",
+            f"init-{config.get('initialization', 'none')}",
             f"ff-{'on' if config['fourier_features'] else 'off'}",
             f"gn-{'on' if config['grad_norm'] else 'off'}",
             f"causal-{'on' if config['causal'] else 'off'}",
