@@ -142,6 +142,7 @@ def build_model(
     hidden_layers,
     bc_loss_weight,
     net_type,
+    pde_sampler="Hammersley",
     fourier_features=None,
     fourier_sigma=None,
     fourier_include_raw_x=False,
@@ -157,7 +158,10 @@ def build_model(
         fourier_include_raw_x=fourier_include_raw_x,
         fourier_include_bias=fourier_include_bias,
     )
-    return pde.create_model(net), loss_weights_for(pde, bc_loss_weight)
+    return pde.create_model(
+        net,
+        train_distribution=pde_sampler,
+    ), loss_weights_for(pde, bc_loss_weight)
 
 
 def configure_optimizer(args):
@@ -368,7 +372,7 @@ def maybe_attach_integral_loss(model, args):
         model.integral_loss = None
         model.integral_loss_diagnostics = None
         return None
-    if args.sampling_method != "none":
+    if args.sampling_method in {"fam-w", "famaw-w"}:
         model.integral_loss = None
         model.integral_loss_diagnostics = None
         return None
@@ -399,8 +403,15 @@ def maybe_attach_integral_loss(model, args):
 
 
 def make_callbacks(args, equation_name):
+    resampler = None
+    if args.sampling_method == "pseudo":
+        resampler = dde.callbacks.PDEPointResampler(
+            period=1,
+            pde_points=True,
+            bc_points=False,
+        )
     if args.no_callbacks:
-        return None
+        return [resampler] if resampler is not None else None
 
     callbacks = [
         TesterCallback(log_every=args.log_every),
@@ -429,6 +440,8 @@ def make_callbacks(args, equation_name):
                 verbose=args.loss_verbose,
             )
         )
+    if resampler is not None:
+        callbacks.append(resampler)
     return callbacks
 
 
@@ -490,6 +503,7 @@ def run_one(equation_name, args):
         args.hidden_layers,
         args.bc_loss_weight,
         args.net,
+        pde_sampler="pseudo" if args.sampling_method == "pseudo" else "Hammersley",
         fourier_features=args.fourier_features,
         fourier_sigma=args.fourier_sigma,
         fourier_include_raw_x=args.fourier_include_raw_x,
@@ -500,7 +514,7 @@ def run_one(equation_name, args):
     if args.weight_decay > 0:
         model.net.regularizer = ("l2", args.weight_decay)
     configure_optimizer(args)
-    if args.sampling_method == "none":
+    if args.sampling_method in {"none", "pseudo"}:
         optimizer_name = "pcgrad" if args.optimizer == "pcg" else args.optimizer
         model.compile(optimizer_name, lr=args.lr, loss_weights=loss_weights)
     else:
@@ -515,7 +529,8 @@ def run_one(equation_name, args):
     freeze_tag = "-dynamic-freezing" if args.dynamic_freezing else ""
     save_path = os.path.join(
         args.out,
-        f"{timestamp}-{run_name}-pinn-{args.net}-{args.optimizer.lower()}-{args.sampling_method}{causal_tag}{freeze_tag}",
+        f"{timestamp}-{run_name}-pinn-{args.net}-{args.optimizer.lower()}-"
+        f"{args.sampling_method}{causal_tag}{freeze_tag}",
     )
     os.makedirs(save_path, exist_ok=True)
     save_run_configuration(save_path, args, equation_name)
@@ -534,7 +549,7 @@ def run_one(equation_name, args):
             controller_log_dir,
         )
         callbacks = ([] if callbacks is None else list(callbacks)) + [controller]
-    if args.sampling_method == "none":
+    if args.sampling_method in {"none", "pseudo"}:
         losshistory, train_state = model.train(
             iterations=args.iterations,
             display_every=args.log_every,
@@ -681,8 +696,12 @@ def parse_args():
     parser.add_argument("--integral-seed", type=int, default=None)
     parser.add_argument(
         "--sampling-method",
-        choices=["none", "fam-w", "famaw-w"],
+        choices=["none", "pseudo", "fam-w", "famaw-w"],
         default="none",
+        help=(
+            "'none' uses fixed Hammersley points; 'pseudo' resamples uniformly random "
+            "PDE points every iteration; FAM modes manage their own points."
+        ),
     )
     parser.add_argument("--sampling-refresh-every", type=int, default=1000)
     parser.add_argument("--fam-alpha", type=float, default=0.6)

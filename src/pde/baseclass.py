@@ -226,7 +226,7 @@ class BaseTimePDE(BasePDE):
         self.num_initial_points = initial * mul
         self.num_test_points = test * mul
 
-    def create_model(self, net):
+    def create_model(self, net, train_distribution="Hammersley"):
         self.check()
         self.net = net
         self.data = dde.data.TimePDE(
@@ -236,7 +236,8 @@ class BaseTimePDE(BasePDE):
             num_domain=self.num_domain_points,
             num_boundary=self.num_boundary_points,
             num_initial=self.num_initial_points,
-            num_test=self.num_test_points
+            num_test=self.num_test_points,
+            train_distribution=train_distribution,
         )
         self.model = dde.Model(self.data, net)
         self.model.pde = self
