@@ -48,7 +48,11 @@ def _hidden_linear_weight_ids(model):
 
     if hasattr(model, "linears"):
         layers = list(model.linears)
-        hidden_layers = layers[1:-1]
+        hidden_layers = (
+            layers[:-1]
+            if getattr(model, "sfli_type", None) == "gaussian"
+            else layers[1:-1]
+        )
     elif hasattr(model, "layers"):
         layers = list(model.layers)
         hidden_layers = layers[1:-1]

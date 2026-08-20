@@ -368,6 +368,35 @@ def apply_cosine_sfli(layer, sfli: SFLIConfig) -> CosineSFLIInitialization:
     return initialization
 
 
+def apply_dense_sfli(layer, sfli: SFLIConfig):
+    """Apply tanh or cosine SFLI directly to a standard dense first layer."""
+
+    if not isinstance(sfli, SFLIConfig):
+        raise TypeError("sfli must be an SFLIConfig instance")
+    if sfli.type not in {"tanh", "cosine"}:
+        raise ValueError("Dense SFLI supports only tanh and cosine modes")
+    required_attributes = ("in_features", "out_features", "weight", "bias")
+    if any(not hasattr(layer, attribute) for attribute in required_attributes):
+        raise TypeError("SFLI target must be a dense-compatible linear layer")
+    if not isinstance(layer.weight, torch.nn.Parameter) or layer.weight.ndim != 2:
+        raise TypeError("Dense SFLI weight must be a two-dimensional Parameter")
+    if layer.bias is None:
+        raise ValueError("Dense SFLI requires a first-layer bias")
+
+    generator = generate_tanh_sfli if sfli.type == "tanh" else generate_cosine_sfli
+    initialization = generator(
+        layer.out_features,
+        layer.in_features,
+        sfli,
+        device=layer.weight.device,
+        dtype=layer.weight.dtype,
+    )
+    with torch.no_grad():
+        layer.weight.copy_(initialization.weight)
+        layer.bias.copy_(initialization.bias)
+    return initialization
+
+
 class SFLIGaussianFirstLayer(torch.nn.Module):
     """Trainable radial Gaussian first-feature layer."""
 

@@ -12,6 +12,7 @@ from .sfli import (
     TanhSFLIConfig,
     TanhSFLIInitialization,
     apply_cosine_sfli,
+    apply_dense_sfli,
     apply_tanh_sfli,
     generate_cosine_sfli,
     generate_gaussian_sfli,

@@ -13,8 +13,10 @@ class FNN(NN):
 
     supports_feature_reuse = True
 
-    def __init__(self, layer_sizes, activation, kernel_initializer):
+    def __init__(self, layer_sizes, activation, kernel_initializer, sfli=None):
         super().__init__()
+        if sfli is not None and len(layer_sizes) < 3:
+            raise ValueError("SFLI requires at least one hidden layer")
         if isinstance(activation, list):
             if not (len(layer_sizes) - 1) == len(activation):
                 raise ValueError(
@@ -26,15 +28,105 @@ class FNN(NN):
         initializer = initializers.get(kernel_initializer)
         initializer_zero = initializers.get("zeros")
 
-        self.linears = torch.nn.ModuleList()
+        all_linears = []
         for i in range(1, len(layer_sizes)):
-            self.linears.append(
+            all_linears.append(
                 torch.nn.Linear(
                     layer_sizes[i - 1], layer_sizes[i], dtype=config.real(torch)
                 )
             )
-            initializer(self.linears[-1].weight)
-            initializer_zero(self.linears[-1].bias)
+            initializer(all_linears[-1].weight)
+            initializer_zero(all_linears[-1].bias)
+
+        self._logical_linear_count = len(all_linears)
+        self.sfli_type = "baseline" if sfli is None else getattr(sfli, "type", None)
+        self.sfli_variant_class = {
+            "baseline": "dense_mlp_baseline",
+            "tanh": "dense_first_layer_tanh_initialization",
+            "cosine": "dense_first_layer_with_cos_activation",
+            "gaussian": "radial_first_feature_layer",
+        }.get(self.sfli_type)
+        if self.sfli_variant_class is None:
+            raise TypeError("sfli must be an SFLIConfig instance or None")
+        configured_first_activation = (
+            activation[0] if isinstance(activation, list) else activation
+        )
+        self.first_activation = {
+            "baseline": configured_first_activation,
+            "tanh": "tanh",
+            "cosine": "cos",
+            "gaussian": "radial_gaussian",
+        }[self.sfli_type]
+        self.subsequent_activation = activation
+
+        if sfli is not None:
+            # Local import avoids coupling DeepXDE module import order to src.model.
+            from src.model.sfli import (
+                SFLIConfig,
+                SFLIGaussianFirstLayer,
+                apply_dense_sfli,
+            )
+
+            if not isinstance(sfli, SFLIConfig):
+                raise TypeError("sfli must be an SFLIConfig instance or None")
+            if self.sfli_type == "gaussian":
+                first_linear = all_linears[0]
+                self.first_feature_layer = SFLIGaussianFirstLayer(
+                    int(layer_sizes[0]),
+                    int(layer_sizes[1]),
+                    sfli,
+                    device=first_linear.weight.device,
+                    dtype=first_linear.weight.dtype,
+                )
+                self.linears = torch.nn.ModuleList(all_linears[1:])
+            else:
+                self.register_module("first_feature_layer", None)
+                self.linears = torch.nn.ModuleList(all_linears)
+                apply_dense_sfli(self.linears[0], sfli)
+        else:
+            self.register_module("first_feature_layer", None)
+            self.linears = torch.nn.ModuleList(all_linears)
+
+    def _activate_hidden(self, logical_layer, value):
+        if logical_layer == 0 and self.sfli_type == "tanh":
+            return torch.tanh(value)
+        if logical_layer == 0 and self.sfli_type == "cosine":
+            return torch.cos(value)
+        return (
+            self.activation[logical_layer](value)
+            if isinstance(self.activation, list)
+            else self.activation(value)
+        )
+
+    def first_layer_features(self, inputs):
+        """Return outputs of the baseline or SFLI first feature layer."""
+        if self._logical_linear_count < 2:
+            raise ValueError("First-layer features require at least one hidden layer")
+        x = inputs
+        if self._input_transform is not None:
+            x = self._input_transform(x)
+        if self.sfli_type == "gaussian":
+            return self.first_feature_layer(x)
+        return self._activate_hidden(0, self.linears[0](x))
+
+    def total_trainable_parameters(self):
+        return sum(
+            parameter.numel()
+            for parameter in self.parameters()
+            if parameter.requires_grad
+        )
+
+    def first_layer_trainable_parameters(self):
+        layer = (
+            self.first_feature_layer
+            if self.sfli_type == "gaussian"
+            else self.linears[0]
+        )
+        return sum(
+            parameter.numel()
+            for parameter in layer.parameters()
+            if parameter.requires_grad
+        )
 
     def forward(
         self,
@@ -53,17 +145,30 @@ class FNN(NN):
             x = self._input_transform(x)
         intervals = [x] if return_interval else None
 
-        for j, linear in enumerate(self.linears[:-1]):
-            if j < starting_id:
-                continue
-            x = (
-                self.activation[j](linear(x))
-                if isinstance(self.activation, list)
-                else self.activation(linear(x))
-            )
-            if return_interval:
-                intervals.append(x)
-        x = self.linears[-1](x) if starting_id <= len(self.linears) - 1 else x
+        if self.sfli_type == "gaussian":
+            if starting_id == 0:
+                x = self.first_feature_layer(x)
+                if return_interval:
+                    intervals.append(x)
+            for stored_index, linear in enumerate(self.linears[:-1]):
+                logical_layer = stored_index + 1
+                if logical_layer < starting_id:
+                    continue
+                x = self._activate_hidden(logical_layer, linear(x))
+                if return_interval:
+                    intervals.append(x)
+        else:
+            for logical_layer, linear in enumerate(self.linears[:-1]):
+                if logical_layer < starting_id:
+                    continue
+                x = self._activate_hidden(logical_layer, linear(x))
+                if return_interval:
+                    intervals.append(x)
+        x = (
+            self.linears[-1](x)
+            if starting_id <= self._logical_linear_count - 1
+            else x
+        )
         if self._output_transform is not None:
             x = self._output_transform(original_inputs, x)
         if return_interval:
@@ -71,10 +176,13 @@ class FNN(NN):
         return x
 
     def parameter_to_layer_index(self, param_name):
+        if self.sfli_type == "gaussian" and param_name == "first_feature_layer.centers":
+            return 0
         match = re.search(r"linears\.(\d+)\.(weight|weight_orig|bias)$", param_name)
         if match is None:
             return None
-        return int(match.group(1))
+        index = int(match.group(1))
+        return index + 1 if self.sfli_type == "gaussian" else index
 
 
 class PFNN(NN):
