@@ -504,6 +504,12 @@ class DynamicFreezingController(dde.callbacks.Callback):
             t_max=t_max,
         )
 
+    @staticmethod
+    def _target_chunk_index(protected_front_chunk, num_chunks):
+        if protected_front_chunk < 0 or num_chunks <= 0:
+            return -1
+        return min(protected_front_chunk + 1, num_chunks - 1)
+
     def _evaluate_losses(
         self,
         good_mask,
@@ -511,6 +517,7 @@ class DynamicFreezingController(dde.callbacks.Callback):
         causal_weights=None,
         return_causal_details=False,
         protected_front_chunk=-1,
+        target_chunk_index=-1,
         causal_snapshot=None,
     ):
         ic_loss = self._ic_loss()
@@ -524,12 +531,18 @@ class DynamicFreezingController(dde.callbacks.Callback):
                 protected_pde = torch.zeros(
                     (), dtype=self.dtype, device=self.device
                 )
+            target_chunk = (
+                causal_details["chunk_losses"][target_chunk_index]
+                if target_chunk_index >= 0
+                else torch.full((), math.nan, dtype=self.dtype, device=self.device)
+            )
             result = {
                 "ic": float(ic_loss.cpu()),
                 "good_pde": float(protected_pde.detach().cpu()),
                 "good": float((ic_loss + protected_pde).detach().cpu()),
                 "bad": float(causal_snapshot["causal_loss"].cpu()),
                 "pde": float(causal_snapshot["pde_loss"].cpu()),
+                "target_chunk": float(target_chunk.detach().cpu()),
             }
             if return_causal_details:
                 result["causal_details"] = causal_details
@@ -563,6 +576,19 @@ class DynamicFreezingController(dde.callbacks.Callback):
                 protected_pde = chunk_losses[: protected_front_chunk + 1].mean()
             else:
                 protected_pde = torch.zeros((), dtype=self.dtype, device=self.device)
+                chunk_losses = None
+            if target_chunk_index >= 0:
+                if chunk_losses is None:
+                    chunk_losses = (
+                        causal_details["chunk_losses"]
+                        if causal_details is not None
+                        else self._causal_chunk_losses(residual)
+                    )
+                target_chunk = chunk_losses[target_chunk_index]
+            else:
+                target_chunk = torch.full(
+                    (), math.nan, dtype=self.dtype, device=self.device
+                )
             protected_loss = ic_loss + protected_pde
             result = {
                 "ic": float(ic_loss.cpu()),
@@ -570,6 +596,7 @@ class DynamicFreezingController(dde.callbacks.Callback):
                 "good": float(protected_loss.detach().cpu()),
                 "bad": float(causal_loss.detach().cpu()),
                 "pde": float(residual_sq.mean().cpu()) if residual_sq.numel() else 0.0,
+                "target_chunk": float(target_chunk.detach().cpu()),
             }
             if causal_details is not None:
                 result["causal_details"] = causal_details
@@ -722,11 +749,20 @@ class DynamicFreezingController(dde.callbacks.Callback):
                     "causal freezing event requires the fixed-grid snapshot from "
                     "the check that triggered this event"
                 )
+        target_chunk_index = (
+            self._target_chunk_index(
+                protected_front,
+                len(causal_snapshot["details"]["chunk_losses"]),
+            )
+            if self.causal_enabled
+            else -1
+        )
         base = self._evaluate_losses(
             good_mask,
             bad_mask,
             return_causal_details=self.causal_enabled,
             protected_front_chunk=protected_front,
+            target_chunk_index=target_chunk_index,
             causal_snapshot=causal_snapshot,
         )
         causal_weights = (
@@ -748,6 +784,7 @@ class DynamicFreezingController(dde.callbacks.Callback):
                 bad_mask,
                 causal_weights=causal_weights,
                 protected_front_chunk=protected_front,
+                target_chunk_index=target_chunk_index,
             )
             with torch.no_grad():
                 group.parameter.reshape(-1)[group.flat_start : group.flat_end].copy_(before)
@@ -770,9 +807,7 @@ class DynamicFreezingController(dde.callbacks.Callback):
                 violates = protection["violates_ic_tolerance"] or protection[
                     "violates_protected_pde_tolerance"
                 ]
-                worsens = protection["worsens_ic"] or protection[
-                    "worsens_protected_pde"
-                ]
+                worsens = protection["worsens_protected"]
                 protected_risk = protection["protected_risk"]
                 incremental_worsening = protection["incremental_worsening"]
                 risky_group = protection["risky"]
@@ -820,6 +855,21 @@ class DynamicFreezingController(dde.callbacks.Callback):
                 "ic_tolerance": self.config.good_tolerance,
                 "loss_protected_pde_base": base["good_pde"],
                 "loss_protected_pde_after": changed["good_pde"],
+                "protected_pde_base": base["good_pde"],
+                "protected_pde_after": changed["good_pde"],
+                "protected_pde_delta": protection.get(
+                    "protected_pde_delta", math.nan
+                ),
+                "protected_pde_relative_delta": protection.get(
+                    "protected_pde_relative_delta", math.nan
+                ),
+                "target_chunk_base": base.get("target_chunk", math.nan),
+                "target_chunk_after": changed.get("target_chunk", math.nan),
+                "target_chunk_delta": protection.get(
+                    "target_chunk_delta", math.nan
+                ),
+                "improves_target": protection.get("improves_target", False),
+                "freeze_candidate": protection.get("freeze_candidate", False),
                 "protected_pde_tolerance": self.config.protected_pde_tolerance,
                 "protected_pde_unprotect_tolerance": (
                     self.config.protected_pde_unprotect_tolerance
@@ -869,6 +919,7 @@ class DynamicFreezingController(dde.callbacks.Callback):
         for row in rows:
             row["selected_for_freeze"] = row["group_id"] in selected
             row["is_frozen_after"] = row["selected_for_freeze"]
+            row["frozen"] = row["selected_for_freeze"]
             row["frozen_before"] = row["is_frozen_before"]
             row["frozen_after"] = row["is_frozen_after"]
             row["ic_loss_after"] = row["loss_ic_after"]
@@ -904,6 +955,8 @@ class DynamicFreezingController(dde.callbacks.Callback):
                     torch.max(torch.abs(front_losses - event_losses)).cpu()
                 )
         max_frozen = int(math.floor(len(rows) * self.config.max_freeze_fraction))
+        num_worsens_protected = sum(bool(row["worsens_protected"]) for row in rows)
+        num_improves_target = sum(bool(row["improves_target"]) for row in rows)
         self._append_csv("dynamic_freezing_events.csv", [{
             "event_id": event_id,
             "step": step,
@@ -914,11 +967,16 @@ class DynamicFreezingController(dde.callbacks.Callback):
             "weight_exit_front": self.weight_exit_front if self.causal_enabled else -1,
             "pde_gated_exit_front": self.pde_gated_exit_front if self.causal_enabled else -1,
             "committed_front": protected_front,
+            "target_chunk_index": target_chunk_index,
             "front_changed": event_reason == "front_changed",
             "num_risky_groups": len(risky),
+            "num_worsens_protected": num_worsens_protected,
+            "num_improves_target": num_improves_target,
+            "num_freeze_candidates": len(risky),
             "num_frozen_groups": len(selected),
             "num_newly_frozen": len(selected - previous_selected),
             "num_unfrozen": len(previous_selected - selected),
+            "num_unfrozen_groups": len(previous_selected - selected),
             "ic_loss_base": base["ic"],
             "protected_pde_loss_base": base["good_pde"],
             "causal_loss_base": base["bad"] if self.causal_enabled else math.nan,
@@ -967,20 +1025,19 @@ class DynamicFreezingController(dde.callbacks.Callback):
         return mask
 
     def _select_causal_groups(self, rows):
-        risky = [row for row in rows if row["risky"]]
-        risky.sort(
+        candidates = [row for row in rows if row["freeze_candidate"]]
+        candidates.sort(
             key=lambda row: (
-                -row["protected_risk"],
-                -row["incremental_worsening"],
+                -row["protected_pde_relative_delta"],
                 row["group_id"],
             )
         )
         max_frozen = int(math.floor(len(rows) * self.config.max_freeze_fraction))
-        selected = {row["group_id"] for row in risky[:max_frozen]}
-        return selected, risky
+        selected = {row["group_id"] for row in candidates[:max_frozen]}
+        return selected, candidates
 
     def _causal_protection_metrics(self, base, changed, protected_front_chunk):
-        """Evaluate IC and causal-prefix protection as independent constraints."""
+        """Select updates that hurt the learned prefix without helping its target."""
         eps = self.config.relative_eps
         ic_tolerance = self.config.good_tolerance
         pde_tolerance = self.config.protected_pde_tolerance
@@ -989,14 +1046,27 @@ class DynamicFreezingController(dde.callbacks.Callback):
         ic_worsens = changed["ic"] > base["ic"] + eps
         pde_is_protected = protected_front_chunk >= 0
         pde_violates = pde_is_protected and changed["good_pde"] > pde_tolerance
-        pde_worsens = pde_is_protected and changed["good_pde"] > base["good_pde"] + eps
+        protected_delta = (
+            changed["good_pde"] - base["good_pde"]
+            if pde_is_protected
+            else math.nan
+        )
+        target_delta = (
+            changed["target_chunk"] - base["target_chunk"]
+            if pde_is_protected
+            else math.nan
+        )
+        protected_relative_delta = (
+            protected_delta / (base["good_pde"] + eps)
+            if pde_is_protected
+            else math.nan
+        )
+        pde_worsens = pde_is_protected and protected_delta > eps
+        improves_target = pde_is_protected and target_delta < -eps
+        freeze_candidate = pde_worsens and target_delta >= -eps
 
         ic_risk = max(0.0, (changed["ic"] - ic_tolerance) / ic_tolerance)
-        pde_risk = (
-            max(0.0, (changed["good_pde"] - pde_tolerance) / pde_tolerance)
-            if pde_is_protected
-            else 0.0
-        )
+        pde_risk = max(0.0, protected_relative_delta) if pde_is_protected else 0.0
         ic_increment = max(
             0.0,
             (changed["ic"] - base["ic"])
@@ -1005,23 +1075,11 @@ class DynamicFreezingController(dde.callbacks.Callback):
         pde_increment = (
             max(
                 0.0,
-                (changed["good_pde"] - base["good_pde"])
-                / (max(base["good_pde"], pde_tolerance) + eps),
+                protected_relative_delta,
             )
             if pde_is_protected
             else 0.0
         )
-        ic_is_risky = ic_violates and ic_worsens
-        pde_is_risky = pde_violates and pde_worsens
-        risky = ic_is_risky or pde_is_risky
-        active_risks = []
-        active_increments = []
-        if ic_is_risky:
-            active_risks.append(ic_risk)
-            active_increments.append(ic_increment)
-        if pde_is_risky:
-            active_risks.append(pde_risk)
-            active_increments.append(pde_increment)
         return {
             "violates_ic_tolerance": ic_violates,
             "worsens_ic": ic_worsens,
@@ -1029,11 +1087,17 @@ class DynamicFreezingController(dde.callbacks.Callback):
             "ic_incremental_worsening": ic_increment,
             "violates_protected_pde_tolerance": pde_violates,
             "worsens_protected_pde": pde_worsens,
+            "worsens_protected": pde_worsens,
             "pde_protected_risk": pde_risk,
             "pde_incremental_worsening": pde_increment,
-            "protected_risk": max(active_risks, default=0.0),
-            "incremental_worsening": max(active_increments, default=0.0),
-            "risky": risky,
+            "protected_pde_delta": protected_delta,
+            "protected_pde_relative_delta": protected_relative_delta,
+            "target_chunk_delta": target_delta,
+            "improves_target": improves_target,
+            "freeze_candidate": freeze_candidate,
+            "protected_risk": pde_risk,
+            "incremental_worsening": pde_increment,
+            "risky": freeze_candidate,
         }
 
     def _selected_constraint_points(self, good_mask):
@@ -1621,7 +1685,12 @@ class DynamicFreezingController(dde.callbacks.Callback):
             ids = [row["group_id"] for row in rows]
             fig, axes = plt.subplots(4, 1, figsize=(12, 12), sharex=True)
             fields = (
-                ("protected_risk", "incremental_worsening", "d_causal_fixed", "jg_delta_norm")
+                (
+                    "protected_pde_relative_delta",
+                    "protected_pde_delta",
+                    "target_chunk_delta",
+                    "jg_delta_norm",
+                )
                 if self.causal_enabled
                 else ("S", "d_good_rel", "d_bad_rel", "null_ratio")
             )
