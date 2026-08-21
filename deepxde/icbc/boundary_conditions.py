@@ -6,6 +6,7 @@ __all__ = [
     "NeumannBC",
     "OperatorBC",
     "PeriodicBC",
+    "HigherOrderPeriodicBC",
     "PointSetBC",
     "PointSetOperatorBC",
     "RobinBC",
@@ -132,6 +133,75 @@ class PeriodicBC(BC):
             yleft = dydx[beg:mid]
             yright = dydx[mid:end]
         return yleft - yright
+
+
+class HigherOrderPeriodicBC(BC):
+    """Periodic boundary conditions for several derivative orders.
+
+    The mismatches for all requested derivative orders are represented as one
+    logical boundary-condition error. With DeepXDE's default mean-squared loss,
+    its value is the sum of the individual derivative-order MSEs.
+
+    Args:
+        geom: A ``deepxde.geometry.Geometry`` instance.
+        component_x: Input coordinate along which periodicity is imposed.
+        on_boundary: Boundary predicate.
+        derivative_orders: Non-empty iterable of distinct non-negative orders.
+        component: Output component satisfying the boundary condition.
+    """
+
+    def __init__(
+        self,
+        geom,
+        component_x,
+        on_boundary,
+        derivative_orders=(0,),
+        component=0,
+    ):
+        super().__init__(geom, on_boundary, component)
+        if not isinstance(component_x, numbers.Integral) or isinstance(component_x, bool):
+            raise ValueError("component_x must be an integer coordinate index.")
+        self.component_x = int(component_x)
+        self.derivative_orders = tuple(derivative_orders)
+        if not self.derivative_orders:
+            raise ValueError("derivative_orders must contain at least one order.")
+        if any(
+            not isinstance(order, numbers.Integral) or isinstance(order, bool) or order < 0
+            for order in self.derivative_orders
+        ):
+            raise ValueError("derivative_orders must contain non-negative integers.")
+        if len(set(self.derivative_orders)) != len(self.derivative_orders):
+            raise ValueError("derivative_orders must not contain duplicates.")
+        if not 0 <= self.component_x < self.geom.dim:
+            raise ValueError(
+                f"component_x={self.component_x} is invalid for geometry dimension {self.geom.dim}."
+            )
+
+    def collocation_points(self, X):
+        X1 = self.filter(X)
+        X2 = self.geom.periodic_point(X1, self.component_x)
+        return np.vstack((X1, X2))
+
+    def error(self, X, inputs, outputs, beg, end, aux_var=None):
+        if (end - beg) % 2:
+            raise RuntimeError(
+                "HigherOrderPeriodicBC expects an even number of paired collocation points."
+            )
+        mid = beg + (end - beg) // 2
+        requested_orders = set(self.derivative_orders)
+        max_order = max(requested_orders)
+        current = outputs[:, self.component : self.component + 1]
+        mismatches = []
+        for order in range(max_order + 1):
+            if order in requested_orders:
+                mismatches.append(current[beg:mid] - current[mid:end])
+            if order < max_order:
+                current = grad.jacobian(current, inputs, i=0, j=self.component_x)
+
+        # Concatenation would make MSE average over derivative orders. Scaling
+        # by sqrt(K) instead preserves sum_k MSE(error_k) as one logical loss.
+        scale = len(mismatches) ** 0.5
+        return bkd.concat([scale * mismatch for mismatch in mismatches], axis=0)
 
 
 class OperatorBC(BC):

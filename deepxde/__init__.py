@@ -34,6 +34,7 @@ from .icbc import (
     NeumannBC,
     OperatorBC,
     PeriodicBC,
+    HigherOrderPeriodicBC,
     RobinBC,
     PointSetBC,
     PointSetOperatorBC,
