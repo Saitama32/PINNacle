@@ -10,7 +10,7 @@ from .repnn import (
     RepNNRWFFirstLayer,
     build_network,
 )
-from .rwf import RWFLinear, RWFMLP
+from .rwf import RWFLinear, RWFMLP, materialize_effective_mlp
 from .sfli import (
     CosineSFLIInitialization,
     GaussianSFLIInitialization,

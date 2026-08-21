@@ -15,7 +15,8 @@ import torch
 import deepxde as dde
 from RL.rl_environment import EnvRLOptimizer
 from RL.rl_algorithms import DQNAgent
-from src.utils.callbacks import ModelSaverCallback  
+from src.model import RWFMLP, materialize_effective_mlp
+from src.utils.callbacks import ModelSaverCallback, SolutionImageCallback
 from deepxde.optimizers.config import set_LBFGS_options, set_MUON_options, set_PSO_options, LBFGS_options, PSO_options
 from deepxde.optimizers.pytorch.optimizers import get as get_pytorch_optimizer
 from deepxde.optimizers.pytorch.pcgrad import PCGrad
@@ -31,10 +32,6 @@ torch.set_default_dtype(torch.float32)
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
-output_dir = os.path.join('.', 'transitions')
-
-os.makedirs(output_dir, exist_ok=True)
-
 # --- утилита: реинициализация torch модулей (для "новой траектории") ---
 def reinit_torch_weights(module):
     import torch
@@ -43,6 +40,20 @@ def reinit_torch_weights(module):
         torch.nn.init.xavier_uniform_(module.weight)
         if module.bias is not None:
             torch.nn.init.zeros_(module.bias)
+
+
+def reinit_network(network):
+    """Start a fresh trajectory while preserving structured RWF initialization."""
+    if isinstance(network, RWFMLP):
+        network.reset_parameters()
+    elif hasattr(network, "apply"):
+        network.apply(reinit_torch_weights)
+
+
+def _landscape_snapshots(solver_models):
+    if solver_models and isinstance(solver_models[0], RWFMLP):
+        return [materialize_effective_mlp(snapshot) for snapshot in solver_models]
+    return solver_models
 
 def get_state_shape(loss_surface_params):
     min_x, max_x, xnum = loss_surface_params["x_range"]
@@ -181,6 +192,10 @@ def run_deepxde_rl_training(
     base_callbacks = train_args.get("callbacks", [])
     equation_params = train_args.get("equation_params", [])
     display_every = int(train_args.get("display_every", 100))
+    image_log_every = int(train_args.get("image_log_every", display_every))
+    save_solution_images = bool(train_args.get("save_solution_images", False))
+    transitions_dir = os.path.join(save_path, "transitions")
+    os.makedirs(transitions_dir, exist_ok=True)
 
     # создаём env/agent (как раньше внутри model.py, только теперь снаружи)
     env = EnvRLOptimizer(optimizers=optimizers_dict,
@@ -237,8 +252,7 @@ def run_deepxde_rl_training(
 
     for traj in range(train_args["n_trajectories"]):
         # реинициализация сети на новую траекторию
-        if hasattr(model.net, "apply"):
-            model.net.apply(reinit_torch_weights)
+        reinit_network(model.net)
 
         # сброс локальных переменных траектории
         state = zero_state()
@@ -286,7 +300,21 @@ def run_deepxde_rl_training(
             model.compile(torch_opt, loss_weights=loss_weights)
             model.optimizer = torch_opt
             saver = ModelSaverCallback(total_iterations=chunk_iters, n_save_models=train_args['n_save_models'])
-            callbacks = list(base_callbacks) + [saver]
+            optimizer_slug = str(action["type"]).strip().lower().replace(" ", "_")
+            step_save_path = save_path
+            callbacks = list(base_callbacks)
+            if save_solution_images:
+                step_save_path = os.path.join(
+                    save_path,
+                    f"trajectory_{traj + 1:04d}",
+                    f"step_{t + 1:02d}_{optimizer_slug}",
+                )
+                solution_callback = SolutionImageCallback(
+                    step_save_path,
+                    log_every=image_log_every,
+                )
+                callbacks.insert(0, solution_callback)
+            callbacks.append(saver)
 
             print('\n===========================================================================\n' +
                     f'\nRL agent training: step {t + 1}.'
@@ -298,12 +326,14 @@ def run_deepxde_rl_training(
                 iterations=chunk_iters,
                 display_every=display_every,
                 callbacks=callbacks,
-                model_save_path=save_path,
+                model_save_path=step_save_path,
                 save_model=False,
             )
 
-            solver_models = saver.saved_models
-            tester_callback = callbacks[0]
+            solver_models = _landscape_snapshots(saver.saved_models)
+            tester_callback = next(
+                callback for callback in callbacks if hasattr(callback, "rmse")
+            )
             rmse = tester_callback.rmse
             b_rmse = tester_callback.brmse
             train_loss = _extract_weighted_train_loss(model)
@@ -387,7 +417,7 @@ def run_deepxde_rl_training(
                 break
             elif done == 0:
                 if t == 10:
-                    rl_penalty = -1 
+                    rl_penalty = -1
             elif done == -1:
                 rl_penalty = 0
                 break
@@ -425,7 +455,7 @@ def run_deepxde_rl_training(
                 step_done = tr["agent_step"]
 
                 try:
-                    file_path = os.path.join(output_dir, f'transitions_{step_done}.pt')
+                    file_path = os.path.join(transitions_dir, f'transitions_{step_done}.pt')
 
                     entry = {
                         'state': tr["state"],

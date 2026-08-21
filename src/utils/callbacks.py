@@ -69,6 +69,80 @@ class PlotCallback(Callback):
         self.plot(self.base_save_path)
 
 
+class SolutionImageCallback(Callback):
+    """Save prediction/error images for scalar 2D problems with reference data."""
+
+    def __init__(self, output_dir, log_every=100):
+        super().__init__()
+        self.output_dir = os.fspath(output_dir)
+        self.log_every = int(log_every)
+        if self.log_every <= 0:
+            raise ValueError("log_every must be positive")
+        self.local_epoch = 0
+        self.rmse = np.nan
+        self.brmse = np.nan
+
+    def on_train_begin(self):
+        os.makedirs(self.output_dir, exist_ok=True)
+        ref_data = getattr(self.model.pde, "ref_data", None)
+        if ref_data is None:
+            raise ValueError("SolutionImageCallback requires pde.ref_data")
+        if self.model.pde.input_dim != 2 or self.model.pde.output_dim != 1:
+            raise ValueError(
+                "SolutionImageCallback supports only two-dimensional inputs "
+                "with a scalar output"
+            )
+        ref_data = np.asarray(ref_data)
+        self.test_x = ref_data[:, : self.model.pde.input_dim]
+        self.test_y = ref_data[:, self.model.pde.input_dim :]
+
+        bbox = np.asarray(self.model.pde.bbox, dtype=float)
+        spatial_min, spatial_max = bbox[0], bbox[1]
+        self.boundary_mask = np.isclose(self.test_x[:, 0], spatial_min) | np.isclose(
+            self.test_x[:, 0], spatial_max
+        )
+
+    def _save_images(self):
+        prediction = np.asarray(self.model.predict(self.test_x))
+        error = prediction - self.test_y
+        self.rmse = float(np.sqrt(np.mean(error**2)))
+        if np.any(self.boundary_mask):
+            self.brmse = float(np.sqrt(np.mean(error[self.boundary_mask] ** 2)))
+
+        prefix = f"epoch_{self.local_epoch:06d}"
+        x = self.test_x[:, 0]
+        t = self.test_x[:, 1]
+        plot.plot_heatmap(
+            x,
+            t,
+            prediction[:, 0],
+            os.path.join(self.output_dir, f"{prefix}_prediction.png"),
+            title=f"Prediction at local epoch {self.local_epoch}",
+            xlabel="x",
+            ylabel="t",
+            pde=self.model.pde,
+        )
+        plot.plot_heatmap(
+            x,
+            t,
+            error[:, 0],
+            os.path.join(self.output_dir, f"{prefix}_error.png"),
+            title=f"Error at local epoch {self.local_epoch}",
+            xlabel="x",
+            ylabel="t",
+            pde=self.model.pde,
+        )
+
+    def on_epoch_end(self):
+        self.local_epoch += 1
+        if self.local_epoch % self.log_every == 0:
+            self._save_images()
+
+    def on_train_end(self):
+        if self.local_epoch > 0 and self.local_epoch % self.log_every != 0:
+            self._save_images()
+
+
 class LossCallback(Callback):
 
     def __init__(self, verbose=False):

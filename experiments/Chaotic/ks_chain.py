@@ -22,8 +22,8 @@ import torch
 import deepxde as dde
 
 from src.pde.chaotic import KuramotoSivashinskyEquation
+from src.model import RWFMLP, SFLIConfig, materialize_effective_mlp
 from src.utils.args import parse_hidden_layers
-from src.utils.callbacks import TesterCallback, PlotCallback, LossCallback
 from rl_trainer import train_process_rl
 
 experiment.log_parameters(
@@ -35,7 +35,16 @@ experiment.log_parameters(
 )
 
 
-def build_get_model_ks(hidden_layers: str):
+def build_get_model_ks(
+    hidden_layers: str,
+    rwf_mu: float,
+    rwf_sigma: float,
+    sfli_gamma: float | None,
+    sfli_c: float,
+    sfli_seed: int,
+    *,
+    effective_dense: bool = False,
+):
     def get_model():
         pde = KuramotoSivashinskyEquation()
 
@@ -44,7 +53,21 @@ def build_get_model_ks(hidden_layers: str):
             *parse_hidden_layers(argparse.Namespace(hidden_layers=hidden_layers)),
             pde.output_dim,
         ]
-        net = dde.nn.FNN(layers, "tanh", "Glorot normal").float()
+        sfli = SFLIConfig(
+            bounds=((pde.bbox[0], pde.bbox[1]), (pde.bbox[2], pde.bbox[3])),
+            gamma=sfli_gamma,
+            C=sfli_c,
+            seed=sfli_seed,
+            type="tanh",
+        )
+        net = RWFMLP(
+            layers,
+            mu=rwf_mu,
+            sigma=rwf_sigma,
+            sfli=sfli,
+        ).float()
+        if effective_dense:
+            net = materialize_effective_mlp(net)
 
         loss_weights = np.ones(pde.num_loss, dtype=float)
         for i, c in enumerate(pde.loss_config):
@@ -68,60 +91,65 @@ def main():
     parser.add_argument("--device", type=str, default="0")
     parser.add_argument("--seed", type=int, default=1234)
 
-    parser.add_argument("--hidden-layers", type=str, default="50*5")
+    parser.add_argument("--hidden-layers", type=str, default="100*5")
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--log-every", type=int, default=100)
     parser.add_argument("--plot-every", type=int, default=2000)
 
     parser.add_argument("--n-trajectories", type=int, default=100)
-    parser.add_argument("--n-steps-max", type=int, default=1000)
     parser.add_argument("--state-h", type=int, default=26)
     parser.add_argument("--state-w", type=int, default=26)
     parser.add_argument("--n-save-models", type=int, default=10)
 
     parser.add_argument("--out", type=str, default="runs_single")
+    parser.add_argument("--rwf-mu", type=float, default=1.0)
+    parser.add_argument("--rwf-sigma", type=float, default=0.1)
+    parser.add_argument("--sfli-gamma", type=float, default=None)
+    parser.add_argument("--sfli-c", type=float, default=1.0)
+    parser.add_argument("--sfli-seed", type=int, default=0)
 
     args = parser.parse_args()
 
     date_str = time.strftime("%m.%d-%H.%M.%S", time.localtime())
-    save_path = os.path.join(args.out, f"{date_str}-{args.name}")
+    visible_device = os.environ.get("CUDA_VISIBLE_DEVICES", args.device).replace(",", "-")
+    process_tag = f"gpu_{visible_device}-pid_{os.getpid()}"
+    save_path = os.path.join(args.out, f"{date_str}-{args.name}-{process_tag}")
     os.makedirs(save_path, exist_ok=True)
 
-    get_model = build_get_model_ks(args.hidden_layers)
-    get_model_rec = build_get_model_ks(args.hidden_layers)
+    model_kwargs = dict(
+        hidden_layers=args.hidden_layers,
+        rwf_mu=args.rwf_mu,
+        rwf_sigma=args.rwf_sigma,
+        sfli_gamma=args.sfli_gamma,
+        sfli_c=args.sfli_c,
+        sfli_seed=args.sfli_seed,
+    )
+    get_model = build_get_model_ks(**model_kwargs)
+    get_model_rec = build_get_model_ks(**model_kwargs, effective_dense=True)
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
     train_args = {
         "iterations": 1,
         "display_every": args.log_every,
-        "callbacks": [
-            TesterCallback(log_every=args.log_every),
-            PlotCallback(log_every=args.plot_every, fast=True),
-            LossCallback(verbose=True),
-        ],
-        "n_trajectories": 1000,
-        "n_save_models": 10,
+        "callbacks": [],
+        "n_trajectories": args.n_trajectories,
+        "n_save_models": args.n_save_models,
+        "save_solution_images": True,
+        "image_log_every": args.log_every,
         "operator_coeff": 1,
         "bnd_coeff": 1,
     }
     optimizers = {
-        "PSO": {
-            "lr": [0.0, 1e-3, 1e-4],
-            "epochs": [100, 200, 300],
-        },
-        "SOAP": {
-            "lr": [1e-3, 3e-4, 3e-5],
-            "epochs": [100, 1000, 2500],
-        },
-        "PCGrad": {
-            "lr": [1e-2, 1e-3, 1e-4],
-            "epochs": [100, 1000, 2000],
-        },
-        "SSBroyden": {
-            "lr": [1.0, 5e-1, 1e-1],
-            "epochs": [100, 500, 1000],
-        },
+        "Adam": {"lr": [1e-2, 1e-3, 1e-4], "epochs": [100, 1000, 2500]},
+        "LBFGS": {"lr": [1, 5e-1, 1e-1], "epochs": [100, 500, 1000]},
+        "PSO": {"lr": [0.0, 1e-3, 1e-4], "epochs": [100, 200, 300]},
+        "SOAP": {"lr": [1e-2, 1e-3, 3e-4], "epochs": [100, 1000, 2500],},
+        "Muon": {"lr": [2e-2, 1e-2, 5e-3], "epochs": [100, 1000, 2500]},
+        # "PCGrad": {
+        #     "lr": [1e-2, 1e-3, 1e-4],
+        #     "epochs": [100, 1000, 2000],
+        # },
     }
 
     AE_model_params = {
@@ -197,8 +225,8 @@ def main():
     }
 
     rl_agent_params = {
-        "n_save_models": 10,
-        "n_trajectories": 1000,
+        "n_save_models": args.n_save_models,
+        "n_trajectories": args.n_trajectories,
         "tolerance": 0.0,
         "prev_tol": 0,
         "stuck_threshold": 10,
