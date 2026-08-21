@@ -704,7 +704,13 @@ class KSDiagnosticsCallback(Callback):
 
 class TesterCallback(Callback):
 
-    def __init__(self, log_every=100, verbose=True, fRMSE_param={'enable':True, 'iLow':5, 'iHigh':13, 'calc_every':2000}):
+    def __init__(
+        self,
+        log_every=100,
+        verbose=True,
+        fRMSE_param={'enable':True, 'iLow':5, 'iHigh':13, 'calc_every':2000},
+        additional_metrics_fn=None,
+    ):
         super(TesterCallback, self).__init__()
 
         self.log_every = log_every
@@ -723,6 +729,8 @@ class TesterCallback(Callback):
         self.l2res = []   # L2 Relative Error
         self.crmses = []  # CSV_Loss
         self.frmses = []  # Mean Square Error in Fourier Space
+        self.additional_metrics_fn = additional_metrics_fn
+        self.additional_metrics = []
 
         self.ic_mses = []
         self.bc_mses = []
@@ -930,6 +938,15 @@ class TesterCallback(Callback):
         self.crmses.append(crmse)
         self.frmses.append(frmse)
 
+        if self.additional_metrics_fn is not None:
+            extra_metrics = {
+                str(name): float(value)
+                for name, value in self.additional_metrics_fn(y, self.test_y).items()
+            }
+            self.additional_metrics.append(extra_metrics)
+        else:
+            extra_metrics = None
+
 
         if self.verbose:
             if np.isnan(frmse[0]):
@@ -938,6 +955,11 @@ class TesterCallback(Callback):
             else:
                 print('Validation: epoch {} MSE {:.10e} MAE {:.10e} MXE {:.10e} BMSE {:.10e} ICMSE {:.10e} L1RE {:.10e} L2RE {:.10e} CRMSE {:.10e} FRMSE ({:.10e}, {:.10e}, {:.10e})'.\
                        format(self.valid_epoch, mse, mae, mxe, bc_mse, ic_mse, l1re, l2re, crmse, frmse[0], frmse[1], frmse[2]))
+            if extra_metrics:
+                summary = " ".join(
+                    f"{name} {value:.10e}" for name, value in extra_metrics.items()
+                )
+                print(f"Long-horizon metrics: epoch {self.valid_epoch} {summary}")
 
     def on_train_end(self):
         if self.disable:
@@ -962,6 +984,20 @@ class TesterCallback(Callback):
                       self.frmses[:, 0], self.frmses[:, 1], self.frmses[:, 2], self.mses_interp, self.bc_mse_interp]).T,
             header="epochs, maes, mses, mxes, bnd_mse, l1res, l2res, crmses, frmses(low, mid, high), mses_interp, bc_mse_interp"
         )
+        if self.additional_metrics:
+            metric_names = list(self.additional_metrics[0])
+            rows = np.asarray(
+                [
+                    [epoch] + [values.get(name, np.nan) for name in metric_names]
+                    for epoch, values in zip(self.indexes, self.additional_metrics)
+                ],
+                dtype=float,
+            )
+            np.savetxt(
+                self.save_path + 'long_horizon_metrics.txt',
+                rows,
+                header="epochs, " + ", ".join(metric_names),
+            )
 
         plot.plot_lines([self.indexes, self.maes], xlabel="epochs", labels=['maes'], path=self.save_path + "maes.png", title="mean average error")
         plot.plot_lines([self.indexes, self.mses], xlabel="epochs", labels=['mses'], path=self.save_path + "mses.png", title="mean square error")
@@ -1011,6 +1047,7 @@ class TesterCallback(Callback):
         self.l2res = []  
         self.crmses = [] 
         self.frmses = [] 
+        self.additional_metrics = []
 
         self.ic_mses = []
         self.bc_mses = []
