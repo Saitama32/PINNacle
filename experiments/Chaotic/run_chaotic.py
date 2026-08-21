@@ -22,10 +22,15 @@ from src.losses.global_integral import (
     GlobalIntegralLoss,
     attach_integral_loss_train_step,
 )
+from src.losses.front_integral import (
+    FrontIntegralLoss,
+    attach_front_integral_loss_train_step,
+)
 from src.pde.chaotic import GrayScottEquation, KuramotoSivashinskyEquation
 from src.utils.args import parse_hidden_layers
 from src.utils.callbacks import (
     CausalDiagnosticsCallback,
+    FrontIntegralDiagnosticsCallback,
     IntegralDiagnosticsCallback,
     KSDiagnosticsCallback,
     LossCallback,
@@ -296,6 +301,29 @@ def validate_args(args):
         raise ValueError("--causal-num-chunks must be positive.")
     if args.integral_only and not args.use_integral_loss:
         raise ValueError("--integral-only requires --use-integral-loss.")
+    if args.use_front_integral_loss:
+        if args.equation not in {"ks", "kuramoto-sivashinsky"}:
+            raise ValueError("--use-front-integral-loss is currently supported only with --equation ks.")
+        if args.optimizer not in {"adam", "soap", "muon"}:
+            raise ValueError("--use-front-integral-loss supports only adam, soap, and muon.")
+        if args.sampling_method != "none":
+            raise ValueError("--use-front-integral-loss currently requires --sampling-method none.")
+        if args.use_integral_loss or args.integral_only:
+            raise ValueError("Front integral loss cannot be combined with global/local integral loss yet.")
+        if args.use_causal_loss:
+            raise ValueError("Front integral loss cannot be combined with causal loss yet.")
+        if args.dynamic_freezing:
+            raise ValueError("Front integral loss cannot be combined with dynamic freezing yet.")
+        if args.front_integral_weight < 0 or not np.isfinite(args.front_integral_weight):
+            raise ValueError("--front-integral-weight must be finite and non-negative.")
+        if args.front_integral_num_intervals <= 0:
+            raise ValueError("--front-integral-num-intervals must be positive.")
+        if args.front_integral_num_x_points <= 0:
+            raise ValueError("--front-integral-num-x-points must be positive.")
+        if args.front_integral_quadrature_order <= 0:
+            raise ValueError("--front-integral-quadrature-order must be positive.")
+        if args.front_integral_x_batch_size <= 0:
+            raise ValueError("--front-integral-x-batch-size must be positive.")
     if args.use_integral_loss:
         if args.equation not in {"ks", "kuramoto-sivashinsky"}:
             raise ValueError("--use-integral-loss is currently supported only with --equation ks.")
@@ -395,6 +423,29 @@ def maybe_attach_integral_loss(model, args):
     return integral_loss
 
 
+def maybe_attach_front_integral_loss(model, args):
+    if not args.use_front_integral_loss:
+        model.front_integral_loss = None
+        model.front_integral_loss_diagnostics = None
+        return None
+    front_integral_loss = FrontIntegralLoss(
+        model=model,
+        pde=model.pde,
+        num_intervals=args.front_integral_num_intervals,
+        num_x_points=args.front_integral_num_x_points,
+        quadrature_order=args.front_integral_quadrature_order,
+        x_batch_size=args.front_integral_x_batch_size,
+        weight=args.front_integral_weight,
+        seed=(
+            args.front_integral_seed
+            if args.front_integral_seed is not None
+            else args.seed
+        ),
+    )
+    attach_front_integral_loss_train_step(model, front_integral_loss)
+    return front_integral_loss
+
+
 def make_callbacks(args, equation_name):
     if args.no_callbacks:
         return None
@@ -422,6 +473,13 @@ def make_callbacks(args, equation_name):
     if args.use_integral_loss:
         callbacks.append(
             IntegralDiagnosticsCallback(
+                log_every=args.log_every,
+                verbose=args.loss_verbose,
+            )
+        )
+    if args.use_front_integral_loss:
+        callbacks.append(
+            FrontIntegralDiagnosticsCallback(
                 log_every=args.log_every,
                 verbose=args.loss_verbose,
             )
@@ -502,14 +560,17 @@ def run_one(equation_name, args):
         optimizer_name = "pcgrad" if args.optimizer == "pcg" else args.optimizer
         model.compile(optimizer_name, lr=args.lr, loss_weights=loss_weight_adapter)
     maybe_attach_integral_loss(model, args)
+    maybe_attach_front_integral_loss(model, args)
 
     run_name = equation_name.replace("-", "_")
     timestamp = time.strftime("%m.%d-%H.%M.%S", time.localtime())
     causal_tag = "-causal-loss" if args.use_causal_loss else ""
     freeze_tag = "-dynamic-freezing" if args.dynamic_freezing else ""
+    front_integral_tag = "-front-integral" if args.use_front_integral_loss else ""
     save_path = os.path.join(
         args.out,
-        f"{timestamp}-{run_name}-pinn-{args.net}-{args.optimizer.lower()}-{args.sampling_method}{causal_tag}{freeze_tag}",
+        f"{timestamp}-{run_name}-pinn-{args.net}-{args.optimizer.lower()}-"
+        f"{args.sampling_method}{causal_tag}{freeze_tag}{front_integral_tag}",
     )
     os.makedirs(save_path, exist_ok=True)
     save_run_configuration(save_path, args, equation_name)
@@ -673,6 +734,13 @@ def parse_args():
     )
     parser.add_argument("--integral-resample-every", type=int, default=1)
     parser.add_argument("--integral-seed", type=int, default=None)
+    parser.add_argument("--use-front-integral-loss", action="store_true", default=False)
+    parser.add_argument("--front-integral-weight", type=float, default=0.01)
+    parser.add_argument("--front-integral-num-intervals", type=int, default=10)
+    parser.add_argument("--front-integral-num-x-points", type=int, default=1000)
+    parser.add_argument("--front-integral-quadrature-order", type=int, default=6)
+    parser.add_argument("--front-integral-x-batch-size", type=int, default=250)
+    parser.add_argument("--front-integral-seed", type=int, default=None)
     parser.add_argument(
         "--sampling-method",
         choices=["none", "fam-w", "famaw-w"],
