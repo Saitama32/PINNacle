@@ -309,9 +309,20 @@ def run_deepxde_rl_training(
                     f"trajectory_{traj + 1:04d}",
                     f"step_{t + 1:02d}_{optimizer_slug}",
                 )
+                diagnostics_dir = os.path.join(
+                    save_path,
+                    f"trajectory_{traj + 1:04d}",
+                    "diagnostics",
+                )
                 solution_callback = SolutionImageCallback(
                     step_save_path,
                     log_every=image_log_every,
+                    metrics_path=os.path.join(
+                        diagnostics_dir,
+                        f"step_{t + 1:02d}_{optimizer_slug}_metrics.csv",
+                    ),
+                    experiment=rl_agent_params.get("exp"),
+                    metric_step=agent_step,
                 )
                 callbacks.insert(0, solution_callback)
             callbacks.append(saver)

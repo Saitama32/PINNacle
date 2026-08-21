@@ -1,5 +1,6 @@
 import logging
 import os
+import csv
 import torch
 import numpy as np
 import scipy
@@ -11,6 +12,7 @@ from src.utils import plot
 import scipy.interpolate
 import deepxde as dde
 from src.pde.chaotic import KuramotoSivashinskyEquation
+from src.utils.ks_metrics import long_horizon_metrics
 
 logger = logging.getLogger(__name__)
 
@@ -72,7 +74,14 @@ class PlotCallback(Callback):
 class SolutionImageCallback(Callback):
     """Save prediction/error images for scalar 2D problems with reference data."""
 
-    def __init__(self, output_dir, log_every=100):
+    def __init__(
+        self,
+        output_dir,
+        log_every=100,
+        metrics_path=None,
+        experiment=None,
+        metric_step=None,
+    ):
         super().__init__()
         self.output_dir = os.fspath(output_dir)
         self.log_every = int(log_every)
@@ -81,6 +90,10 @@ class SolutionImageCallback(Callback):
         self.local_epoch = 0
         self.rmse = np.nan
         self.brmse = np.nan
+        self.metrics_path = None if metrics_path is None else os.fspath(metrics_path)
+        self.experiment = experiment
+        self.metric_step = metric_step
+        self.latest_metrics = None
 
     def on_train_begin(self):
         os.makedirs(self.output_dir, exist_ok=True)
@@ -96,10 +109,75 @@ class SolutionImageCallback(Callback):
         self.test_x = ref_data[:, : self.model.pde.input_dim]
         self.test_y = ref_data[:, self.model.pde.input_dim :]
 
+        if self.metrics_path is not None:
+            metrics_dir = os.path.dirname(self.metrics_path)
+            if metrics_dir:
+                os.makedirs(metrics_dir, exist_ok=True)
+            self._prepare_metric_grid()
+            with open(self.metrics_path, "w", newline="", encoding="utf-8") as handle:
+                writer = csv.writer(handle)
+                writer.writerow(
+                    [
+                        "local_epoch",
+                        "late_energy_agreement",
+                        "late_spectral_overlap",
+                        "late_normalized_wasserstein",
+                    ]
+                )
+
         bbox = np.asarray(self.model.pde.bbox, dtype=float)
         spatial_min, spatial_max = bbox[0], bbox[1]
         self.boundary_mask = np.isclose(self.test_x[:, 0], spatial_min) | np.isclose(
             self.test_x[:, 0], spatial_max
+        )
+
+    def _prepare_metric_grid(self):
+        self.metric_x = np.unique(self.test_x[:, 0])
+        self.metric_t = np.unique(self.test_x[:, 1])
+        expected_size = len(self.metric_x) * len(self.metric_t)
+        if len(self.test_x) != expected_size:
+            raise ValueError(
+                "Long-horizon metrics require a complete rectangular x/t reference grid"
+            )
+        self.metric_x_indices = np.searchsorted(self.metric_x, self.test_x[:, 0])
+        self.metric_t_indices = np.searchsorted(self.metric_t, self.test_x[:, 1])
+        occupancy = np.zeros((len(self.metric_t), len(self.metric_x)), dtype=np.int32)
+        np.add.at(occupancy, (self.metric_t_indices, self.metric_x_indices), 1)
+        if not np.all(occupancy == 1):
+            raise ValueError("Reference x/t grid contains missing or duplicate points")
+        self.exact_metric_field = np.empty(
+            (len(self.metric_t), len(self.metric_x)), dtype=np.float64
+        )
+        self.exact_metric_field[self.metric_t_indices, self.metric_x_indices] = (
+            self.test_y[:, 0]
+        )
+
+    def _record_metrics(self, prediction):
+        if self.metrics_path is None:
+            return
+        prediction_field = np.empty_like(self.exact_metric_field)
+        prediction_field[self.metric_t_indices, self.metric_x_indices] = prediction[:, 0]
+        self.latest_metrics = long_horizon_metrics(
+            prediction_field,
+            self.exact_metric_field,
+        )
+        with open(self.metrics_path, "a", newline="", encoding="utf-8") as handle:
+            writer = csv.writer(handle)
+            writer.writerow(
+                [
+                    self.local_epoch,
+                    self.latest_metrics["late_energy_agreement"],
+                    self.latest_metrics["late_spectral_overlap"],
+                    self.latest_metrics["late_normalized_wasserstein"],
+                ]
+            )
+        print(
+            "Long-horizon metrics: "
+            f"epoch={self.local_epoch} "
+            f"late_energy_agreement={self.latest_metrics['late_energy_agreement']:.10e} "
+            f"late_spectral_overlap={self.latest_metrics['late_spectral_overlap']:.10e} "
+            f"late_normalized_wasserstein="
+            f"{self.latest_metrics['late_normalized_wasserstein']:.10e}"
         )
 
     def _save_images(self):
@@ -108,6 +186,7 @@ class SolutionImageCallback(Callback):
         self.rmse = float(np.sqrt(np.mean(error**2)))
         if np.any(self.boundary_mask):
             self.brmse = float(np.sqrt(np.mean(error[self.boundary_mask] ** 2)))
+        self._record_metrics(prediction)
 
         prefix = f"epoch_{self.local_epoch:06d}"
         x = self.test_x[:, 0]
@@ -141,6 +220,11 @@ class SolutionImageCallback(Callback):
     def on_train_end(self):
         if self.local_epoch > 0 and self.local_epoch % self.log_every != 0:
             self._save_images()
+        if self.experiment is not None and self.latest_metrics is not None:
+            self.experiment.log_metrics(
+                self.latest_metrics,
+                step=self.metric_step,
+            )
 
 
 class LossCallback(Callback):
