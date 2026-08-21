@@ -29,8 +29,16 @@ import deepxde as dde
 import numpy as np
 import torch
 
+from src.losses.front_integral import (
+    FrontIntegralLoss,
+    attach_front_integral_loss_train_step,
+)
 from src.model import JaxpiKSNetwork, PinnacleKSFNN, SFLIConfig
-from src.utils.callbacks import LossCallback, TesterCallback
+from src.utils.callbacks import (
+    FrontIntegralDiagnosticsCallback,
+    LossCallback,
+    TesterCallback,
+)
 from src.utils.grad_norm import AdaptiveLossWeights, GradNormCallback
 
 
@@ -336,6 +344,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="Number of base boundary samples per time window before periodic pairing.",
     )
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--use-front-integral-loss", action="store_true", default=False)
+    parser.add_argument("--front-integral-weight", type=float, default=10.00)
+    parser.add_argument("--front-integral-num-intervals", type=int, default=10)
+    parser.add_argument("--front-integral-num-x-points", type=int, default=100)
+    parser.add_argument("--front-integral-quadrature-order", type=int, default=6)
+    parser.add_argument("--front-integral-x-batch-size", type=int, default=250)
+    parser.add_argument(
+        "--front-integral-sampling",
+        choices=("fixed", "pseudo"),
+        default="pseudo",
+    )
     parser.add_argument("--out", type=Path, default=Path("runs_jaxpi_ks"))
     parser.add_argument("--reference", type=Path, default=PROJECT_ROOT / "ref" / "Kuramoto_Sivashinsky.dat")
     parser.add_argument("--log-every", type=int, default=100)
@@ -407,6 +426,13 @@ def resolve_config(args: argparse.Namespace) -> dict:
             "periodic_bc_points": args.periodic_bc_points,
             "initialization": args.initialization,
             "seed": args.seed,
+            "use_front_integral_loss": args.use_front_integral_loss,
+            "front_integral_weight": args.front_integral_weight,
+            "front_integral_num_intervals": args.front_integral_num_intervals,
+            "front_integral_num_x_points": args.front_integral_num_x_points,
+            "front_integral_quadrature_order": args.front_integral_quadrature_order,
+            "front_integral_x_batch_size": args.front_integral_x_batch_size,
+            "front_integral_sampling": args.front_integral_sampling,
             "out": str(args.out),
             "reference": str(args.reference),
             "log_every": args.log_every,
@@ -451,12 +477,25 @@ def validate_config(config: dict):
         "soap_max_precondition_dim",
         "muon_ns_steps",
         "periodic_bc_points",
+        "front_integral_num_intervals",
+        "front_integral_num_x_points",
+        "front_integral_quadrature_order",
+        "front_integral_x_batch_size",
     )
     for name in positive_ints:
         if int(config[name]) <= 0:
             raise ValueError(f"{name} must be positive")
     if config["save_every"] < 0:
         raise ValueError("save_every must be non-negative")
+    if (
+        not math.isfinite(config["front_integral_weight"])
+        or config["front_integral_weight"] < 0
+    ):
+        raise ValueError("front_integral_weight must be non-negative and finite")
+    if config["use_front_integral_loss"] and config["optimizer"] == "pcgrad":
+        raise ValueError("front integral loss currently supports adam, soap, and muon only")
+    if config["use_front_integral_loss"] and config["causal"]:
+        raise ValueError("front integral loss cannot be combined with causal loss yet")
     if not math.isfinite(config["rwf_mu"]):
         raise ValueError("rwf_mu must be finite")
     if not math.isfinite(config["rwf_sigma"]) or config["rwf_sigma"] < 0:
@@ -553,17 +592,53 @@ def build_time_windows(reference: KSReference, time_fraction: float, count: int)
     return windows
 
 
-def _ks_residual(points, values):
-    u_t = dde.grad.jacobian(values, points, i=0, j=1)
+def _ks_spatial_operator(points, values):
     u_x = dde.grad.jacobian(values, points, i=0, j=0)
     u_xx = dde.grad.hessian(values, points, i=0, j=0)
     u_xxxx = dde.grad.hessian(u_xx, points, i=0, j=0)
     return (
-        u_t
-        + (100.0 / 16.0) * values * u_x
+        (100.0 / 16.0) * values * u_x
         + (100.0 / (16.0**2)) * u_xx
         + (100.0 / (16.0**4)) * u_xxxx
     )
+
+
+def _ks_residual(points, values):
+    u_t = dde.grad.jacobian(values, points, i=0, j=1)
+    return u_t + _ks_spatial_operator(points, values)
+
+
+class InterpolatedInitialCondition:
+    """Piecewise-linear window IC evaluated directly on the active device."""
+
+    def __init__(self, x, values):
+        x = np.asarray(x, dtype=np.float64).reshape(-1)
+        values = np.asarray(values, dtype=np.float64).reshape(-1)
+        if x.size < 2 or values.shape != x.shape:
+            raise ValueError("window initial condition requires matching x/value arrays")
+        if np.any(np.diff(x) <= 0):
+            raise ValueError("window initial-condition coordinates must be strictly increasing")
+        self.x = x
+        self.values = values
+        self._tensor_cache = {}
+
+    def _tensors(self, device, dtype):
+        key = (str(device), str(dtype))
+        if key not in self._tensor_cache:
+            self._tensor_cache[key] = (
+                torch.as_tensor(self.x, device=device, dtype=dtype),
+                torch.as_tensor(self.values, device=device, dtype=dtype),
+            )
+        return self._tensor_cache[key]
+
+    def __call__(self, x):
+        knots, values = self._tensors(x.device, x.dtype)
+        flat_x = x.reshape(-1).clamp(min=knots[0], max=knots[-1])
+        right = torch.searchsorted(knots, flat_x, right=True).clamp(1, knots.numel() - 1)
+        left = right - 1
+        fraction = (flat_x - knots[left]) / (knots[right] - knots[left])
+        interpolated = values[left] + fraction * (values[right] - values[left])
+        return interpolated.reshape_as(x)
 
 
 def sfli_input_bounds(config: dict, reference: KSReference, window: TimeWindow):
@@ -673,6 +748,7 @@ def build_model(config: dict, reference: KSReference, window: TimeWindow, initia
         output_dim=1,
         ref_sol=None,
         ref_data=np.hstack((reference_points, reference_values)).astype(np.float32),
+        ks_spatial_operator=_ks_spatial_operator,
         loss_config=[
             {"name": "res", "type": "pde"},
             {"name": "ics", "type": "ic"},
@@ -736,6 +812,25 @@ def build_model(config: dict, reference: KSReference, window: TimeWindow, initia
         decay=("exponential", config["decay_steps"], config["decay_rate"]),
         loss_weights=adapter if adapter is not None else initial_weights,
     )
+    if config["use_front_integral_loss"]:
+        front_integral_loss = FrontIntegralLoss(
+            model=model,
+            pde=model.pde,
+            num_intervals=config["front_integral_num_intervals"],
+            num_x_points=config["front_integral_num_x_points"],
+            quadrature_order=config["front_integral_quadrature_order"],
+            x_batch_size=config["front_integral_x_batch_size"],
+            weight=config["front_integral_weight"],
+            sampling=config["front_integral_sampling"],
+            initial_condition_fn=InterpolatedInitialCondition(
+                reference.x,
+                initial_values,
+            ),
+        )
+        attach_front_integral_loss_train_step(model, front_integral_loss)
+    else:
+        model.front_integral_loss = None
+        model.front_integral_loss_diagnostics = None
     # Keep the mutable adapter in the compiled loss closure, while exposing a
     # numerical snapshot to LossCallback and the loss-history plotting code.
     if adapter is not None:
@@ -850,17 +945,18 @@ def save_solution_plot(path: Path, exact, prediction, title: str):
 
 
 def feature_tag(config: dict):
-    return "_".join(
-        (
-            f"net-{config['net']}",
-            f"init-{config.get('initialization', 'none')}",
-            f"ff-{'on' if config['fourier_features'] else 'off'}",
-            f"gn-{'on' if config['grad_norm'] else 'off'}",
-            f"causal-{'on' if config['causal'] else 'off'}",
-            f"penc-{'on' if config['periodic_encoding'] else 'off'}",
-            f"pbc-{'on' if config['periodic_bc'] else 'off'}",
-        )
-    )
+    parts = [
+        f"net-{config['net']}",
+        f"init-{config.get('initialization', 'none')}",
+        f"ff-{'on' if config['fourier_features'] else 'off'}",
+        f"gn-{'on' if config['grad_norm'] else 'off'}",
+        f"causal-{'on' if config['causal'] else 'off'}",
+        f"penc-{'on' if config['periodic_encoding'] else 'off'}",
+        f"pbc-{'on' if config['periodic_bc'] else 'off'}",
+    ]
+    if config["use_front_integral_loss"]:
+        parts.append(f"front-{config['front_integral_sampling']}")
+    return "_".join(parts)
 
 
 def run(config: dict) -> Path:
@@ -932,6 +1028,13 @@ def run(config: dict) -> Path:
         if config["causal"]:
             callbacks.append(
                 CausalHistoryCallback(window_dir / "causal_weights.jsonl", config["log_every"])
+            )
+        if config["use_front_integral_loss"]:
+            callbacks.append(
+                FrontIntegralDiagnosticsCallback(
+                    log_every=config["log_every"],
+                    verbose=True,
+                )
             )
         callbacks.append(dde.callbacks.PDEPointResampler(period=1, pde_points=True, bc_points=False))
         if config["save_every"]:

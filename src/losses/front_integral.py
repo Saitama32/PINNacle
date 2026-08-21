@@ -19,7 +19,7 @@ class FrontIntegralLoss:
         quadrature_order=6,
         x_batch_size=250,
         weight=0.01,
-        seed=None,
+        sampling="fixed",
         initial_condition_fn=None,
     ):
         self.model = model
@@ -29,7 +29,7 @@ class FrontIntegralLoss:
         self.quadrature_order = int(quadrature_order)
         self.x_batch_size = int(x_batch_size)
         self.weight = float(weight)
-        self.seed = seed
+        self.sampling = str(sampling).lower()
         self.initial_condition_fn = initial_condition_fn or ks_initial_condition_torch
 
         if self.num_intervals <= 0:
@@ -42,6 +42,8 @@ class FrontIntegralLoss:
             raise ValueError("front integral x_batch_size must be positive.")
         if self.weight < 0 or not math.isfinite(self.weight):
             raise ValueError("front integral weight must be finite and non-negative.")
+        if self.sampling not in {"fixed", "pseudo"}:
+            raise ValueError("front integral sampling must be 'fixed' or 'pseudo'.")
         if getattr(pde, "input_dim", 2) != 2:
             raise ValueError("FrontIntegralLoss supports only inputs ordered as (x, t).")
         if not hasattr(pde, "ks_spatial_operator"):
@@ -54,13 +56,29 @@ class FrontIntegralLoss:
         if not self.x_min < self.x_max or not self.t_min < self.t_max:
             raise ValueError("FrontIntegralLoss requires non-empty spatial and temporal domains.")
 
-        generator = np.random.default_rng(seed)
-        self.x_front_numpy = generator.uniform(
+        self.x_front_numpy = self._draw_x_front()
+        self.last_resampled_step = None
+        self.resample_count = 0
+        self.last_diagnostics = None
+
+    def _draw_x_front(self):
+        return np.random.uniform(
             self.x_min,
             self.x_max,
             size=(self.num_x_points, 1),
         )
-        self.last_diagnostics = None
+
+    def prepare_step(self, step):
+        """Resample once per optimizer step while keeping all time fronts aligned."""
+        if self.sampling != "pseudo":
+            return False
+        step = int(step)
+        if self.last_resampled_step == step:
+            return False
+        self.x_front_numpy = self._draw_x_front()
+        self.last_resampled_step = step
+        self.resample_count += 1
+        return True
 
     def _device_and_dtype(self):
         parameter = next(self.model.net.parameters(), None)
@@ -163,6 +181,9 @@ class FrontIntegralLoss:
             "weighted_front_integral_loss": raw_loss.detach() * self.weight,
             "front_defect_rms": torch.sqrt(torch.mean(detached_defects.square())),
             "front_defect_max": torch.max(torch.abs(detached_defects)),
+            "front_resample_count": self.resample_count,
+            "front_x_mean": torch.mean(x_front.detach()),
+            "front_x_std": torch.std(x_front.detach(), unbiased=False),
         }
         for index, interval_loss in enumerate(interval_losses):
             diagnostics[f"front_{index}_loss"] = interval_loss.detach()
@@ -182,6 +203,9 @@ class FrontIntegralLoss:
             "weighted_front_integral_loss": zero,
             "front_defect_rms": zero,
             "front_defect_max": zero,
+            "front_resample_count": self.resample_count,
+            "front_x_mean": zero,
+            "front_x_std": zero,
         }
         for index in range(self.num_intervals):
             diagnostics[f"front_{index}_loss"] = zero
@@ -233,8 +257,9 @@ class FrontIntegralLoss:
         )
         return (u_right - u_left + integral) / dt, u_right
 
-    def backward_weighted(self, base_loss):
+    def backward_weighted(self, base_loss, step):
         """Backpropagate the exact weighted mean in memory-bounded chunks."""
+        self.prepare_step(step)
         base_loss.backward()
         dde.grad.clear()
 
@@ -292,6 +317,9 @@ class FrontIntegralLoss:
             "weighted_front_integral_loss": raw_loss * self.weight,
             "front_defect_rms": torch.sqrt(raw_loss),
             "front_defect_max": defect_max,
+            "front_resample_count": self.resample_count,
+            "front_x_mean": torch.mean(x_front.detach()),
+            "front_x_std": torch.std(x_front.detach(), unbiased=False),
         }
         for index, interval_loss in enumerate(interval_losses):
             diagnostics[f"front_{index}_loss"] = interval_loss
@@ -328,7 +356,10 @@ def attach_front_integral_loss_train_step(model, front_integral_loss):
                 front_integral_loss.set_zero_diagnostics(base_loss)
                 total_loss = base_loss
             else:
-                front_raw_loss = front_integral_loss.backward_weighted(base_loss)
+                front_raw_loss = front_integral_loss.backward_weighted(
+                    base_loss,
+                    step=model.train_state.step,
+                )
                 total_loss = (
                     base_loss.detach()
                     + front_integral_loss.weight * front_raw_loss

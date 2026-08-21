@@ -436,11 +436,7 @@ def maybe_attach_front_integral_loss(model, args):
         quadrature_order=args.front_integral_quadrature_order,
         x_batch_size=args.front_integral_x_batch_size,
         weight=args.front_integral_weight,
-        seed=(
-            args.front_integral_seed
-            if args.front_integral_seed is not None
-            else args.seed
-        ),
+        sampling=args.front_integral_sampling,
     )
     attach_front_integral_loss_train_step(model, front_integral_loss)
     return front_integral_loss
@@ -740,7 +736,11 @@ def parse_args():
     parser.add_argument("--front-integral-num-x-points", type=int, default=1000)
     parser.add_argument("--front-integral-quadrature-order", type=int, default=6)
     parser.add_argument("--front-integral-x-batch-size", type=int, default=250)
-    parser.add_argument("--front-integral-seed", type=int, default=None)
+    parser.add_argument(
+        "--front-integral-sampling",
+        choices=["fixed", "pseudo"],
+        default="fixed",
+    )
     parser.add_argument(
         "--sampling-method",
         choices=["none", "fam-w", "famaw-w"],

@@ -301,6 +301,9 @@ class FrontIntegralDiagnosticsCallback(Callback):
             "actual_total_loss",
             "front_defect_rms",
             "front_defect_max",
+            "front_resample_count",
+            "front_x_mean",
+            "front_x_std",
         ]
         self.keys.extend(
             f"front_{index}_loss" for index in range(front_loss.num_intervals)
