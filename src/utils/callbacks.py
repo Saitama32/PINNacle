@@ -227,6 +227,138 @@ class SolutionImageCallback(Callback):
             )
 
 
+class LongHorizonMetricsCallback(Callback):
+    """Log phase-insensitive metrics without creating solution images."""
+
+    metric_names = (
+        "late_energy_agreement",
+        "late_spectral_overlap",
+        "late_normalized_wasserstein",
+    )
+
+    def __init__(
+        self,
+        metrics_path,
+        log_every=100,
+        experiment=None,
+        metric_step=None,
+    ):
+        super().__init__()
+        self.metrics_path = os.fspath(metrics_path)
+        self.log_every = int(log_every)
+        if self.log_every <= 0:
+            raise ValueError("log_every must be a positive integer")
+        self.experiment = experiment
+        self.metric_step = metric_step
+        self.local_epoch = 0
+        self.latest_metrics = None
+        self.rmse = np.nan
+        self.brmse = np.nan
+
+    def on_train_begin(self):
+        ref_data = getattr(self.model.pde, "ref_data", None)
+        if ref_data is None:
+            raise ValueError("LongHorizonMetricsCallback requires pde.ref_data")
+        ref_data = np.asarray(ref_data)
+        input_dim = int(self.model.pde.input_dim)
+        output_dim = int(self.model.pde.output_dim)
+        if input_dim < 2:
+            raise ValueError("Long-horizon metrics require space and time inputs")
+        if ref_data.ndim != 2 or ref_data.shape[1] < input_dim + output_dim:
+            raise ValueError("pde.ref_data has an incompatible shape")
+
+        self.test_x = ref_data[:, :input_dim]
+        self.test_y = ref_data[:, input_dim : input_dim + output_dim]
+        bbox = np.asarray(self.model.pde.bbox, dtype=float)
+        initial_mask = np.isclose(self.test_x[:, -1], bbox[-2])
+        boundary_mask = np.zeros(len(self.test_x), dtype=bool)
+        for dimension in range(input_dim - 1):
+            boundary_mask |= np.isclose(
+                self.test_x[:, dimension], bbox[2 * dimension]
+            ) | np.isclose(self.test_x[:, dimension], bbox[2 * dimension + 1])
+        self.boundary_mask = boundary_mask & ~initial_mask
+        coordinate_values = [
+            np.unique(self.test_x[:, dimension]) for dimension in range(input_dim)
+        ]
+        expected_size = int(np.prod([len(values) for values in coordinate_values]))
+        if len(self.test_x) != expected_size:
+            raise ValueError(
+                "Long-horizon metrics require a complete rectangular reference grid"
+            )
+
+        coordinate_indices = [
+            np.searchsorted(values, self.test_x[:, dimension])
+            for dimension, values in enumerate(coordinate_values)
+        ]
+        # The PDE convention is [space..., time]; metric fields are [time, space...].
+        self.field_indices = (
+            coordinate_indices[-1],
+            *coordinate_indices[:-1],
+        )
+        self.field_shape = (
+            len(coordinate_values[-1]),
+            *(len(values) for values in coordinate_values[:-1]),
+        )
+        occupancy = np.zeros(self.field_shape, dtype=np.uint8)
+        np.add.at(occupancy, self.field_indices, 1)
+        if not np.all(occupancy == 1):
+            raise ValueError("Reference grid contains missing or duplicate points")
+
+        self.exact_fields = np.empty(
+            (*self.field_shape, output_dim), dtype=np.float64
+        )
+        self.exact_fields[self.field_indices] = self.test_y
+        metrics_dir = os.path.dirname(self.metrics_path)
+        if metrics_dir:
+            os.makedirs(metrics_dir, exist_ok=True)
+        with open(self.metrics_path, "w", newline="", encoding="utf-8") as handle:
+            csv.writer(handle).writerow(("local_epoch", *self.metric_names))
+
+    def _record_metrics(self):
+        prediction = np.asarray(self.model.predict(self.test_x), dtype=np.float64)
+        if prediction.shape != self.test_y.shape:
+            raise ValueError("Model prediction shape does not match reference outputs")
+        error = prediction - self.test_y
+        self.rmse = float(np.sqrt(np.mean(error**2)))
+        if np.any(self.boundary_mask):
+            self.brmse = float(np.sqrt(np.mean(error[self.boundary_mask] ** 2)))
+        prediction_fields = np.empty_like(self.exact_fields)
+        prediction_fields[self.field_indices] = prediction
+        component_metrics = [
+            long_horizon_metrics(
+                prediction_fields[..., component],
+                self.exact_fields[..., component],
+            )
+            for component in range(self.exact_fields.shape[-1])
+        ]
+        self.latest_metrics = {
+            name: float(np.mean([metrics[name] for metrics in component_metrics]))
+            for name in self.metric_names
+        }
+        with open(self.metrics_path, "a", newline="", encoding="utf-8") as handle:
+            csv.writer(handle).writerow(
+                (
+                    self.local_epoch,
+                    *(self.latest_metrics[name] for name in self.metric_names),
+                )
+            )
+        summary = " ".join(
+            f"{name}={self.latest_metrics[name]:.10e}" for name in self.metric_names
+        )
+        print(f"Long-horizon metrics: epoch={self.local_epoch} {summary}")
+
+    def on_epoch_end(self):
+        self.local_epoch += 1
+        if self.local_epoch % self.log_every == 0:
+            self._record_metrics()
+
+    def on_train_end(self):
+        if self.local_epoch > 0 and self.local_epoch % self.log_every != 0:
+            self._record_metrics()
+        if self.experiment is not None and self.latest_metrics is not None:
+            self.experiment.log_metrics(self.latest_metrics, step=self.metric_step)
+
+
 class LossCallback(Callback):
 
     def __init__(self, verbose=False):

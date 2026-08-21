@@ -16,7 +16,11 @@ import deepxde as dde
 from RL.rl_environment import EnvRLOptimizer
 from RL.rl_algorithms import DQNAgent
 from src.model import RWFMLP, materialize_effective_mlp
-from src.utils.callbacks import ModelSaverCallback, SolutionImageCallback
+from src.utils.callbacks import (
+    LongHorizonMetricsCallback,
+    ModelSaverCallback,
+    SolutionImageCallback,
+)
 from deepxde.optimizers.config import set_LBFGS_options, set_MUON_options, set_PSO_options, LBFGS_options, PSO_options
 from deepxde.optimizers.pytorch.optimizers import get as get_pytorch_optimizer
 from deepxde.optimizers.pytorch.pcgrad import PCGrad
@@ -194,6 +198,9 @@ def run_deepxde_rl_training(
     display_every = int(train_args.get("display_every", 100))
     image_log_every = int(train_args.get("image_log_every", display_every))
     save_solution_images = bool(train_args.get("save_solution_images", False))
+    log_long_horizon_metrics = bool(
+        train_args.get("log_long_horizon_metrics", False)
+    )
     transitions_dir = os.path.join(save_path, "transitions")
     os.makedirs(transitions_dir, exist_ok=True)
 
@@ -303,24 +310,35 @@ def run_deepxde_rl_training(
             optimizer_slug = str(action["type"]).strip().lower().replace(" ", "_")
             step_save_path = save_path
             callbacks = list(base_callbacks)
+            diagnostics_dir = os.path.join(
+                save_path,
+                f"trajectory_{traj + 1:04d}",
+                "diagnostics",
+            )
+            metrics_path = os.path.join(
+                diagnostics_dir,
+                f"step_{t + 1:02d}_{optimizer_slug}_metrics.csv",
+            )
+            if log_long_horizon_metrics:
+                callbacks.insert(
+                    0,
+                    LongHorizonMetricsCallback(
+                        metrics_path,
+                        log_every=image_log_every,
+                        experiment=rl_agent_params.get("exp"),
+                        metric_step=agent_step,
+                    ),
+                )
             if save_solution_images:
                 step_save_path = os.path.join(
                     save_path,
                     f"trajectory_{traj + 1:04d}",
                     f"step_{t + 1:02d}_{optimizer_slug}",
                 )
-                diagnostics_dir = os.path.join(
-                    save_path,
-                    f"trajectory_{traj + 1:04d}",
-                    "diagnostics",
-                )
                 solution_callback = SolutionImageCallback(
                     step_save_path,
                     log_every=image_log_every,
-                    metrics_path=os.path.join(
-                        diagnostics_dir,
-                        f"step_{t + 1:02d}_{optimizer_slug}_metrics.csv",
-                    ),
+                    metrics_path=metrics_path,
                     experiment=rl_agent_params.get("exp"),
                     metric_step=agent_step,
                 )
