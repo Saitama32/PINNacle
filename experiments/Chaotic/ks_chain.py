@@ -10,7 +10,7 @@ from comet_config import start_comet_experiment
 from comet_ml.integration.pytorch import log_model
 
 experiment = start_comet_experiment(
-    project_name="rlpinn-ks-soap_testing",
+    project_name="rlpinn-ks-expand-set-rwf-tolerance",
 )
 
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
