@@ -1,6 +1,6 @@
 """Reproduce the JAX-PI chaotic Kuramoto--Sivashinsky experiment in PyTorch.
 
-The four ablation mechanisms are deliberately independent.  Run ``--help``
+The ablation mechanisms are deliberately independent. Run ``--help``
 for the paired feature flags and preset overrides.
 """
 
@@ -74,6 +74,7 @@ PRESETS = {
         "causal": False,
         "jaxpi_network": True,
         "periodic_encoding": False,
+        "periodic_bc": False,
         "net": "mlp",
     },
     "sota": {
@@ -94,6 +95,7 @@ PRESETS = {
         "causal": False,
         "jaxpi_network": True,
         "periodic_encoding": False,
+        "periodic_bc": False,
         "net": "mlp",
     },
 }
@@ -182,6 +184,15 @@ class PresetOverrideAction(argparse.Action):
         setattr(namespace, self.dest, values)
 
 
+def str2bool(value: str) -> bool:
+    normalized = value.strip().lower()
+    if normalized == "true":
+        return True
+    if normalized == "false":
+        return False
+    raise argparse.ArgumentTypeError("expected true or false")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="JAX-PI chaotic KS reproduction using PINNacle's PyTorch backend."
@@ -195,6 +206,14 @@ def build_parser() -> argparse.ArgumentParser:
     add_feature_flag(parser, "periodic-encoding", "periodic_encoding")
 
     parser.set_defaults(_preset_overrides=set())
+    parser.add_argument(
+        "--periodic-bc",
+        type=str2bool,
+        default=PRESETS["ablation"]["periodic_bc"],
+        action=PresetOverrideAction,
+        metavar="{true,false}",
+        help="Enable or disable the soft higher-order periodic boundary loss.",
+    )
     parser.add_argument(
         "--net",
         choices=NETWORK_CHOICES,
@@ -304,6 +323,18 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--grad-norm-update-every", type=int, default=1_000)
     parser.add_argument("--causal-tol", type=float, default=1.0)
     parser.add_argument("--causal-num-chunks", type=int, default=16)
+    parser.add_argument(
+        "--periodic-bc-weight",
+        type=float,
+        default=100.0,
+        help="Initial weight of the combined u/u_x/u_xx/u_xxx periodic loss.",
+    )
+    parser.add_argument(
+        "--periodic-bc-points",
+        type=int,
+        default=256,
+        help="Number of base boundary samples per time window before periodic pairing.",
+    )
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--out", type=Path, default=Path("runs_jaxpi_ks"))
     parser.add_argument("--reference", type=Path, default=PROJECT_ROOT / "ref" / "Kuramoto_Sivashinsky.dat")
@@ -336,6 +367,7 @@ def resolve_config(args: argparse.Namespace) -> dict:
         "causal",
         "jaxpi_network",
         "periodic_encoding",
+        "periodic_bc",
         "net",
     ):
         if name in preset_overrides:
@@ -371,6 +403,8 @@ def resolve_config(args: argparse.Namespace) -> dict:
             "grad_norm_update_every": args.grad_norm_update_every,
             "causal_tol": args.causal_tol,
             "causal_num_chunks": args.causal_num_chunks,
+            "periodic_bc_weight": args.periodic_bc_weight,
+            "periodic_bc_points": args.periodic_bc_points,
             "initialization": args.initialization,
             "seed": args.seed,
             "out": str(args.out),
@@ -416,6 +450,7 @@ def validate_config(config: dict):
         "soap_precondition_frequency",
         "soap_max_precondition_dim",
         "muon_ns_steps",
+        "periodic_bc_points",
     )
     for name in positive_ints:
         if int(config[name]) <= 0:
@@ -436,6 +471,7 @@ def validate_config(config: dict):
         "soap_epsilon",
         "muon_adam_lr",
         "muon_adam_epsilon",
+        "periodic_bc_weight",
     ):
         if not math.isfinite(config[name]) or config[name] <= 0:
             raise ValueError(f"{name} must be positive and finite")
@@ -558,12 +594,23 @@ def build_model(config: dict, reference: KSReference, window: TimeWindow, initia
     ).astype(np.float32)
     initial_values = np.asarray(initial_values, dtype=np.float32).reshape(-1, 1)
     initial_condition = dde.icbc.PointSetBC(initial_points, initial_values, component=0)
+    boundary_conditions = [initial_condition]
+    if config["periodic_bc"]:
+        boundary_conditions.append(
+            dde.HigherOrderPeriodicBC(
+                geometry_time,
+                component_x=0,
+                on_boundary=lambda _, on_boundary: on_boundary,
+                derivative_orders=(0, 1, 2, 3),
+                component=0,
+            )
+        )
     data = dde.data.TimePDE(
         geometry_time,
         _ks_residual,
-        [initial_condition],
+        boundary_conditions,
         num_domain=config["batch_size"],
-        num_boundary=0,
+        num_boundary=config["periodic_bc_points"] if config["periodic_bc"] else 0,
         num_initial=0,
         num_test=config["batch_size"],
         train_distribution="pseudo",
@@ -629,8 +676,13 @@ def build_model(config: dict, reference: KSReference, window: TimeWindow, initia
         loss_config=[
             {"name": "res", "type": "pde"},
             {"name": "ics", "type": "ic"},
-        ],
-        num_loss=2,
+        ]
+        + (
+            [{"name": "periodic", "type": "boundary"}]
+            if config["periodic_bc"]
+            else []
+        ),
+        num_loss=3 if config["periodic_bc"] else 2,
     )
     if config["causal"]:
         model.causal_loss_options = {
@@ -646,7 +698,9 @@ def build_model(config: dict, reference: KSReference, window: TimeWindow, initia
         }
 
     initial_weights = np.array(
-        [1.0, config["initial_condition_weight"]], dtype=np.float32
+        [1.0, config["initial_condition_weight"]]
+        + ([config["periodic_bc_weight"]] if config["periodic_bc"] else []),
+        dtype=np.float32,
     )
     adapter = AdaptiveLossWeights(initial_weights) if config["grad_norm"] else None
     if config["weight_decay"] > 0:
@@ -737,7 +791,8 @@ def feature_tag(config: dict):
             f"ff-{'on' if config['fourier_features'] else 'off'}",
             f"gn-{'on' if config['grad_norm'] else 'off'}",
             f"causal-{'on' if config['causal'] else 'off'}",
-            f"periodic-{'on' if config['periodic_encoding'] else 'off'}",
+            f"penc-{'on' if config['periodic_encoding'] else 'off'}",
+            f"pbc-{'on' if config['periodic_bc'] else 'off'}",
         )
     )
 
@@ -795,7 +850,7 @@ def run(config: dict) -> Path:
             callbacks.append(
                 GradNormCallback(
                     adapter,
-                    loss_names=("res", "ics"),
+                    loss_names=tuple(item["name"] for item in model.pde.loss_config),
                     momentum=config["grad_norm_momentum"],
                     update_every=config["grad_norm_update_every"],
                     log_path=window_dir / "grad_norm.jsonl",
