@@ -971,7 +971,13 @@ def run(config: dict) -> Path:
                     verbose=True,
                 )
             )
-        callbacks.append(dde.callbacks.PDEPointResampler(period=1, pde_points=True, bc_points=False))
+        callbacks.append(
+            dde.callbacks.PDEPointResampler(
+                period=1,
+                pde_points=True,
+                bc_points=config["periodic_bc"],
+            )
+        )
         if config["save_every"]:
             callbacks.append(
                 dde.callbacks.ModelCheckpoint(
