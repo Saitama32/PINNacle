@@ -82,7 +82,12 @@ class Hypercube(Geometry):
 
     def random_points(self, n, random="pseudo"):
         x = sample(n, self.dim, random)
-        return (self.xmax - self.xmin) * x + self.xmin
+        points = (self.xmax - self.xmin) * x + self.xmin
+        # Casting can round samples near a face onto the boundary. Keep random
+        # domain samples strictly interior in the configured dtype.
+        lower = np.nextafter(self.xmin, self.xmax)
+        upper = np.nextafter(self.xmax, self.xmin)
+        return np.clip(points, lower, upper)
 
     def random_boundary_points(self, n, random="pseudo"):
         x = sample(n, self.dim, random)

@@ -46,7 +46,12 @@ class Interval(Geometry):
 
     def random_points(self, n, random="pseudo"):
         x = sample(n, 1, random)
-        return (self.diam * x + self.l).astype(config.real(np))
+        points = (self.diam * x + self.l).astype(config.real(np))
+        # Casting can round a sample near an endpoint onto the boundary. Keep
+        # random domain samples strictly interior in the configured dtype.
+        lower = np.nextafter(config.real(np)(self.l), config.real(np)(self.r))
+        upper = np.nextafter(config.real(np)(self.r), config.real(np)(self.l))
+        return np.clip(points, lower, upper)
 
     def uniform_boundary_points(self, n):
         if n == 1:

@@ -672,11 +672,22 @@ def build_model(config: dict, reference: KSReference, window: TimeWindow, initia
     initial_condition = dde.icbc.PointSetBC(initial_points, initial_values, component=0)
     boundary_conditions = [initial_condition]
     if config["periodic_bc"]:
+        boundary_dtype = dde.config.real(np)
+        periodic_x_min = boundary_dtype(geometry.l)
+        periodic_x_max = boundary_dtype(geometry.r)
+
+        def on_periodic_boundary(point, _):
+            # DeepXDE's Interval.on_boundary uses np.isclose, which can classify
+            # near-boundary pseudo domain samples as BC points and change num_bcs
+            # after resampling. Generated boundary samples equal an endpoint in
+            # the configured training dtype, so exact comparison is intentional.
+            return point[0] == periodic_x_min or point[0] == periodic_x_max
+
         boundary_conditions.append(
             dde.HigherOrderPeriodicBC(
                 geometry_time,
                 component_x=0,
-                on_boundary=lambda _, on_boundary: on_boundary,
+                on_boundary=on_periodic_boundary,
                 derivative_orders=(0, 1, 2, 3),
                 component=0,
             )
