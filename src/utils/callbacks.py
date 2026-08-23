@@ -242,6 +242,7 @@ class LongHorizonMetricsCallback(Callback):
         log_every=100,
         experiment=None,
         metric_step=None,
+        epoch_offset=0,
     ):
         super().__init__()
         self.metrics_path = os.fspath(metrics_path)
@@ -250,6 +251,7 @@ class LongHorizonMetricsCallback(Callback):
             raise ValueError("log_every must be a positive integer")
         self.experiment = experiment
         self.metric_step = metric_step
+        self.epoch_offset = int(epoch_offset)
         self.local_epoch = 0
         self.latest_metrics = None
         self.rmse = np.nan
@@ -270,13 +272,15 @@ class LongHorizonMetricsCallback(Callback):
         self.test_x = ref_data[:, :input_dim]
         self.test_y = ref_data[:, input_dim : input_dim + output_dim]
         bbox = np.asarray(self.model.pde.bbox, dtype=float)
-        initial_mask = np.isclose(self.test_x[:, -1], bbox[-2])
+        self.initial_mask = np.isclose(self.test_x[:, -1], bbox[-2])
         boundary_mask = np.zeros(len(self.test_x), dtype=bool)
         for dimension in range(input_dim - 1):
             boundary_mask |= np.isclose(
                 self.test_x[:, dimension], bbox[2 * dimension]
             ) | np.isclose(self.test_x[:, dimension], bbox[2 * dimension + 1])
-        self.boundary_mask = boundary_mask & ~initial_mask
+        self.boundary_mask = boundary_mask & ~self.initial_mask
+        self.solution_l1 = float(np.mean(np.abs(self.test_y)))
+        self.solution_l2 = float(np.sqrt(np.mean(self.test_y**2)))
         coordinate_values = [
             np.unique(self.test_x[:, dimension]) for dimension in range(input_dim)
         ]
@@ -319,9 +323,41 @@ class LongHorizonMetricsCallback(Callback):
         if prediction.shape != self.test_y.shape:
             raise ValueError("Model prediction shape does not match reference outputs")
         error = prediction - self.test_y
-        self.rmse = float(np.sqrt(np.mean(error**2)))
+        mse = float(np.mean(error**2))
+        mae = float(np.mean(np.abs(error)))
+        mxe = float(np.max(np.abs(error)))
+        self.rmse = float(np.sqrt(mse))
         if np.any(self.boundary_mask):
-            self.brmse = float(np.sqrt(np.mean(error[self.boundary_mask] ** 2)))
+            boundary_mse = float(np.mean(error[self.boundary_mask] ** 2))
+            self.brmse = float(np.sqrt(boundary_mse))
+        else:
+            boundary_mse = float("nan")
+        if np.any(self.initial_mask):
+            initial_mse = float(np.mean(error[self.initial_mask] ** 2))
+        else:
+            initial_mse = float("nan")
+        l1_relative_error = mae / max(
+            self.solution_l1, np.finfo(np.float64).eps
+        )
+        l2_relative_error = self.rmse / max(
+            self.solution_l2, np.finfo(np.float64).eps
+        )
+        centered_rmse = float(np.abs(np.mean(error)))
+        print(
+            "Validation: epoch {} MSE {:.10e} MAE {:.10e} MXE {:.10e} "
+            "BMSE {:.10e} ICMSE {:.10e} L1RE {:.10e} L2RE {:.10e} "
+            "CRMSE {:.10e}".format(
+                self.epoch_offset + self.local_epoch,
+                mse,
+                mae,
+                mxe,
+                boundary_mse,
+                initial_mse,
+                l1_relative_error,
+                l2_relative_error,
+                centered_rmse,
+            )
+        )
         prediction_fields = np.empty_like(self.exact_fields)
         prediction_fields[self.field_indices] = prediction
         component_metrics = [
@@ -345,7 +381,10 @@ class LongHorizonMetricsCallback(Callback):
         summary = " ".join(
             f"{name}={self.latest_metrics[name]:.10e}" for name in self.metric_names
         )
-        print(f"Long-horizon metrics: epoch={self.local_epoch} {summary}")
+        print(
+            f"Long-horizon metrics: "
+            f"epoch={self.epoch_offset + self.local_epoch} {summary}"
+        )
 
     def on_epoch_end(self):
         self.local_epoch += 1

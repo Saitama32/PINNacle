@@ -256,6 +256,7 @@ def run_deepxde_rl_training(
     #     rl_agent.model_params.load_state_dict(params_state)
 
     idx_traj = 0
+    validation_epoch = 0
 
     for traj in range(train_args["n_trajectories"]):
         # реинициализация сети на новую траекторию
@@ -319,15 +320,18 @@ def run_deepxde_rl_training(
                 diagnostics_dir,
                 f"step_{t + 1:02d}_{optimizer_slug}_metrics.csv",
             )
+            metrics_callback = None
             if log_long_horizon_metrics:
+                metrics_callback = LongHorizonMetricsCallback(
+                    metrics_path,
+                    log_every=image_log_every,
+                    experiment=rl_agent_params.get("exp"),
+                    metric_step=agent_step,
+                    epoch_offset=validation_epoch,
+                )
                 callbacks.insert(
                     0,
-                    LongHorizonMetricsCallback(
-                        metrics_path,
-                        log_every=image_log_every,
-                        experiment=rl_agent_params.get("exp"),
-                        metric_step=agent_step,
-                    ),
+                    metrics_callback,
                 )
             if save_solution_images:
                 step_save_path = os.path.join(
@@ -358,6 +362,8 @@ def run_deepxde_rl_training(
                 model_save_path=step_save_path,
                 save_model=False,
             )
+            if metrics_callback is not None:
+                validation_epoch += metrics_callback.local_epoch
 
             solver_models = _landscape_snapshots(saver.saved_models)
             tester_callback = next(
