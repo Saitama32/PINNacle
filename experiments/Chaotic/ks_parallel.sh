@@ -6,6 +6,7 @@ TIMEOUT_SECONDS="${KS_TIMEOUT_SECONDS:-42000}" # 11 hours 40 minutes
 KILL_GRACE_SECONDS=30
 PIDS=()
 TIMER_PID=""
+LAUNCHER_PID=$BASHPID
 
 if ! [[ "$TIMEOUT_SECONDS" =~ ^[1-9][0-9]*$ ]]; then
     echo "KS_TIMEOUT_SECONDS must be a positive integer, got: $TIMEOUT_SECONDS" >&2
@@ -109,7 +110,7 @@ echo "Forced shutdown scheduled in 11 hours 40 minutes (${TIMEOUT_SECONDS}s)."
     sleep "$TIMEOUT_SECONDS" &
     sleeper_pid="$!"
     wait "$sleeper_pid"
-    kill -USR1 "$PPID" 2>/dev/null || true
+    kill -USR1 "$LAUNCHER_PID" 2>/dev/null || true
 ) &
 TIMER_PID="$!"
 
