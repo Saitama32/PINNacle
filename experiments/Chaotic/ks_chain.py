@@ -1,5 +1,6 @@
 # run_ks_rl.py
 import os, sys
+import kagglehub
 
 os.environ["DDEBACKEND"] = "pytorch"
 
@@ -13,6 +14,9 @@ experiment = start_comet_experiment(
     project_name="rlpinn-ks-expand-set-rwf-tolerance",
 )
 
+
+kaggle_account = kagglehub.whoami()["username"]
+print("KAGGLE_ACCOUNT:", kaggle_account)
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 import time
 import argparse
@@ -48,6 +52,14 @@ def build_get_model_ks(
     def get_model():
         pde = KuramotoSivashinskyEquation()
 
+        # Resampling the complete TimePDE cloud must also rebuild the IC loss
+        # points. Use an exact t=t0 filter so near-initial pseudo domain points
+        # cannot be misclassified as IC points and change data.num_bcs.
+        initial_time = dde.config.real(np)(pde.bbox[2])
+        pde.bcs[0].on_initial = (
+            lambda points, _: points[:, -1] == initial_time
+        )
+
         layers = [
             pde.input_dim,
             *parse_hidden_layers(argparse.Namespace(hidden_layers=hidden_layers)),
@@ -80,6 +92,8 @@ def build_get_model_ks(
                 loss_weights[i] = 1.0
 
         model = pde.create_model(net)
+        model.data.train_distribution = "pseudo"
+        model.data.resample_train_points(pde_points=True, bc_points=True)
         return model, loss_weights
 
     return get_model
@@ -132,7 +146,13 @@ def main():
     train_args = {
         "iterations": 1,
         "display_every": args.log_every,
-        "callbacks": [],
+        "callbacks": [
+            dde.callbacks.PDEPointResampler(
+                period=1,
+                pde_points=True,
+                bc_points=True,
+            ),
+        ],
         "n_trajectories": args.n_trajectories,
         "n_save_models": args.n_save_models,
         "save_solution_images": True,
