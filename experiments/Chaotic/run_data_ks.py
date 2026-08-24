@@ -734,27 +734,6 @@ def validate_args(args) -> None:
         raise ValueError("PINN evaluation point counts must be positive")
     if args.pinn_log_every < 0:
         raise ValueError("pinn_log_every must be non-negative")
-    if args.n_iter_pinn < 0:
-        raise ValueError("n_iter_pinn must be non-negative")
-    if args.n_iter_pinn > 0:
-        if args.pinn_train_domain_points <= 0 or args.pinn_train_ic_points <= 0:
-            raise ValueError("PINN fine-tuning point counts must be positive")
-        if args.pinn_train_log_every <= 0:
-            raise ValueError("pinn_train_log_every must be positive")
-        if args.pinn_lr <= 0 or not math.isfinite(args.pinn_lr):
-            raise ValueError("pinn_lr must be positive and finite")
-        if args.pinn_weight_decay < 0 or not math.isfinite(args.pinn_weight_decay):
-            raise ValueError("pinn_weight_decay must be finite and non-negative")
-        if args.pinn_grad_clip < 0 or not math.isfinite(args.pinn_grad_clip):
-            raise ValueError("pinn_grad_clip must be finite and non-negative")
-        if args.pinn_lr_decay_steps <= 0:
-            raise ValueError("pinn_lr_decay_steps must be positive")
-        if args.pinn_lr_decay_rate <= 0 or not math.isfinite(args.pinn_lr_decay_rate):
-            raise ValueError("pinn_lr_decay_rate must be positive and finite")
-        if args.pinn_lr_min < 0 or not math.isfinite(args.pinn_lr_min):
-            raise ValueError("pinn_lr_min must be finite and non-negative")
-        if args.pinn_lr_scheduler == "cosine" and args.pinn_lr_min > args.pinn_lr:
-            raise ValueError("pinn_lr_min cannot exceed pinn_lr")
     if args.derivative_grid_nx < 2 or args.derivative_grid_nt < 2:
         raise ValueError("Derivative grid dimensions must be at least 2")
     if args.derivative_batch_size <= 0:
@@ -982,19 +961,6 @@ def run(args) -> Path:
             comments="",
         )
 
-    pinn_finetune_metric = {"enabled": False, "iterations": 0}
-    if args.n_iter_pinn > 0:
-        pinn_finetune_metric = train_pinn_stage(
-            network,
-            (input_min, input_min + input_scale),
-            test_points if len(test_indices) else train_points,
-            test_values if len(test_indices) else train_values,
-            args,
-            device,
-            metadata,
-            run_dir,
-        )
-
     train_metric = prediction_metrics(
         network, train_points, train_values, args.eval_batch_size, device
     )
@@ -1022,22 +988,13 @@ def run(args) -> Path:
             device=device,
         )
     metrics = {
-        "best_iteration": (
-            pinn_finetune_metric["best_iteration"]
-            if args.n_iter_pinn > 0
-            else best_iteration
-        ),
+        "best_iteration": best_iteration,
         "supervised_best_iteration": best_iteration,
-        "selection_metric": (
-            "pinn_loss_weighted"
-            if args.n_iter_pinn > 0
-            else ("test_mse" if test_metric is not None else "train_mse")
-        ),
+        "selection_metric": "test_mse" if test_metric is not None else "train_mse",
         "train": train_metric,
         "test": test_metric,
         "all_data": all_metric,
         "pinn_loss": pinn_metric,
-        "pinn_finetune": pinn_finetune_metric,
         "derivative_grid": derivative_metric,
     }
     with (run_dir / "metrics.json").open("w", encoding="utf-8") as file_obj:
@@ -1064,19 +1021,10 @@ def run(args) -> Path:
         points,
         values[:, 0],
         prediction,
-        (
-            f"Data-driven + PINN KS, relative L2={all_metric['relative_l2']:.3e}"
-            if args.n_iter_pinn > 0
-            else f"Data-driven KS, relative L2={all_metric['relative_l2']:.3e}"
-        ),
-    )
-    pinn_best_text = (
-        f", PINN best step={pinn_finetune_metric['best_iteration']}"
-        if args.n_iter_pinn > 0
-        else ""
+        f"Data-driven KS, relative L2={all_metric['relative_l2']:.3e}",
     )
     print(
-        f"Finished: supervised best step={best_iteration}{pinn_best_text}, "
+        f"Finished: supervised best step={best_iteration}, "
         f"all-data relative L2={all_metric['relative_l2']:.6e}, "
         f"weighted PINN loss={pinn_metric['pinn_loss_weighted']:.6e}; "
         f"artifacts={run_dir}"
@@ -1090,7 +1038,7 @@ def parse_args(argv: Optional[list[str]] = None):
     )
     parser.add_argument("--data", type=str, default=str(PROJECT_ROOT / "ref" / "Kuramoto_Sivashinsky.dat"))
     parser.add_argument("--out", type=str, default=str(PROJECT_ROOT / "runs_data_ks"))
-    parser.add_argument("--hidden-layers", type=str, default="200*5")
+    parser.add_argument("--hidden-layers", type=str, default="100*5")
     parser.add_argument("--rwf-mu", type=float, default=1.0)
     parser.add_argument("--rwf-sigma", type=float, default=0.1)
     parser.add_argument("--iterations", type=int, default=20000)
@@ -1102,7 +1050,7 @@ def parse_args(argv: Optional[list[str]] = None):
     parser.add_argument(
         "--precision", choices=["float16", "float32", "float64"], default="float32"
     )
-    parser.add_argument("--lr", type=float, default=1e-3)
+    parser.add_argument("--lr", type=float, default=5e-4)
     parser.add_argument(
         "--lr-scheduler",
         choices=["none", "exponential", "cosine", "step"],
@@ -1164,7 +1112,7 @@ def parse_args(argv: Optional[list[str]] = None):
     parser.add_argument(
         "--n-iter-pinn",
         type=int,
-        default=0,
+        default=1000,
         help="After supervised training, run this many KS PINN fine-tuning iterations.",
     )
     parser.add_argument(
@@ -1172,7 +1120,7 @@ def parse_args(argv: Optional[list[str]] = None):
         choices=["adam", "rmsprop", "muon", "soap"],
         default="adam",
     )
-    parser.add_argument("--pinn-lr", type=float, default=1e-4)
+    parser.add_argument("--pinn-lr", type=float, default=1e-6)
     parser.add_argument("--pinn-weight-decay", type=float, default=0.0)
     parser.add_argument(
         "--pinn-lr-scheduler",
