@@ -24,17 +24,17 @@ from experiments.Chaotic.run_data_ks_local_basin import (
 # Command-line arguments still have priority over these values.
 CHAIN_DEFAULTS = {
     # Initial checkpoint and common settings.
-    "model": r"C:\Users\Рустам\Documents\GitHub\PINNacle\runs_data_ks_local_basin_chain\08.25-05.17.20-ks-local-basin-chain\steps\08.25-06.06.30-ks-local-basin-float64\weights_local_best.pt",
+    "model": r"C:\Users\Рустам\Documents\GitHub\PINNacle\runs_data_ks_local_basin_chain\08.25-07.06.04-ks-local-basin-chain\steps\08.25-09.05.09-ks-local-basin-float64\weights_local_best.pt",
     "data": None,
     # run_chain replaces this with <chain_out>/.../steps for every chain step.
     "out": str(PROJECT_ROOT / "runs_data_ks_local_basin"),
     "precision": "float64",
     "device": "auto",
-    "seed": 2367,
+    "seed": 23678,
 
     # Points used to construct the local linear problem.
-    "jacobian_domain_points": 3072,
-    "jacobian_data_points": 3072,
+    "jacobian_domain_points": 2048,
+    "jacobian_data_points": 2048,
     "validation_domain_points": 10000,
     "validation_batch_size": 256,
     "eval_batch_size": 16384,
@@ -50,7 +50,7 @@ CHAIN_DEFAULTS = {
     "step_scales": [0.2, 0.25, 0.3, 0.35, 0.4],
     "damping": 1e-5,
     "dampings": [1e-5, 1e-4, 5e-4],
-    "max_l2_growth": 0.0,
+    "max_l2_growth": 0.2,
 
     # Chain settings. Each step starts from the previous step's best checkpoint.
     "chain_steps": 5,
