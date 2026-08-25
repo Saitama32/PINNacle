@@ -132,6 +132,73 @@ def evaluate_space_time(network, x, times, need_x_derivative, backward):
     return values, derivative_x
 
 
+class ReferenceFourierInterpolator(torch.nn.Module):
+    """Differentiable periodic-x, piecewise-linear-time reference interpolant."""
+
+    def __init__(self, times, coefficients, wave_numbers, x_lower):
+        super().__init__()
+        self.register_buffer("times", times)
+        self.register_buffer("coefficients", coefficients)
+        self.register_buffer("wave_numbers", wave_numbers)
+        self.x_lower = float(x_lower)
+
+    def forward(self, points):
+        x = points[:, 0]
+        t = points[:, 1]
+        right = torch.searchsorted(self.times, t, right=False)
+        right = torch.clamp(right, 1, len(self.times) - 1)
+        left = right - 1
+        t_left = self.times[left]
+        fraction = (t - t_left) / (self.times[right] - t_left)
+        coefficients = (
+            (1.0 - fraction[:, None]) * self.coefficients[left]
+            + fraction[:, None] * self.coefficients[right]
+        )
+        phase = torch.exp(
+            1j * (x[:, None] - self.x_lower) * self.wave_numbers[None, :]
+        )
+        return torch.sum(coefficients * phase, dim=1).real[:, None]
+
+
+def build_reference_interpolator(points, values, bounds, device, dtype):
+    """Build a diagnostic-only interpolant from a rectangular reference grid."""
+
+    x_values = np.unique(points[:, 0].astype(np.float64))
+    t_values = np.unique(points[:, 1].astype(np.float64))
+    if len(points) != len(x_values) * len(t_values):
+        raise ValueError("Reference Duhamel diagnostic requires a rectangular data grid")
+    field = np.empty((len(t_values), len(x_values)), dtype=np.float64)
+    x_indices = np.searchsorted(x_values, points[:, 0])
+    t_indices = np.searchsorted(t_values, points[:, 1])
+    field[t_indices, x_indices] = values[:, 0]
+
+    duplicated_endpoint = bool(
+        len(x_values) > 2
+        and np.allclose(field[:, -1], field[:, 0], rtol=1e-8, atol=1e-10)
+    )
+    periodic_field = field[:, :-1] if duplicated_endpoint else field
+    source_nx = periodic_field.shape[1]
+    length = float(bounds[1][0] - bounds[0][0])
+    field_tensor = torch.as_tensor(periodic_field, dtype=dtype, device=device)
+    coefficients = torch.fft.fft(field_tensor, dim=1, norm="forward")
+    wave_numbers = 2.0 * math.pi * torch.fft.fftfreq(
+        source_nx, d=length / source_nx, dtype=dtype, device=device
+    )
+    network = ReferenceFourierInterpolator(
+        torch.as_tensor(t_values, dtype=dtype, device=device),
+        coefficients,
+        wave_numbers,
+        bounds[0][0],
+    ).to(device)
+    return network, {
+        "source_num_x": int(source_nx),
+        "source_num_t": int(len(t_values)),
+        "duplicated_periodic_endpoint_removed": duplicated_endpoint,
+        "space_interpolation": "periodic Fourier",
+        "time_interpolation": "piecewise linear",
+    }
+
+
 def mild_duhamel_defects(network, left_times, grid, args, backward=True):
     """Compute local mild defects without u_t, u_xx, u_xxx, or u_xxxx."""
 
@@ -146,7 +213,8 @@ def mild_duhamel_defects(network, left_times, grid, args, backward=True):
     value_left = endpoint_values[:count]
     value_right = endpoint_values[count:]
     # norm="forward" makes these discrete approximations of Fourier-series
-    # coefficients, so the loss does not change merely because Nx changes.
+    # coefficients. Parseval then requires an additional Nx when a mean over
+    # Fourier modes is used to recover the physical-space mean-square defect.
     hat_left = torch.fft.fft(value_left, dim=1, norm="forward")
     hat_right = torch.fft.fft(value_right, dim=1, norm="forward")
 
@@ -168,10 +236,17 @@ def mild_duhamel_defects(network, left_times, grid, args, backward=True):
     )
     defect = hat_right - grid["propagator"][None, :] * hat_left - integral
     squared_magnitude = defect.real.square() + defect.imag.square()
+    nx = defect.shape[1]
+    fourier_mse = torch.mean(squared_magnitude)
+    physical_mse = nx * fourier_mse
+    per_interval_fourier_mse = torch.mean(squared_magnitude, dim=1)
     return {
         "defect": defect,
-        "loss": torch.mean(squared_magnitude),
-        "per_interval_rms": torch.sqrt(torch.mean(squared_magnitude, dim=1)),
+        "loss": physical_mse,
+        "fourier_mse": fourier_mse,
+        "physical_rms": torch.sqrt(physical_mse),
+        "per_interval_fourier_mse": per_interval_fourier_mse,
+        "per_interval_rms": torch.sqrt(nx * per_interval_fourier_mse),
         "per_interval_mean_abs": torch.mean(torch.abs(defect), dim=1),
         "per_interval_max_abs": torch.max(torch.abs(defect), dim=1).values,
     }
@@ -195,20 +270,25 @@ def initial_condition_loss(network, x, time_lower):
 def fixed_mild_diagnostics(network, fixed_ic_x, grid, args, device):
     dtype = grid["x"].dtype
     losses = []
+    fourier_losses = []
     rms = []
     means = []
     maxima = []
     for _, _, left_times in iter_interval_chunks(args, device, dtype):
         result = mild_duhamel_defects(network, left_times, grid, args, backward=False)
         losses.append(result["loss"].detach() * len(left_times))
+        fourier_losses.append(result["fourier_mse"].detach() * len(left_times))
         rms.append(result["per_interval_rms"].detach())
         means.append(result["per_interval_mean_abs"].detach())
         maxima.append(result["per_interval_max_abs"].detach())
     mild_loss = torch.sum(torch.stack(losses)) / args.resolved_mild_intervals
+    fourier_mse = torch.sum(torch.stack(fourier_losses)) / args.resolved_mild_intervals
     ic_loss = initial_condition_loss(network, fixed_ic_x, args.time_lower).detach()
     interval_rms = torch.cat(rms)
     return {
         "mild_loss": float(mild_loss.cpu()),
+        "fourier_mse": float(fourier_mse.cpu()),
+        "physical_rms": float(torch.sqrt(mild_loss).cpu()),
         "ic_loss": float(ic_loss.cpu()),
         "total_loss": float(
             (args.mild_loss_weight * mild_loss + args.ic_loss_weight * ic_loss).cpu()
@@ -219,6 +299,66 @@ def fixed_mild_diagnostics(network, fixed_ic_x, grid, args, device):
         "interval_mean_abs": torch.cat(means).cpu().numpy(),
         "interval_max_abs": torch.cat(maxima).cpu().numpy(),
     }
+
+
+def evaluate_reference_duhamel(points, values, bounds, args, device, run_dir):
+    """Evaluate the exact-data trajectory with the same Duhamel implementation."""
+
+    dtype = {"float32": torch.float32, "float64": torch.float64}[args.precision]
+    reference, interpolation = build_reference_interpolator(
+        points, values, bounds, device, dtype
+    )
+    fixed_ic_x = torch.linspace(
+        float(bounds[0][0]),
+        float(bounds[1][0]),
+        args.pinn_train_ic_points,
+        dtype=dtype,
+        device=device,
+    ).reshape(-1, 1)
+    results = {}
+    for quadrature_points in sorted({3, 5, args.mild_quadrature_points}):
+        diagnostic_args = copy.copy(args)
+        diagnostic_args.mild_quadrature_points = quadrature_points
+        grid = build_mild_grid(bounds[0], bounds[1], diagnostic_args, device)
+        diagnostics = fixed_mild_diagnostics(
+            reference, fixed_ic_x, grid, diagnostic_args, device
+        )
+        scalar_diagnostics = {
+            name: value
+            for name, value in diagnostics.items()
+            if not isinstance(value, np.ndarray)
+        }
+        results[f"q{quadrature_points}"] = scalar_diagnostics
+        np.savez_compressed(
+            run_dir / f"reference_duhamel_defects_q{quadrature_points}.npz",
+            t_left=args.time_lower
+            + np.arange(args.resolved_mild_intervals) * args.resolved_mild_delta_t,
+            t_right=args.time_lower
+            + (np.arange(args.resolved_mild_intervals) + 1)
+            * args.resolved_mild_delta_t,
+            physical_rms=diagnostics["interval_rms"],
+            fourier_mean_abs=diagnostics["interval_mean_abs"],
+            fourier_max_abs=diagnostics["interval_max_abs"],
+        )
+        print(
+            f"Reference Duhamel Q={quadrature_points}: "
+            f"physical_mse={diagnostics['mild_loss']:.6e} "
+            f"physical_rms={diagnostics['physical_rms']:.6e} "
+            f"fourier_mse={diagnostics['fourier_mse']:.6e} "
+            f"max_interval_rms={diagnostics['max_defect_per_interval']:.6e}"
+        )
+    payload = {
+        "interpolation": interpolation,
+        "num_x_fft": args.mild_num_x_fft,
+        "delta_t": args.resolved_mild_delta_t,
+        "num_intervals": args.resolved_mild_intervals,
+        "results": results,
+    }
+    with (run_dir / "reference_duhamel_metrics.json").open(
+        "w", encoding="utf-8"
+    ) as file_obj:
+        json.dump(payload, file_obj, indent=2, sort_keys=True)
+    return payload
 
 
 def build_mild_optimizer(network, args):
@@ -362,6 +502,8 @@ def train_mild(
             row = {
                 "iteration": iteration,
                 "mild_loss": diagnostics["mild_loss"],
+                "fourier_mse": diagnostics["fourier_mse"],
+                "physical_rms": diagnostics["physical_rms"],
                 "ic_loss": diagnostics["ic_loss"],
                 "total_loss": diagnostics["total_loss"],
                 "mean_defect_per_interval": diagnostics["mean_defect_per_interval"],
@@ -375,7 +517,10 @@ def train_mild(
             }
             rows.append(row)
             print(
-                f"Duhamel step={iteration:7d} mild={diagnostics['mild_loss']:.6e} "
+                f"Duhamel step={iteration:7d} physical_mse="
+                f"{diagnostics['mild_loss']:.6e} "
+                f"physical_rms={diagnostics['physical_rms']:.6e} "
+                f"fourier_mse={diagnostics['fourier_mse']:.6e} "
                 f"ic={diagnostics['ic_loss']:.6e} total={diagnostics['total_loss']:.6e} "
                 f"mean_interval={diagnostics['mean_defect_per_interval']:.6e} "
                 f"max_interval={diagnostics['max_defect_per_interval']:.6e} "
@@ -405,6 +550,8 @@ def train_mild(
         "best_iteration": best_iteration,
         "best_total_loss": best_score,
         "last_mild_loss": final_diagnostics["mild_loss"],
+        "last_fourier_mse": final_diagnostics["fourier_mse"],
+        "last_physical_rms": final_diagnostics["physical_rms"],
         "last_ic_loss": final_diagnostics["ic_loss"],
         "gradients_verified": gradients_verified,
         "resolved_delta_t": args.resolved_mild_delta_t,
@@ -572,6 +719,11 @@ def run(args) -> Path:
 
     initial_data = prediction_metrics(network, points, values, args.eval_batch_size, device)
     initial_strong = evaluate_pinn_loss(network, (lower, upper), args, device)
+    reference_duhamel = None
+    if args.reference_duhamel_check:
+        reference_duhamel = evaluate_reference_duhamel(
+            points, values, (lower, upper), args, device, run_dir
+        )
     mild_info = train_mild(
         network,
         points,
@@ -625,6 +777,7 @@ def run(args) -> Path:
     metrics = {
         "configuration": resolved,
         "initial": {"data": initial_data, "strong_pinn": initial_strong},
+        "reference_duhamel": reference_duhamel,
         "mild_stage": mild_info,
         "after_mild": {
             "data": after_mild_data,
@@ -680,6 +833,13 @@ def build_parser():
         help="Memory chunk only; gradients still average over every time interval.",
     )
     parser.add_argument("--mild-log-every", type=int, default=100)
+    parser.add_argument(
+        "--reference-duhamel-check",
+        type=strong_ks.parse_bool,
+        default=True,
+        metavar="true|false",
+        help="Before training, measure the same Duhamel defect on the reference data for Q=3 and Q=5.",
+    )
     parser.add_argument(
         "--hidden-layers",
         default="100*5",
