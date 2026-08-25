@@ -2,8 +2,9 @@
 
 The script solves, around the loaded parameters theta, the linearized problem
 
-    min_delta ||r + J_r delta||^2
-              + lambda ||e_u + J_u delta||^2
+    min_delta MSE(r + J_r delta)
+              + lambda_data MSE(e_u + J_u delta)
+              + lambda_ic MSE(e_ic + J_ic delta)
               + mu ||delta||^2,
 
 and then evaluates scaled versions of delta in the original nonlinear network.
@@ -53,6 +54,17 @@ def comma_separated_floats(value: str) -> list[float]:
     if not values or not all(math.isfinite(item) and item >= 0 for item in values):
         raise argparse.ArgumentTypeError("values must be finite and non-negative")
     return values
+
+
+def parse_bool(value) -> bool:
+    if isinstance(value, bool):
+        return value
+    normalized = str(value).strip().lower()
+    if normalized in {"1", "true", "yes", "y", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "n", "off"}:
+        return False
+    raise argparse.ArgumentTypeError("expected true or false")
 
 
 def resolve_model_path(path: str) -> Path:
@@ -141,6 +153,33 @@ def residual_mse(network, points_numpy, alpha, beta, gamma, batch_size, device):
     return square_sum / count_total
 
 
+def exact_initial_condition(x):
+    return np.cos(x) * (1.0 + np.sin(x))
+
+
+def initial_condition_points(x, initial_time, numpy_dtype):
+    x = np.asarray(x, dtype=numpy_dtype).reshape(-1, 1)
+    return np.hstack((x, np.full_like(x, initial_time)))
+
+
+def initial_condition_mse(network, points_numpy, values_numpy, batch_size, device):
+    square_sum = 0.0
+    count_total = 0
+    network.eval()
+    with torch.no_grad():
+        for start in range(0, len(points_numpy), batch_size):
+            points = torch.as_tensor(
+                points_numpy[start : start + batch_size], device=device
+            )
+            values = torch.as_tensor(
+                values_numpy[start : start + batch_size], device=device
+            )
+            error = (network(points) - values).detach().double()
+            square_sum += float(torch.sum(error.square()).cpu())
+            count_total += error.numel()
+    return square_sum / count_total
+
+
 def parameter_state(parameters):
     return [parameter.detach().clone() for parameter in parameters]
 
@@ -175,7 +214,17 @@ def gradient_cosine(jacobian_a, error_a, jacobian_b, error_b):
     return float(torch.dot(gradient_a, gradient_b) / denominator)
 
 
-def solve_dual_step(j_residual, residual, j_data, data_error, data_weight, damping):
+def solve_dual_step(
+    j_residual,
+    residual,
+    j_data,
+    data_error,
+    data_weight,
+    damping,
+    j_ic=None,
+    ic_error=None,
+    ic_weight=0.0,
+):
     residual_scale = 1.0 / math.sqrt(residual.numel())
     data_scale = math.sqrt(data_weight / data_error.numel())
     blocks = [residual_scale * j_residual]
@@ -183,6 +232,10 @@ def solve_dual_step(j_residual, residual, j_data, data_error, data_weight, dampi
     if data_weight > 0:
         blocks.append(data_scale * j_data)
         targets.append(data_scale * data_error)
+    if j_ic is not None and ic_error is not None and ic_weight > 0:
+        ic_scale = math.sqrt(ic_weight / ic_error.numel())
+        blocks.append(ic_scale * j_ic)
+        targets.append(ic_scale * ic_error)
     design = torch.cat(blocks, dim=0)
     target = torch.cat(targets, dim=0)
     gram = design @ design.T
@@ -198,6 +251,7 @@ def solve_dual_step(j_residual, residual, j_data, data_error, data_weight, dampi
     delta = -(design.T @ dual)
     diagnostics = {
         "data_weight": data_weight,
+        "ic_weight": ic_weight,
         "relative_damping": damping,
         "effective_damping": effective_damping,
         "design_rows": design.shape[0],
@@ -208,7 +262,13 @@ def solve_dual_step(j_residual, residual, j_data, data_error, data_weight, dampi
     return delta, diagnostics
 
 
-def save_pareto_plot(path: Path, rows: list[dict], initial_l2: float, initial_pde: float):
+def save_pareto_plot(
+    path: Path,
+    rows: list[dict],
+    initial_l2: float,
+    initial_objective: float,
+    include_ic: bool,
+):
     import matplotlib.pyplot as plt
 
     figure, axis = plt.subplots(figsize=(8, 6), constrained_layout=True)
@@ -222,14 +282,25 @@ def save_pareto_plot(path: Path, rows: list[dict], initial_l2: float, initial_pd
         selected = sorted(selected, key=lambda row: row["step_scale"])
         axis.plot(
             [row["full_data_relative_l2"] for row in selected],
-            [row["validation_pde_mse"] for row in selected],
+            [row["validation_objective"] for row in selected],
             marker="o",
             label=f"damping={damping:g}, lambda={weight:g}",
         )
-    axis.scatter([initial_l2], [initial_pde], color="black", marker="*", s=160, label="initial")
+    axis.scatter(
+        [initial_l2],
+        [initial_objective],
+        color="black",
+        marker="*",
+        s=160,
+        label="initial",
+    )
     axis.set_yscale("log")
     axis.set_xlabel("Full-data relative L2")
-    axis.set_ylabel("Validation PDE MSE")
+    axis.set_ylabel(
+        "Validation PDE MSE + weighted IC MSE"
+        if include_ic
+        else "Validation PDE MSE"
+    )
     axis.set_title("Nonlinear validation of local Gauss-Newton directions")
     axis.grid(True, which="both", alpha=0.25)
     axis.legend(fontsize=8)
@@ -248,6 +319,12 @@ def run(args) -> Path:
         raise ValueError("Validation point counts must be positive")
     if args.max_l2_growth < 0:
         raise ValueError("max_l2_growth must be non-negative")
+    if args.ic_weight < 0 or not math.isfinite(args.ic_weight):
+        raise ValueError("ic_weight must be finite and non-negative")
+    if args.include_ic and (
+        args.jacobian_ic_points <= 0 or args.validation_ic_points <= 0
+    ):
+        raise ValueError("IC point counts must be positive when IC is enabled")
     dampings = args.dampings if args.dampings is not None else [args.damping]
     if not all(math.isfinite(damping) and damping >= 0 for damping in dampings):
         raise ValueError("dampings must be finite and non-negative")
@@ -281,6 +358,8 @@ def run(args) -> Path:
     jacobian_domain_rng = np.random.default_rng(args.seed)
     validation_domain_rng = np.random.default_rng(args.seed + 1)
     jacobian_data_rng = np.random.default_rng(args.seed + 2)
+    jacobian_ic_rng = np.random.default_rng(args.seed + 3)
+    validation_ic_rng = np.random.default_rng(args.seed + 4)
     jacobian_domain_numpy = jacobian_domain_rng.uniform(
         lower, upper, size=(args.jacobian_domain_points, 2)
     ).astype(numpy_dtype)
@@ -292,6 +371,29 @@ def run(args) -> Path:
     ]
     jacobian_data_numpy = all_points[data_indices]
     jacobian_values_numpy = all_values[data_indices]
+    jacobian_ic_points_numpy = None
+    jacobian_ic_values_numpy = None
+    validation_ic_points_numpy = None
+    validation_ic_values_numpy = None
+    if args.include_ic:
+        jacobian_ic_x = jacobian_ic_rng.uniform(
+            lower[0], upper[0], size=(args.jacobian_ic_points, 1)
+        ).astype(numpy_dtype)
+        validation_ic_x = validation_ic_rng.uniform(
+            lower[0], upper[0], size=(args.validation_ic_points, 1)
+        ).astype(numpy_dtype)
+        jacobian_ic_points_numpy = initial_condition_points(
+            jacobian_ic_x, lower[1], numpy_dtype
+        )
+        validation_ic_points_numpy = initial_condition_points(
+            validation_ic_x, lower[1], numpy_dtype
+        )
+        jacobian_ic_values_numpy = exact_initial_condition(jacobian_ic_x).astype(
+            numpy_dtype
+        )
+        validation_ic_values_numpy = exact_initial_condition(validation_ic_x).astype(
+            numpy_dtype
+        )
 
     parameters = trainable_parameters(network)
     initial_parameter_state = parameter_state(parameters)
@@ -310,6 +412,20 @@ def run(args) -> Path:
         gamma,
         args.validation_batch_size,
         device,
+    )
+    initial_validation_ic = (
+        initial_condition_mse(
+            network,
+            validation_ic_points_numpy,
+            validation_ic_values_numpy,
+            args.eval_batch_size,
+            device,
+        )
+        if args.include_ic
+        else 0.0
+    )
+    initial_validation_objective = (
+        initial_validation_pde + args.ic_weight * initial_validation_ic
     )
 
     network.eval()
@@ -330,11 +446,33 @@ def run(args) -> Path:
     j_data = output_parameter_jacobian(data_error, parameters, "data")
     del data_error, data_tensor, data_target
 
+    j_ic = None
+    ic_error_initial = None
+    if args.include_ic:
+        ic_tensor = torch.as_tensor(jacobian_ic_points_numpy, device=device)
+        ic_target = torch.as_tensor(jacobian_ic_values_numpy, device=device)
+        ic_error = (network(ic_tensor) - ic_target).reshape(-1)
+        ic_error_initial = ic_error.detach().double().cpu()
+        j_ic = output_parameter_jacobian(ic_error, parameters, "IC")
+        del ic_error, ic_tensor, ic_target
+
     cosine = gradient_cosine(
         j_residual,
         residual_initial,
         j_data,
         data_error_initial,
+    )
+    pde_ic_cosine = (
+        gradient_cosine(
+            j_residual, residual_initial, j_ic, ic_error_initial
+        )
+        if args.include_ic
+        else None
+    )
+    data_ic_cosine = (
+        gradient_cosine(j_data, data_error_initial, j_ic, ic_error_initial)
+        if args.include_ic
+        else None
     )
     timestamp = time.strftime("%m.%d-%H.%M.%S", time.localtime())
     run_dir = Path(args.out).expanduser().resolve() / (
@@ -356,6 +494,9 @@ def run(args) -> Path:
                 data_error_initial,
                 data_weight,
                 damping,
+                j_ic=j_ic,
+                ic_error=ic_error_initial,
+                ic_weight=args.ic_weight if args.include_ic else 0.0,
             )
             relative_direction_norm = direction_metric["delta_norm"] / max(
                 parameter_norm, np.finfo(np.float64).eps
@@ -378,6 +519,18 @@ def run(args) -> Path:
                     dtype=torch.float64,
                     device="cpu",
                 )
+                if args.include_ic:
+                    with torch.no_grad():
+                        sample_ic_prediction = network(
+                            torch.as_tensor(jacobian_ic_points_numpy, device=device)
+                        ).detach().double().cpu().reshape(-1)
+                    actual_ic_error = sample_ic_prediction - torch.as_tensor(
+                        jacobian_ic_values_numpy.reshape(-1),
+                        dtype=torch.float64,
+                        device="cpu",
+                    )
+                else:
+                    actual_ic_error = None
                 actual_domain_pde = residual_mse(
                     network,
                     jacobian_domain_numpy,
@@ -396,12 +549,31 @@ def run(args) -> Path:
                     args.validation_batch_size,
                     device,
                 )
+                validation_ic = (
+                    initial_condition_mse(
+                        network,
+                        validation_ic_points_numpy,
+                        validation_ic_values_numpy,
+                        args.eval_batch_size,
+                        device,
+                    )
+                    if args.include_ic
+                    else 0.0
+                )
+                validation_objective = (
+                    validation_pde + args.ic_weight * validation_ic
+                )
                 full_data_metric = prediction_metrics(
                     network, all_points, all_values, args.eval_batch_size, device
                 )
                 scaled_delta = step_scale * delta
                 linear_residual = residual_initial + j_residual @ scaled_delta
                 linear_data_error = data_error_initial + j_data @ scaled_delta
+                linear_ic_error = (
+                    ic_error_initial + j_ic @ scaled_delta
+                    if args.include_ic
+                    else None
+                )
                 row = {
                     "damping": damping,
                     "data_weight": data_weight,
@@ -410,6 +582,19 @@ def run(args) -> Path:
                     "linearized_pde_mse": float(torch.mean(linear_residual.square())),
                     "actual_jacobian_domain_pde_mse": actual_domain_pde,
                     "validation_pde_mse": validation_pde,
+                    "linearized_ic_mse": (
+                        float(torch.mean(linear_ic_error.square()))
+                        if linear_ic_error is not None
+                        else 0.0
+                    ),
+                    "actual_jacobian_ic_mse": (
+                        float(torch.mean(actual_ic_error.square()))
+                        if actual_ic_error is not None
+                        else 0.0
+                    ),
+                    "validation_ic_mse": validation_ic,
+                    "ic_weight": args.ic_weight if args.include_ic else 0.0,
+                    "validation_objective": validation_objective,
                     "linearized_data_mse": float(torch.mean(linear_data_error.square())),
                     "actual_jacobian_data_mse": float(torch.mean(actual_data_error.square())),
                     "full_data_mse": full_data_metric["mse"],
@@ -420,11 +605,13 @@ def run(args) -> Path:
                 print(
                     f"  scale={step_scale:g} linear_pde={row['linearized_pde_mse']:.6e} "
                     f"actual_pde={validation_pde:.6e} "
+                    f"validation_ic={validation_ic:.6e} "
+                    f"validation_objective={validation_objective:.6e} "
                     f"L2={full_data_metric['relative_l2']:.6e}"
                 )
                 if row["l2_feasible"] and (
                     best_row is None
-                    or row["validation_pde_mse"] < best_row["validation_pde_mse"]
+                    or row["validation_objective"] < best_row["validation_objective"]
                 ):
                     best_row = dict(row)
                     best_state = cpu_state_dict(network)
@@ -471,7 +658,8 @@ def run(args) -> Path:
         run_dir / "local_basin_pareto.png",
         rows,
         initial_data_metric["relative_l2"],
-        initial_validation_pde,
+        initial_validation_objective,
+        args.include_ic,
     )
     result = {
         "configuration": {
@@ -488,14 +676,25 @@ def run(args) -> Path:
             "jacobian_domain_seed": args.seed,
             "validation_domain_seed": args.seed + 1,
             "jacobian_data_seed": args.seed + 2,
+            "jacobian_ic_seed": args.seed + 3 if args.include_ic else None,
+            "validation_ic_seed": args.seed + 4 if args.include_ic else None,
         },
         "initial": {
             "data": initial_data_metric,
             "validation_pde_mse": initial_validation_pde,
+            "validation_ic_mse": initial_validation_ic,
+            "validation_objective": initial_validation_objective,
             "jacobian_domain_pde_mse": float(torch.mean(residual_initial.square())),
             "jacobian_data_mse": float(torch.mean(data_error_initial.square())),
+            "jacobian_ic_mse": (
+                float(torch.mean(ic_error_initial.square()))
+                if ic_error_initial is not None
+                else 0.0
+            ),
         },
         "pde_data_gradient_cosine": cosine,
+        "pde_ic_gradient_cosine": pde_ic_cosine,
+        "data_ic_gradient_cosine": data_ic_cosine,
         "directions": direction_diagnostics,
         "l2_feasibility_limit": initial_l2_limit,
         "best_feasible": best_row,
@@ -508,7 +707,7 @@ def run(args) -> Path:
     return run_dir
 
 
-def parse_args(argv=None):
+def build_parser():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model", default=r"C:\Users\Рустам\Documents\GitHub\PINNacle\runs_data_ks_local_basin\08.25-00.32.07-08.24-23.53.08-08.24-07.14.29-08.24-01.58.59-ks-data-rwf-soap-float32-lr-cosine-spectral-k40-150-layerall-float64-local-basin-float64-local-basin-float64\weights_local_best.pt")
     parser.add_argument("--data", default=None)
@@ -517,6 +716,16 @@ def parse_args(argv=None):
     parser.add_argument("--device", choices=["auto", "cpu", "cuda"], default="auto")
     parser.add_argument("--jacobian-domain-points", type=int, default=2048)
     parser.add_argument("--jacobian-data-points", type=int, default=2048)
+    parser.add_argument(
+        "--include-ic",
+        type=parse_bool,
+        default=True,
+        metavar="true|false",
+        help="Include the soft initial-condition block in the local objective.",
+    )
+    parser.add_argument("--ic-weight", type=float, default=100.0)
+    parser.add_argument("--jacobian-ic-points", type=int, default=512)
+    parser.add_argument("--validation-ic-points", type=int, default=2048)
     parser.add_argument("--validation-domain-points", type=int, default=10000)
     parser.add_argument("--validation-batch-size", type=int, default=256)
     parser.add_argument("--eval-batch-size", type=int, default=16384)
@@ -544,7 +753,7 @@ def parse_args(argv=None):
     parser.add_argument(
         "--dampings",
         type=comma_separated_floats,
-        default="1e-6,1e-5,1e-4",
+        default="1e-5,1e-4,5e-4",
         metavar="DAMPING,...",
         help="Comma-separated damping sweep values.",
     )
@@ -555,7 +764,11 @@ def parse_args(argv=None):
         help="Maximum relative growth of full-data L2RE for a feasible step.",
     )
     parser.add_argument("--seed", type=int, default=1234567)
-    return parser.parse_args(argv)
+    return parser
+
+
+def parse_args(argv=None):
+    return build_parser().parse_args(argv)
 
 
 if __name__ == "__main__":

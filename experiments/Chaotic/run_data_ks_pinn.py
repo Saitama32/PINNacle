@@ -781,14 +781,14 @@ def run(args) -> Path:
     return run_dir
 
 
-def parse_args(argv=None):
+def build_parser():
     parser = argparse.ArgumentParser(
         description=(
             "Fine-tune a data-pretrained KS RWF model using PDE, IC, and "
             "periodic boundary losses through the third spatial derivative."
         )
     )
-    parser.add_argument("--model", default=r"C:\Users\Рустам\Documents\GitHub\PINNacle\runs_data_ks_spectral_refine\08.24-07.14.29-08.24-01.58.59-ks-data-rwf-soap-float32-lr-cosine-spectral-k40-150-layerall-float64\weights_refined_last.pt")
+    parser.add_argument("--model", default=r"C:\Users\Рустам\Documents\GitHub\PINNacle\runs_data_ks_local_basin_chain\08.25-05.17.20-ks-local-basin-chain\steps\08.25-06.06.30-ks-local-basin-float64\weights_local_best.pt")
     parser.add_argument("--data", default=None)
     parser.add_argument("--out", default=str(PROJECT_ROOT / "runs_data_ks_pinn"))
     parser.add_argument(
@@ -801,7 +801,7 @@ def parse_args(argv=None):
     parser.add_argument(
         "--pinn-optimizer",
         choices=["adam", "rmsprop", "muon", "soap", "lbfgs"],
-        default="lbfgs",
+        default="soap",
     )
     parser.add_argument("--pinn-lr", type=float, default=1e-5)
     parser.add_argument("--pinn-weight-decay", type=float, default=0.0)
@@ -812,7 +812,7 @@ def parse_args(argv=None):
     )
     parser.add_argument("--pinn-lr-decay-steps", type=int, default=1000)
     parser.add_argument("--pinn-lr-decay-rate", type=float, default=0.9)
-    parser.add_argument("--pinn-lr-min", type=float, default=1e-7)
+    parser.add_argument("--pinn-lr-min", type=float, default=1e-6)
     parser.add_argument("--pinn-train-domain-points", type=int, default=256)
     parser.add_argument("--pinn-train-ic-points", type=int, default=256)
     parser.add_argument("--pinn-train-boundary-points", type=int, default=256)
@@ -891,7 +891,11 @@ def parse_args(argv=None):
     parser.add_argument("--muon-adam-beta2", type=float, default=0.95)
     parser.add_argument("--muon-weight-decay", type=float, default=0.0)
     parser.add_argument("--muon-adam-weight-decay", type=float, default=0.0)
-    return parser.parse_args(argv)
+    return parser
+
+
+def parse_args(argv=None):
+    return build_parser().parse_args(argv)
 
 
 if __name__ == "__main__":
