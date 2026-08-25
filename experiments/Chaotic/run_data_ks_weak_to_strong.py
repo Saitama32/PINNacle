@@ -41,6 +41,7 @@ from experiments.Chaotic.run_data_ks import (
     build_scheduler,
     evaluate_derivative_grid,
     evaluate_pinn_loss,
+    ks_residual,
     load_checkpoint,
     load_data,
     prediction_metrics,
@@ -324,6 +325,157 @@ def tensor_diagnostics(losses) -> dict[str, float]:
     }
 
 
+def weak_modal_rms(residuals) -> dict[str, torch.Tensor]:
+    """RMS over time for every real Fourier test direction."""
+
+    constant = torch.sqrt(torch.mean(residuals["constant"].detach().double().square()))
+    cosine = torch.sqrt(torch.mean(residuals["cosine"].detach().double().square(), dim=0))
+    sine = torch.sqrt(torch.mean(residuals["sine"].detach().double().square(), dim=0))
+    combined = torch.sqrt(cosine.square() + sine.square())
+    return {
+        "constant": constant,
+        "cosine": cosine,
+        "sine": sine,
+        "combined": combined,
+    }
+
+
+def _positive(value: np.ndarray) -> np.ndarray:
+    return np.maximum(value, np.finfo(np.float64).tiny)
+
+
+def save_weak_modal_diagnostic(network, bounds, args, device, run_dir, stage):
+    """Save E_k=sqrt(mean_t R_k(t)^2) without changing the training loss."""
+
+    import matplotlib.pyplot as plt
+
+    lower, upper = bounds
+    grid = build_weak_grid(lower, upper, args, device)
+    dtype = {"float32": torch.float32, "float64": torch.float64}[args.precision]
+    times = torch.linspace(
+        float(lower[1]),
+        float(upper[1]),
+        args.weak_diagnostic_num_time_samples,
+        dtype=dtype,
+        device=device,
+    ).reshape(-1, 1)
+    network.eval()
+    residuals = weak_fourier_residuals(network, times, grid, args, backward=False)
+    modal = weak_modal_rms(residuals)
+    modes = np.arange(1, args.resolved_weak_modes + 1)
+    constant = float(modal["constant"].cpu())
+    cosine = modal["cosine"].cpu().numpy()
+    sine = modal["sine"].cpu().numpy()
+    combined = modal["combined"].cpu().numpy()
+    np.savez_compressed(
+        run_dir / f"weak_modal_residuals_{stage}.npz",
+        times=times.detach().cpu().numpy()[:, 0],
+        modes=modes,
+        constant_rms=constant,
+        cosine_rms=cosine,
+        sine_rms=sine,
+        combined_rms=combined,
+        constant_residual=residuals["constant"].detach().cpu().numpy(),
+        cosine_residual=residuals["cosine"].detach().cpu().numpy(),
+        sine_residual=residuals["sine"].detach().cpu().numpy(),
+    )
+    figure, axis = plt.subplots(figsize=(9, 5), constrained_layout=True)
+    axis.scatter([0], [_positive(np.asarray([constant]))[0]], label="constant k=0", zorder=4)
+    if modes.size:
+        axis.semilogy(modes, _positive(cosine), label="cos RMS")
+        axis.semilogy(modes, _positive(sine), label="sin RMS")
+        axis.semilogy(modes, _positive(combined), label="pair magnitude", linewidth=2)
+    axis.set(xlabel="Fourier mode k", ylabel=r"$E_k$", title=f"Weak residual modes ({stage})")
+    axis.grid(True, which="both", alpha=0.3)
+    axis.legend()
+    figure.savefig(run_dir / f"weak_modal_residuals_{stage}.png", dpi=180)
+    plt.close(figure)
+    return {
+        "constant_rms": constant,
+        "max_pair_rms": float(np.max(combined)) if combined.size else 0.0,
+        "edge_pair_rms": float(combined[-1]) if combined.size else 0.0,
+        "num_time_samples": args.weak_diagnostic_num_time_samples,
+        "artifact": str(run_dir / f"weak_modal_residuals_{stage}.npz"),
+        "plot": str(run_dir / f"weak_modal_residuals_{stage}.png"),
+    }
+
+
+def save_strong_residual_spectrum(network, bounds, args, device, run_dir, stage):
+    """FFT-in-x diagnostic of the pointwise strong KS residual."""
+
+    import matplotlib.pyplot as plt
+
+    lower, upper = bounds
+    nx = args.weak_diagnostic_num_x
+    nt = args.weak_diagnostic_num_time_samples
+    dtype = {"float32": torch.float32, "float64": torch.float64}[args.precision]
+    x = float(lower[0]) + (float(upper[0] - lower[0]) / nx) * torch.arange(
+        nx, dtype=dtype, device=device
+    )
+    times = torch.linspace(float(lower[1]), float(upper[1]), nt, dtype=dtype, device=device)
+    rows = []
+    network.eval()
+    for time_value in times:
+        points = torch.stack((x, torch.full_like(x, time_value)), dim=1).requires_grad_(True)
+        value = ks_residual(
+            network, points, alpha=args.alpha, beta=args.beta, gamma=args.gamma
+        )
+        rows.append(value[:, 0].detach())
+    residual = torch.stack(rows).double()
+    coefficients = torch.fft.fft(residual, dim=1, norm="forward")
+    mean_power_full = torch.mean(torch.abs(coefficients).square(), dim=0)
+    signed_modes = torch.fft.fftfreq(nx, d=1.0 / nx, device=device).round().to(torch.int64)
+    controlled = torch.abs(signed_modes) <= args.resolved_weak_modes
+    inside_rms = torch.sqrt(torch.sum(mean_power_full[controlled]))
+    outside_rms = torch.sqrt(torch.sum(mean_power_full[~controlled]))
+    physical_rms = torch.sqrt(torch.mean(residual.square()))
+    positive_count = nx // 2 + 1
+    plotted_power = mean_power_full[:positive_count]
+    plotted_rms = torch.sqrt(plotted_power)
+    plotted_modes = np.arange(positive_count)
+    rms_numpy = plotted_rms.cpu().numpy()
+    np.savez_compressed(
+        run_dir / f"strong_residual_spectrum_{stage}.npz",
+        x=x.detach().cpu().numpy(),
+        t=times.detach().cpu().numpy(),
+        residual=residual.cpu().numpy(),
+        modes=plotted_modes,
+        modal_rms=rms_numpy,
+        modal_mean_power=plotted_power.cpu().numpy(),
+        controlled_K=args.resolved_weak_modes,
+    )
+    figure, axis = plt.subplots(figsize=(9, 5), constrained_layout=True)
+    axis.semilogy(plotted_modes, _positive(rms_numpy), linewidth=1.6)
+    axis.axvline(
+        args.resolved_weak_modes,
+        color="tab:red",
+        linestyle="--",
+        label=f"weak K={args.resolved_weak_modes}",
+    )
+    axis.set(
+        xlabel="Spatial Fourier mode |k|",
+        ylabel=r"$\sqrt{\mathrm{mean}_t|\hat r_k|^2}$",
+        title=f"Strong KS residual spectrum ({stage})",
+    )
+    axis.grid(True, which="both", alpha=0.3)
+    axis.legend()
+    figure.savefig(run_dir / f"strong_residual_spectrum_{stage}.png", dpi=180)
+    plt.close(figure)
+    outside_value = float(outside_rms.cpu())
+    inside_value = float(inside_rms.cpu())
+    return {
+        "physical_rms": float(physical_rms.cpu()),
+        "inside_K_rms": inside_value,
+        "outside_K_rms": outside_value,
+        "outside_to_inside_ratio": outside_value / inside_value if inside_value > 0 else None,
+        "peak_nonzero_mode": int(np.argmax(rms_numpy[1:]) + 1) if len(rms_numpy) > 1 else 0,
+        "num_x": nx,
+        "num_t": nt,
+        "artifact": str(run_dir / f"strong_residual_spectrum_{stage}.npz"),
+        "plot": str(run_dir / f"strong_residual_spectrum_{stage}.png"),
+    }
+
+
 def optimizer_for_weak(network, args):
     optimizer = torch.optim.LBFGS(
         network.parameters(),
@@ -593,6 +745,10 @@ def run(args) -> Path:
         raise ValueError("weak-epochs and weak-log-every must be positive")
     if args.weak_num_time_samples <= 0 or args.weak_num_x_quad < 3:
         raise ValueError("weak time samples must be positive and Nx must be at least 3")
+    if args.weak_diagnostic_num_time_samples <= 0:
+        raise ValueError("weak-diagnostic-num-time-samples must be positive")
+    if args.weak_diagnostic_num_x < 3:
+        raise ValueError("weak-diagnostic-num-x must be at least 3")
     if args.weak_qmax_factor <= 0 or not math.isfinite(args.weak_qmax_factor):
         raise ValueError("weak-qmax-factor must be positive and finite")
     if args.pinn_precision not in {"float32", "float64"}:
@@ -700,6 +856,15 @@ def run(args) -> Path:
         network, points, values, args.eval_batch_size, device
     )
     initial_strong = evaluate_pinn_loss(network, (lower, upper), args, device)
+    initial_weak_modal = None
+    initial_strong_spectrum = None
+    if args.weak_spectral_diagnostics:
+        initial_weak_modal = save_weak_modal_diagnostic(
+            network, (lower, upper), args, device, run_dir, "initial"
+        )
+        initial_strong_spectrum = save_strong_residual_spectrum(
+            network, (lower, upper), args, device, run_dir, "initial"
+        )
     weak_info = train_weak(
         network,
         points,
@@ -716,6 +881,15 @@ def run(args) -> Path:
         network, points, values, args, device, run_dir
     )
     after_weak_strong = evaluate_pinn_loss(network, (lower, upper), args, device)
+    after_weak_modal = None
+    after_weak_strong_spectrum = None
+    if args.weak_spectral_diagnostics:
+        after_weak_modal = save_weak_modal_diagnostic(
+            network, (lower, upper), args, device, run_dir, "after_weak"
+        )
+        after_weak_strong_spectrum = save_strong_residual_spectrum(
+            network, (lower, upper), args, device, run_dir, "after_weak"
+        )
     derivative_metric = None
     if args.derivative_plots:
         derivative_metric = evaluate_derivative_grid(
@@ -754,11 +928,18 @@ def run(args) -> Path:
 
     metrics = {
         "configuration": resolved,
-        "initial": {"data": initial_data, "strong_pinn": initial_strong},
+        "initial": {
+            "data": initial_data,
+            "strong_pinn": initial_strong,
+            "weak_modal_residual": initial_weak_modal,
+            "strong_residual_spectrum": initial_strong_spectrum,
+        },
         "weak_stage": weak_info,
         "after_weak": {
             "data": after_weak_data,
             "strong_pinn": after_weak_strong,
+            "weak_modal_residual": after_weak_modal,
+            "strong_residual_spectrum": after_weak_strong_spectrum,
             "derivative_grid": derivative_metric,
         },
         "strong_enabled": args.strong_enabled,
@@ -802,7 +983,9 @@ def build_parser():
         help="Number of non-duplicated points in the uniform periodic x quadrature.",
     )
     parser.add_argument(
+        "--K",
         "--weak-num-modes",
+        dest="weak_num_modes",
         type=parse_modes,
         default=None,
         metavar="auto|N",
@@ -810,6 +993,25 @@ def build_parser():
     )
     parser.add_argument("--weak-qmax-factor", type=float, default=1.5)
     parser.add_argument("--weak-log-every", type=int, default=100)
+    parser.add_argument(
+        "--weak-spectral-diagnostics",
+        type=strong_ks.parse_bool,
+        default=True,
+        metavar="true|false",
+        help="Save per-mode weak RMS and FFT diagnostics of the strong residual.",
+    )
+    parser.add_argument(
+        "--weak-diagnostic-num-time-samples",
+        type=int,
+        default=64,
+        help="Uniform time samples used only by spectral diagnostics.",
+    )
+    parser.add_argument(
+        "--weak-diagnostic-num-x",
+        type=int,
+        default=128,
+        help="Periodic x-grid size used only by the strong-residual FFT diagnostic.",
+    )
     parser.add_argument(
         "--hidden-layers",
         default="100*5",
