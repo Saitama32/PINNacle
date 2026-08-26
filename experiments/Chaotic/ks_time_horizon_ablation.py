@@ -489,7 +489,7 @@ def checkpoint_name(step, iterations):
         return "initial"
     if step == iterations:
         return "final"
-    return "mid" if step == iterations // 2 else f"step_{step}"
+    return "mid" if step == int(round(0.5 * iterations)) else f"step_{step}"
 
 
 def run_one(args, horizon, seed, reference_solution, root_dir, device):
@@ -640,9 +640,9 @@ def plot_physics_term_errors(aggregate, output):
 
 
 def save_aggregate_outputs(rows, root_dir, args):
-    write_csv(root_dir / "horizon_ablation.csv", rows, SUMMARY_FIELDS)
     aggregate = aggregate_rows(rows)
-    write_csv(root_dir / "horizon_ablation_aggregate.csv", aggregate)
+    write_csv(root_dir / "horizon_ablation.csv", aggregate)
+    write_csv(root_dir / "horizon_ablation_by_seed.csv", rows, SUMMARY_FIELDS)
     plot_metric(aggregate, root_dir / "relative_l2_vs_T.png", "final_relative_l2", "relative L2", True)
     plot_metric(aggregate, root_dir / "pde_mse_vs_T.png", "final_pde_mse", "PDE MSE", True)
     plot_metric(aggregate, root_dir / "jacobian_condition_vs_T.png", "jacobian_condition_final", "Jacobian condition", True)
@@ -654,8 +654,10 @@ def save_aggregate_outputs(rows, root_dir, args):
                          ("term_error_diff", "diffusion"), ("term_error_hyper", "hyperdiffusion")):
         plot_metric(aggregate, root_dir / f"physics_term_error_{label}_vs_T.png", field, f"relative error: {label}", True)
     plot_physics_term_errors(aggregate, root_dir / "physics_term_errors_vs_T.png")
-    critical = next((row for row in aggregate
-                     if row["final_relative_l2_mean"] >= args.critical_relative_l2), None)
+    critical_index = next((index for index, row in enumerate(aggregate)
+                           if row["final_relative_l2_mean"] >= args.critical_relative_l2), None)
+    critical = aggregate[critical_index] if critical_index is not None else None
+    previous = aggregate[critical_index - 1] if critical_index and critical_index > 0 else None
     report = {
         "critical_relative_l2_threshold": args.critical_relative_l2,
         "empirical_critical_horizon": critical["T"] if critical else None,
@@ -669,6 +671,23 @@ def save_aggregate_outputs(rows, root_dir, args):
                 "first_layer_e_rank_final", "last_layer_e_rank_final",
             )
         }
+        report["diagnostic_changes_from_previous_horizon"] = {
+            "previous_horizon": previous["T"] if previous else None,
+            "current_horizon": critical["T"],
+            "metrics": {},
+        }
+        for key in (
+            "jacobian_condition_final", "jacobian_rank_final",
+            "gradient_conflict_fraction_final", "first_layer_e_rank_final",
+            "last_layer_e_rank_final",
+        ):
+            current_value = critical[f"{key}_mean"]
+            previous_value = previous[f"{key}_mean"] if previous else None
+            report["diagnostic_changes_from_previous_horizon"]["metrics"][key] = {
+                "previous": previous_value,
+                "current": current_value,
+                "delta": current_value - previous_value if previous else None,
+            }
     save_json(root_dir / "diagnostic_report.json", report)
 
 
@@ -703,10 +722,16 @@ def validate_args(args):
         raise ValueError("horizons must be unique")
     if len(args.seeds) != 3 and not args.allow_nonstandard_seed_count:
         raise ValueError("this ablation requires exactly three seeds")
-    if args.diagnostic_steps[0] != 0.0 or args.diagnostic_steps[-1] != 1.0:
-        raise ValueError("diagnostic-steps must include 0 and 1")
     if any(value < 0.0 or value > 1.0 for value in args.diagnostic_steps):
         raise ValueError("diagnostic step fractions must be in [0, 1]")
+    required_diagnostic_steps = (0.0, 0.5, 1.0)
+    if any(not any(math.isclose(value, required, rel_tol=0.0, abs_tol=1e-12)
+                   for value in args.diagnostic_steps)
+           for required in required_diagnostic_steps):
+        raise ValueError("diagnostic-steps must include at least 0, 0.5, and 1")
+    if len(set(args.diagnostic_steps)) != len(args.diagnostic_steps):
+        raise ValueError("diagnostic-steps must be unique")
+    args.diagnostic_steps = sorted(args.diagnostic_steps)
     positive = ("domain_points", "ic_points", "boundary_points",
                 "jacobian_pde_points", "jacobian_ic_points", "jacobian_boundary_points",
                 "gradient_chunks", "gradient_points_per_chunk", "feature_points",
