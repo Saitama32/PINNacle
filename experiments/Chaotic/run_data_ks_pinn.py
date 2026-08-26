@@ -788,7 +788,7 @@ def build_parser():
             "periodic boundary losses through the third spatial derivative."
         )
     )
-    parser.add_argument("--model", default=r"C:\Users\Рустам\Documents\GitHub\PINNacle\runs_data_ks_local_basin_chain\08.25-05.17.20-ks-local-basin-chain\steps\08.25-06.06.30-ks-local-basin-float64\weights_local_best.pt")
+    parser.add_argument("--model", default=r"C:\Users\Рустам\Documents\GitHub\PINNacle\runs_data_ks_local_basin_chain\08.25-12.50.50-ks-local-basin-chain\steps\08.25-13.44.48-ks-local-basin-float64\weights_local_best.pt")
     parser.add_argument("--data", default=None)
     parser.add_argument("--out", default=str(PROJECT_ROOT / "runs_data_ks_pinn"))
     parser.add_argument(
@@ -808,7 +808,7 @@ def build_parser():
     parser.add_argument(
         "--pinn-lr-scheduler",
         choices=["none", "exponential", "cosine", "step"],
-        default="cosine",
+        default="none",
     )
     parser.add_argument("--pinn-lr-decay-steps", type=int, default=1000)
     parser.add_argument("--pinn-lr-decay-rate", type=float, default=0.9)

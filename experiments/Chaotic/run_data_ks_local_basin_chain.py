@@ -24,7 +24,7 @@ from experiments.Chaotic.run_data_ks_local_basin import (
 # Command-line arguments still have priority over these values.
 CHAIN_DEFAULTS = {
     # Initial checkpoint and common settings.
-    "model": r"C:\Users\Рустам\Documents\GitHub\PINNacle\runs_data_ks_local_basin_chain\08.25-07.06.04-ks-local-basin-chain\steps\08.25-09.05.09-ks-local-basin-float64\weights_local_best.pt",
+    "model": r"C:\Users\Рустам\Documents\GitHub\PINNacle\runs_data_ks_local_basin_chain\08.26-02.38.31-ks-local-basin-chain\steps\08.26-04.07.57-ks-local-basin-float64\weights_local_best.pt",
     "data": None,
     # run_chain replaces this with <chain_out>/.../steps for every chain step.
     "out": str(PROJECT_ROOT / "runs_data_ks_local_basin"),
@@ -39,11 +39,19 @@ CHAIN_DEFAULTS = {
     "validation_batch_size": 256,
     "eval_batch_size": 16384,
 
-    # Optional soft initial-condition block (no boundary-condition block).
+    # Optional soft initial-condition block.
     "include_ic": False,
     "ic_weight": 100.0,
     "jacobian_ic_points": 512,
     "validation_ic_points": 2048,
+
+    # Optional normalized periodic endpoint block through u_xxx.
+    "include_periodic": True,
+    "periodic_weight": 100.0,
+    "jacobian_periodic_points": 512,
+    "validation_periodic_points": 512,
+    "normalize_periodic": True,
+    "periodic_normalization_epsilon": 1e-12,
 
     # Gauss--Newton/Levenberg--Marquardt parameter sweep at every chain step.
     "data_weights": [3000.0, 30000.0, 300000.0, 3000000.0],
@@ -130,6 +138,7 @@ def run_chain(args) -> Path:
             "damping": best["damping"],
             "data_weight": best["data_weight"],
             "ic_weight": best["ic_weight"],
+            "periodic_weight": best["periodic_weight"],
             "step_scale": best["step_scale"],
             "relative_parameter_step": best["relative_parameter_step"],
             "initial_validation_pde_mse": initial_pde,
@@ -139,6 +148,18 @@ def run_chain(args) -> Path:
             ),
             "initial_validation_ic_mse": initial["validation_ic_mse"],
             "final_validation_ic_mse": best["validation_ic_mse"],
+            "initial_validation_periodic_raw_mse": initial[
+                "validation_periodic_raw_mse"
+            ],
+            "final_validation_periodic_raw_mse": best[
+                "validation_periodic_raw_mse"
+            ],
+            "initial_validation_periodic_objective": initial[
+                "validation_periodic_objective"
+            ],
+            "final_validation_periodic_objective": best[
+                "validation_periodic_objective"
+            ],
             "initial_validation_objective": initial_objective,
             "final_validation_objective": final_objective,
             "relative_objective_improvement": (
@@ -164,6 +185,8 @@ def run_chain(args) -> Path:
             f"PDE {initial_pde:.6e} -> {final_pde:.6e}; "
             f"IC {float(initial['validation_ic_mse']):.6e} -> "
             f"{float(best['validation_ic_mse']):.6e}; "
+            f"periodic {float(initial['validation_periodic_objective']):.6e} -> "
+            f"{float(best['validation_periodic_objective']):.6e}; "
             f"L2 {initial_l2:.6e} -> {final_l2:.6e}"
         )
         if args.chain_stop_pde > 0 and final_pde <= args.chain_stop_pde:

@@ -5,6 +5,7 @@ The script solves, around the loaded parameters theta, the linearized problem
     min_delta MSE(r + J_r delta)
               + lambda_data MSE(e_u + J_u delta)
               + lambda_ic MSE(e_ic + J_ic delta)
+              + lambda_periodic sum_d MSE(e_d + J_d delta)
               + mu ||delta||^2,
 
 and then evaluates scaled versions of delta in the original nonlinear network.
@@ -180,6 +181,117 @@ def initial_condition_mse(network, points_numpy, values_numpy, batch_size, devic
     return square_sum / count_total
 
 
+PERIODIC_COMPONENTS = ("u", "u_x", "u_xx", "u_xxx")
+
+
+def periodic_boundary_errors(
+    network,
+    times: torch.Tensor,
+    x_lower: float,
+    x_upper: float,
+    backward: bool,
+):
+    """Return endpoint jumps through the third spatial derivative."""
+
+    left = torch.cat((torch.full_like(times, x_lower), times), dim=1).requires_grad_(
+        True
+    )
+    right = torch.cat(
+        (torch.full_like(times, x_upper), times), dim=1
+    ).requires_grad_(True)
+
+    def values_and_derivatives(points):
+        value = network(points)
+        derivative_1 = torch.autograd.grad(
+            value,
+            points,
+            grad_outputs=torch.ones_like(value),
+            create_graph=True,
+        )[0][:, 0:1]
+        derivative_2 = torch.autograd.grad(
+            derivative_1,
+            points,
+            grad_outputs=torch.ones_like(derivative_1),
+            create_graph=True,
+        )[0][:, 0:1]
+        derivative_3 = torch.autograd.grad(
+            derivative_2,
+            points,
+            grad_outputs=torch.ones_like(derivative_2),
+            create_graph=backward,
+        )[0][:, 0:1]
+        return value, derivative_1, derivative_2, derivative_3
+
+    left_terms = values_and_derivatives(left)
+    right_terms = values_and_derivatives(right)
+    return {
+        name: left_value - right_value
+        for name, left_value, right_value in zip(
+            PERIODIC_COMPONENTS, left_terms, right_terms
+        )
+    }
+
+
+def scaled_periodic_vector(errors, scales):
+    """Concatenate periodic components after fixed RMS normalization."""
+
+    return torch.cat(
+        [
+            errors[name].reshape(-1) / math.sqrt(float(scales[name]))
+            for name in PERIODIC_COMPONENTS
+        ]
+    )
+
+
+def periodic_metrics(
+    network,
+    times_numpy,
+    x_lower,
+    x_upper,
+    scales,
+    batch_size,
+    device,
+):
+    """Evaluate raw component MSEs and their fixed-scale normalized sum."""
+
+    square_sums = {name: 0.0 for name in PERIODIC_COMPONENTS}
+    count_total = 0
+    network.eval()
+    for start in range(0, len(times_numpy), batch_size):
+        times = torch.as_tensor(
+            times_numpy[start : start + batch_size], device=device
+        )
+        errors = periodic_boundary_errors(
+            network, times, x_lower, x_upper, backward=False
+        )
+        for name, error in errors.items():
+            square_sums[name] += float(
+                torch.sum(error.detach().double().square()).cpu()
+            )
+        count_total += len(times)
+    raw_mse = {name: value / count_total for name, value in square_sums.items()}
+    normalized_mse = {
+        name: raw_mse[name] / float(scales[name]) for name in PERIODIC_COMPONENTS
+    }
+    return {
+        "raw_mse": raw_mse,
+        "raw_sum_mse": sum(raw_mse.values()),
+        "normalized_mse": normalized_mse,
+        "normalized_sum_mse": sum(normalized_mse.values()),
+    }
+
+
+def periodic_linearized_objective(error, points_per_component):
+    """Return the sum of component MSEs for a concatenated periodic vector."""
+
+    return float(
+        sum(
+            torch.mean(chunk.square())
+            for chunk in error.split(points_per_component)
+        )
+    )
+
+
 def parameter_state(parameters):
     return [parameter.detach().clone() for parameter in parameters]
 
@@ -224,6 +336,10 @@ def solve_dual_step(
     j_ic=None,
     ic_error=None,
     ic_weight=0.0,
+    j_periodic=None,
+    periodic_error=None,
+    periodic_weight=0.0,
+    periodic_components=4,
 ):
     residual_scale = 1.0 / math.sqrt(residual.numel())
     data_scale = math.sqrt(data_weight / data_error.numel())
@@ -236,6 +352,16 @@ def solve_dual_step(
         ic_scale = math.sqrt(ic_weight / ic_error.numel())
         blocks.append(ic_scale * j_ic)
         targets.append(ic_scale * ic_error)
+    if (
+        j_periodic is not None
+        and periodic_error is not None
+        and periodic_weight > 0
+    ):
+        periodic_scale = math.sqrt(
+            periodic_weight * periodic_components / periodic_error.numel()
+        )
+        blocks.append(periodic_scale * j_periodic)
+        targets.append(periodic_scale * periodic_error)
     design = torch.cat(blocks, dim=0)
     target = torch.cat(targets, dim=0)
     gram = design @ design.T
@@ -252,6 +378,7 @@ def solve_dual_step(
     diagnostics = {
         "data_weight": data_weight,
         "ic_weight": ic_weight,
+        "periodic_weight": periodic_weight,
         "relative_damping": damping,
         "effective_damping": effective_damping,
         "design_rows": design.shape[0],
@@ -268,6 +395,7 @@ def save_pareto_plot(
     initial_l2: float,
     initial_objective: float,
     include_ic: bool,
+    include_periodic: bool,
 ):
     import matplotlib.pyplot as plt
 
@@ -296,11 +424,12 @@ def save_pareto_plot(
     )
     axis.set_yscale("log")
     axis.set_xlabel("Full-data relative L2")
-    axis.set_ylabel(
-        "Validation PDE MSE + weighted IC MSE"
-        if include_ic
-        else "Validation PDE MSE"
-    )
+    objective_terms = ["PDE MSE"]
+    if include_ic:
+        objective_terms.append("weighted IC MSE")
+    if include_periodic:
+        objective_terms.append("weighted periodic objective")
+    axis.set_ylabel("Validation " + " + ".join(objective_terms))
     axis.set_title("Nonlinear validation of local Gauss-Newton directions")
     axis.grid(True, which="both", alpha=0.25)
     axis.legend(fontsize=8)
@@ -325,6 +454,19 @@ def run(args) -> Path:
         args.jacobian_ic_points <= 0 or args.validation_ic_points <= 0
     ):
         raise ValueError("IC point counts must be positive when IC is enabled")
+    if args.periodic_weight < 0 or not math.isfinite(args.periodic_weight):
+        raise ValueError("periodic_weight must be finite and non-negative")
+    if args.periodic_normalization_epsilon <= 0 or not math.isfinite(
+        args.periodic_normalization_epsilon
+    ):
+        raise ValueError("periodic_normalization_epsilon must be positive and finite")
+    if args.include_periodic and (
+        args.jacobian_periodic_points <= 0
+        or args.validation_periodic_points <= 0
+    ):
+        raise ValueError(
+            "Periodic point counts must be positive when periodic constraints are enabled"
+        )
     dampings = args.dampings if args.dampings is not None else [args.damping]
     if not all(math.isfinite(damping) and damping >= 0 for damping in dampings):
         raise ValueError("dampings must be finite and non-negative")
@@ -360,6 +502,8 @@ def run(args) -> Path:
     jacobian_data_rng = np.random.default_rng(args.seed + 2)
     jacobian_ic_rng = np.random.default_rng(args.seed + 3)
     validation_ic_rng = np.random.default_rng(args.seed + 4)
+    jacobian_periodic_rng = np.random.default_rng(args.seed + 5)
+    validation_periodic_rng = np.random.default_rng(args.seed + 6)
     jacobian_domain_numpy = jacobian_domain_rng.uniform(
         lower, upper, size=(args.jacobian_domain_points, 2)
     ).astype(numpy_dtype)
@@ -395,6 +539,34 @@ def run(args) -> Path:
             numpy_dtype
         )
 
+    jacobian_periodic_times_numpy = None
+    validation_periodic_times_numpy = None
+    periodic_scales = None
+    if args.include_periodic:
+        jacobian_periodic_times_numpy = jacobian_periodic_rng.uniform(
+            lower[1], upper[1], size=(args.jacobian_periodic_points, 1)
+        ).astype(numpy_dtype)
+        validation_periodic_times_numpy = validation_periodic_rng.uniform(
+            lower[1], upper[1], size=(args.validation_periodic_points, 1)
+        ).astype(numpy_dtype)
+        initial_periodic_errors = periodic_boundary_errors(
+            network,
+            torch.as_tensor(jacobian_periodic_times_numpy, device=device),
+            float(lower[0]),
+            float(upper[0]),
+            backward=False,
+        )
+        periodic_scales = {
+            name: max(
+                float(torch.mean(error.detach().double().square()).cpu()),
+                args.periodic_normalization_epsilon,
+            )
+            if args.normalize_periodic
+            else 1.0
+            for name, error in initial_periodic_errors.items()
+        }
+        del initial_periodic_errors
+
     parameters = trainable_parameters(network)
     initial_parameter_state = parameter_state(parameters)
     parameter_count = sum(parameter.numel() for parameter in parameters)
@@ -424,8 +596,27 @@ def run(args) -> Path:
         if args.include_ic
         else 0.0
     )
+    initial_validation_periodic = (
+        periodic_metrics(
+            network,
+            validation_periodic_times_numpy,
+            float(lower[0]),
+            float(upper[0]),
+            periodic_scales,
+            args.validation_batch_size,
+            device,
+        )
+        if args.include_periodic
+        else None
+    )
+    initial_validation_periodic_objective = (
+        initial_validation_periodic["normalized_sum_mse"]
+        if initial_validation_periodic is not None
+        else 0.0
+    )
     initial_validation_objective = (
         initial_validation_pde + args.ic_weight * initial_validation_ic
+        + args.periodic_weight * initial_validation_periodic_objective
     )
 
     network.eval()
@@ -456,6 +647,44 @@ def run(args) -> Path:
         j_ic = output_parameter_jacobian(ic_error, parameters, "IC")
         del ic_error, ic_tensor, ic_target
 
+    j_periodic = None
+    periodic_error_initial = None
+    initial_jacobian_periodic = None
+    if args.include_periodic:
+        periodic_times = torch.as_tensor(
+            jacobian_periodic_times_numpy, device=device
+        )
+        periodic_errors = periodic_boundary_errors(
+            network,
+            periodic_times,
+            float(lower[0]),
+            float(upper[0]),
+            backward=True,
+        )
+        periodic_error = scaled_periodic_vector(periodic_errors, periodic_scales)
+        periodic_error_initial = periodic_error.detach().double().cpu()
+        initial_jacobian_periodic = {
+            "raw_mse": {
+                name: float(torch.mean(error.detach().double().square()).cpu())
+                for name, error in periodic_errors.items()
+            },
+            "normalized_mse": {
+                name: float(torch.mean(error.detach().double().square()).cpu())
+                / float(periodic_scales[name])
+                for name, error in periodic_errors.items()
+            },
+        }
+        initial_jacobian_periodic["raw_sum_mse"] = sum(
+            initial_jacobian_periodic["raw_mse"].values()
+        )
+        initial_jacobian_periodic["normalized_sum_mse"] = sum(
+            initial_jacobian_periodic["normalized_mse"].values()
+        )
+        j_periodic = output_parameter_jacobian(
+            periodic_error, parameters, "periodic"
+        )
+        del periodic_error, periodic_errors, periodic_times
+
     cosine = gradient_cosine(
         j_residual,
         residual_initial,
@@ -472,6 +701,26 @@ def run(args) -> Path:
     data_ic_cosine = (
         gradient_cosine(j_data, data_error_initial, j_ic, ic_error_initial)
         if args.include_ic
+        else None
+    )
+    pde_periodic_cosine = (
+        gradient_cosine(
+            j_residual,
+            residual_initial,
+            j_periodic,
+            periodic_error_initial,
+        )
+        if args.include_periodic
+        else None
+    )
+    data_periodic_cosine = (
+        gradient_cosine(
+            j_data,
+            data_error_initial,
+            j_periodic,
+            periodic_error_initial,
+        )
+        if args.include_periodic
         else None
     )
     timestamp = time.strftime("%m.%d-%H.%M.%S", time.localtime())
@@ -497,6 +746,12 @@ def run(args) -> Path:
                 j_ic=j_ic,
                 ic_error=ic_error_initial,
                 ic_weight=args.ic_weight if args.include_ic else 0.0,
+                j_periodic=j_periodic,
+                periodic_error=periodic_error_initial,
+                periodic_weight=(
+                    args.periodic_weight if args.include_periodic else 0.0
+                ),
+                periodic_components=len(PERIODIC_COMPONENTS),
             )
             relative_direction_norm = direction_metric["delta_norm"] / max(
                 parameter_norm, np.finfo(np.float64).eps
@@ -531,6 +786,19 @@ def run(args) -> Path:
                     )
                 else:
                     actual_ic_error = None
+                actual_jacobian_periodic = (
+                    periodic_metrics(
+                        network,
+                        jacobian_periodic_times_numpy,
+                        float(lower[0]),
+                        float(upper[0]),
+                        periodic_scales,
+                        args.validation_batch_size,
+                        device,
+                    )
+                    if args.include_periodic
+                    else None
+                )
                 actual_domain_pde = residual_mse(
                     network,
                     jacobian_domain_numpy,
@@ -560,8 +828,27 @@ def run(args) -> Path:
                     if args.include_ic
                     else 0.0
                 )
+                validation_periodic = (
+                    periodic_metrics(
+                        network,
+                        validation_periodic_times_numpy,
+                        float(lower[0]),
+                        float(upper[0]),
+                        periodic_scales,
+                        args.validation_batch_size,
+                        device,
+                    )
+                    if args.include_periodic
+                    else None
+                )
+                validation_periodic_objective = (
+                    validation_periodic["normalized_sum_mse"]
+                    if validation_periodic is not None
+                    else 0.0
+                )
                 validation_objective = (
                     validation_pde + args.ic_weight * validation_ic
+                    + args.periodic_weight * validation_periodic_objective
                 )
                 full_data_metric = prediction_metrics(
                     network, all_points, all_values, args.eval_batch_size, device
@@ -572,6 +859,11 @@ def run(args) -> Path:
                 linear_ic_error = (
                     ic_error_initial + j_ic @ scaled_delta
                     if args.include_ic
+                    else None
+                )
+                linear_periodic_error = (
+                    periodic_error_initial + j_periodic @ scaled_delta
+                    if args.include_periodic
                     else None
                 )
                 row = {
@@ -594,6 +886,42 @@ def run(args) -> Path:
                     ),
                     "validation_ic_mse": validation_ic,
                     "ic_weight": args.ic_weight if args.include_ic else 0.0,
+                    "linearized_periodic_objective": (
+                        periodic_linearized_objective(
+                            linear_periodic_error, args.jacobian_periodic_points
+                        )
+                        if linear_periodic_error is not None
+                        else 0.0
+                    ),
+                    "actual_jacobian_periodic_raw_mse": (
+                        actual_jacobian_periodic["raw_sum_mse"]
+                        if actual_jacobian_periodic is not None
+                        else 0.0
+                    ),
+                    "actual_jacobian_periodic_objective": (
+                        actual_jacobian_periodic["normalized_sum_mse"]
+                        if actual_jacobian_periodic is not None
+                        else 0.0
+                    ),
+                    "validation_periodic_raw_mse": (
+                        validation_periodic["raw_sum_mse"]
+                        if validation_periodic is not None
+                        else 0.0
+                    ),
+                    "validation_periodic_objective": validation_periodic_objective,
+                    "validation_periodic_component_raw_mse": (
+                        validation_periodic["raw_mse"]
+                        if validation_periodic is not None
+                        else None
+                    ),
+                    "validation_periodic_component_normalized_mse": (
+                        validation_periodic["normalized_mse"]
+                        if validation_periodic is not None
+                        else None
+                    ),
+                    "periodic_weight": (
+                        args.periodic_weight if args.include_periodic else 0.0
+                    ),
                     "validation_objective": validation_objective,
                     "linearized_data_mse": float(torch.mean(linear_data_error.square())),
                     "actual_jacobian_data_mse": float(torch.mean(actual_data_error.square())),
@@ -606,6 +934,7 @@ def run(args) -> Path:
                     f"  scale={step_scale:g} linear_pde={row['linearized_pde_mse']:.6e} "
                     f"actual_pde={validation_pde:.6e} "
                     f"validation_ic={validation_ic:.6e} "
+                    f"validation_periodic={validation_periodic_objective:.6e} "
                     f"validation_objective={validation_objective:.6e} "
                     f"L2={full_data_metric['relative_l2']:.6e}"
                 )
@@ -660,6 +989,7 @@ def run(args) -> Path:
         initial_data_metric["relative_l2"],
         initial_validation_objective,
         args.include_ic,
+        args.include_periodic,
     )
     result = {
         "configuration": {
@@ -678,11 +1008,35 @@ def run(args) -> Path:
             "jacobian_data_seed": args.seed + 2,
             "jacobian_ic_seed": args.seed + 3 if args.include_ic else None,
             "validation_ic_seed": args.seed + 4 if args.include_ic else None,
+            "jacobian_periodic_seed": (
+                args.seed + 5 if args.include_periodic else None
+            ),
+            "validation_periodic_seed": (
+                args.seed + 6 if args.include_periodic else None
+            ),
+            "periodic_components": list(PERIODIC_COMPONENTS),
+            "periodic_normalization_scales": periodic_scales,
         },
         "initial": {
             "data": initial_data_metric,
             "validation_pde_mse": initial_validation_pde,
             "validation_ic_mse": initial_validation_ic,
+            "validation_periodic_raw_mse": (
+                initial_validation_periodic["raw_sum_mse"]
+                if initial_validation_periodic is not None
+                else 0.0
+            ),
+            "validation_periodic_objective": initial_validation_periodic_objective,
+            "validation_periodic_component_raw_mse": (
+                initial_validation_periodic["raw_mse"]
+                if initial_validation_periodic is not None
+                else None
+            ),
+            "validation_periodic_component_normalized_mse": (
+                initial_validation_periodic["normalized_mse"]
+                if initial_validation_periodic is not None
+                else None
+            ),
             "validation_objective": initial_validation_objective,
             "jacobian_domain_pde_mse": float(torch.mean(residual_initial.square())),
             "jacobian_data_mse": float(torch.mean(data_error_initial.square())),
@@ -691,10 +1045,22 @@ def run(args) -> Path:
                 if ic_error_initial is not None
                 else 0.0
             ),
+            "jacobian_periodic_raw_mse": (
+                initial_jacobian_periodic["raw_sum_mse"]
+                if initial_jacobian_periodic is not None
+                else 0.0
+            ),
+            "jacobian_periodic_objective": (
+                initial_jacobian_periodic["normalized_sum_mse"]
+                if initial_jacobian_periodic is not None
+                else 0.0
+            ),
         },
         "pde_data_gradient_cosine": cosine,
         "pde_ic_gradient_cosine": pde_ic_cosine,
         "data_ic_gradient_cosine": data_ic_cosine,
+        "pde_periodic_gradient_cosine": pde_periodic_cosine,
+        "data_periodic_gradient_cosine": data_periodic_cosine,
         "directions": direction_diagnostics,
         "l2_feasibility_limit": initial_l2_limit,
         "best_feasible": best_row,
@@ -726,6 +1092,29 @@ def build_parser():
     parser.add_argument("--ic-weight", type=float, default=100.0)
     parser.add_argument("--jacobian-ic-points", type=int, default=512)
     parser.add_argument("--validation-ic-points", type=int, default=2048)
+    parser.add_argument(
+        "--include-periodic",
+        type=parse_bool,
+        default=False,
+        metavar="true|false",
+        help=(
+            "Include soft endpoint matching for u, u_x, u_xx, and u_xxx in "
+            "the local objective."
+        ),
+    )
+    parser.add_argument("--periodic-weight", type=float, default=1.0)
+    parser.add_argument("--jacobian-periodic-points", type=int, default=128)
+    parser.add_argument("--validation-periodic-points", type=int, default=512)
+    parser.add_argument(
+        "--normalize-periodic",
+        type=parse_bool,
+        default=True,
+        metavar="true|false",
+        help="Normalize each periodic derivative jump by its initial MSE.",
+    )
+    parser.add_argument(
+        "--periodic-normalization-epsilon", type=float, default=1e-12
+    )
     parser.add_argument("--validation-domain-points", type=int, default=10000)
     parser.add_argument("--validation-batch-size", type=int, default=256)
     parser.add_argument("--eval-batch-size", type=int, default=16384)
