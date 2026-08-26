@@ -7,7 +7,7 @@ sys.path.append(project_root)
 from comet_config import start_comet_experiment
 
 experiment = start_comet_experiment(
-    project_name="rlpinn_ns2d_longtime_loss_ratio_reward_optimization",
+    project_name="rlpinn_ns2d_longtime_strong_weak_chain_tol",
 )
 
 
@@ -22,6 +22,7 @@ import deepxde as dde
 
 
 from src.pde.ns import NS2D_LongTime
+from src.losses.weak_form import WeakFormConfig, WeakFormLoss, attach_weak_form_loss
 from src.utils.args import parse_hidden_layers
 from src.utils.callbacks import TesterCallback, PlotCallback, LossCallback
 from rl_trainer import train_process_rl
@@ -37,7 +38,7 @@ experiment.log_parameters({
 })
 
 
-def build_get_model_ns2d_longtime(hidden_layers: str, **pde_kwargs):
+def build_get_model_ns2d_longtime(hidden_layers: str, weak_config=None, **pde_kwargs):
     def get_model():
         pde = NS2D_LongTime(**pde_kwargs)
 
@@ -56,6 +57,9 @@ def build_get_model_ns2d_longtime(hidden_layers: str, **pde_kwargs):
                 loss_weights[i] = 1.0
 
         model = pde.create_model(net)
+        if weak_config is not None:
+            weak_loss = WeakFormLoss(pde.weak_form_adapter(), weak_config)
+            attach_weak_form_loss(model, weak_loss)
         return model, loss_weights
 
     return get_model
@@ -76,6 +80,12 @@ def main():
 
     parser.add_argument("--datapath", type=str, default="ref/ns_long.dat", help="Reference data path")
     parser.add_argument("--nu", type=float, default=1e-2, help="Kinematic viscosity")
+    parser.add_argument("--weak-spatial-cells-x", type=int, default=8)
+    parser.add_argument("--weak-spatial-cells-y", type=int, default=4)
+    parser.add_argument("--weak-quadrature-order", type=int, default=6)
+    parser.add_argument("--weak-test-functions", type=int, default=4)
+    parser.add_argument("--weak-time-samples", type=int, default=64)
+    parser.add_argument("--tolerance", type=float, default=0.509587049)
 
     args = parser.parse_args()
 
@@ -88,7 +98,17 @@ def main():
         nu=args.nu
     )
 
-    get_model = build_get_model_ns2d_longtime(args.hidden_layers, **pde_kwargs)
+    weak_config = WeakFormConfig(
+        spatial_cells=(args.weak_spatial_cells_x, args.weak_spatial_cells_y),
+        quadrature_order=args.weak_quadrature_order,
+        test_function_count=args.weak_test_functions,
+        time_samples=args.weak_time_samples,
+        seed=args.seed,
+    )
+
+    get_model = build_get_model_ns2d_longtime(
+        args.hidden_layers, weak_config=weak_config, **pde_kwargs
+    )
     get_model_rec = build_get_model_ns2d_longtime(args.hidden_layers, **pde_kwargs)
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -108,10 +128,18 @@ def main():
     }
 
     optimizers = {
-        "Adam": {"lr": [1e-2, 1e-3, 1e-4], "epochs": [100, 1000, 2500]},
-        "LBFGS": {"lr": [1, 5e-1, 1e-1], "epochs": [100, 500, 1000]},
-        "PSO": {"lr": [0.0, 1e-3, 1e-4], "epochs": [100, 200, 300]},
+        "Adam": {"lr": [1e-2, 1e-3, 1e-4]},
     }
+
+    physics_forms = {
+        "weak": {"epochs": [100, 1000, 5000]},
+        "strong": {"epochs": [100, 1000, 5000]},
+    }
+    experiment.log_parameters({
+        "weak_form_epochs": physics_forms["weak"]["epochs"],
+        "strong_form_epochs": physics_forms["strong"]["epochs"],
+        "weak_form_config": repr(weak_config),
+    })
 
     AE_model_params = {
         "mode": "NN",
@@ -202,7 +230,15 @@ def main():
 
     experiment.log_parameters(rl_agent_params)
 
-    data = dill.dumps((get_model, train_args, optimizers, AE_model_params, AE_train_params, loss_surface_params))
+    data = dill.dumps((
+        get_model,
+        train_args,
+        optimizers,
+        physics_forms,
+        AE_model_params,
+        AE_train_params,
+        loss_surface_params,
+    ))
     train_process_rl(data=data, save_path=save_path, device=args.device, seed=args.seed, rl_agent_params=rl_agent_params)
 
 

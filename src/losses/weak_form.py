@@ -26,7 +26,7 @@ class WeakFormAdapter(Protocol):
         quadrature: SpatialQuadrature,
         times: torch.Tensor,
     ) -> torch.Tensor:
-        """Return residuals shaped ``(time, cell, test_function)``."""
+        """Return ``(time, cell, mode)`` or ``(equation, time, cell, mode)``."""
 
 
 @dataclass(frozen=True)
@@ -54,7 +54,7 @@ class WeakFormConfig:
 
 
 class WeakFormLoss:
-    """Compute one scalar weak PDE loss while retaining detailed diagnostics."""
+    """Compute scalar or multi-equation weak losses with diagnostics."""
 
     def __init__(self, adapter: WeakFormAdapter, config: WeakFormConfig):
         self.adapter = adapter
@@ -108,17 +108,23 @@ class WeakFormLoss:
         quadrature = self._quadrature(device, dtype)
         times = self._times(training, device, dtype)
         raw_residuals = self.adapter.weak_residuals(net, quadrature, times)
-        if raw_residuals.ndim != 3:
+        if raw_residuals.ndim == 3:
+            raw_residuals = raw_residuals.unsqueeze(0)
+        elif raw_residuals.ndim != 4:
             raise RuntimeError(
-                "Weak-form adapter must return (time, cell, test_function) residuals."
+                "Weak-form adapter must return (time, cell, mode) or "
+                "(equation, time, cell, mode) residuals."
             )
-        normalized_residuals = raw_residuals / quadrature.cell_volumes[None, :, None]
+        normalized_residuals = (
+            raw_residuals / quadrature.cell_volumes[None, None, :, None]
+        )
         selected = (
             normalized_residuals
             if self.config.normalize_by_cell_volume
             else raw_residuals
         )
-        loss = torch.mean(selected.square())
+        component_losses = torch.mean(selected.square(), dim=(1, 2, 3))
+        loss = component_losses[0] if component_losses.numel() == 1 else component_losses
 
         with torch.no_grad():
             diagnostics = {
@@ -128,18 +134,22 @@ class WeakFormLoss:
                     normalized_residuals.detach().square()
                 ),
                 "weak_rms": torch.sqrt(torch.mean(selected.detach().square())),
+                "equation_rms": torch.sqrt(
+                    torch.mean(selected.detach().square(), dim=(1, 2, 3))
+                ),
                 "time_rms": torch.sqrt(
-                    torch.mean(selected.detach().square(), dim=(1, 2))
+                    torch.mean(selected.detach().square(), dim=(0, 2, 3))
                 ),
                 "cell_rms": torch.sqrt(
-                    torch.mean(selected.detach().square(), dim=(0, 2))
+                    torch.mean(selected.detach().square(), dim=(0, 1, 3))
                 ),
                 "mode_rms": torch.sqrt(
-                    torch.mean(selected.detach().square(), dim=(0, 1))
+                    torch.mean(selected.detach().square(), dim=(0, 1, 2))
                 ),
-                "num_times": int(raw_residuals.shape[0]),
-                "num_cells": int(raw_residuals.shape[1]),
-                "num_test_functions": int(raw_residuals.shape[2]),
+                "num_equations": int(raw_residuals.shape[0]),
+                "num_times": int(raw_residuals.shape[1]),
+                "num_cells": int(raw_residuals.shape[2]),
+                "num_test_functions": int(raw_residuals.shape[3]),
                 "points_per_cell": quadrature.points_per_cell,
             }
             self.last_diagnostics = diagnostics
@@ -181,7 +191,14 @@ class _WeakFormData:
         return self.test_x, self.test_y, self.test_aux_vars
 
     def _losses(self, loss_fn, inputs, outputs, model, *, training: bool):
-        count = 1 + len(self.bcs)
+        weak_values = self.weak_loss(model.net, training=training)
+        weak_losses = (
+            [weak_values]
+            if weak_values.ndim == 0
+            else list(torch.unbind(weak_values))
+        )
+        weak_count = len(weak_losses)
+        count = weak_count + len(self.bcs)
         if not isinstance(loss_fn, (list, tuple)):
             loss_functions = [loss_fn] * count
         elif len(loss_fn) == count:
@@ -191,14 +208,18 @@ class _WeakFormData:
                 f"Weak-form data has {count} errors, but received {len(loss_fn)} losses."
             )
 
-        losses = [self.weak_loss(model.net, training=training)]
+        # Do not alias ``weak_losses`` here: appending BC terms would change
+        # its length and shift the loss-function index on every iteration.
+        losses = list(weak_losses)
         starts = list(map(int, np.cumsum([0] + self.num_bcs)))
         sample_points = self.train_x if training else self.test_x
         for index, bc in enumerate(self.bcs):
             begin, end = starts[index], starts[index + 1]
             error = bc.error(sample_points, inputs, outputs, begin, end)
             losses.append(
-                loss_functions[index + 1](bkd.zeros_like(error), error)
+                loss_functions[weak_count + index](
+                    bkd.zeros_like(error), error
+                )
             )
         return losses
 

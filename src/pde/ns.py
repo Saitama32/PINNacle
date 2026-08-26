@@ -5,6 +5,96 @@ import deepxde as dde
 from . import baseclass
 
 
+class NS2DLongTimeWeakFormAdapter:
+    """Spatial weak form of the 2D incompressible Navier--Stokes system."""
+
+    def __init__(self, pde):
+        self.pde = pde
+        self.spatial_bounds = (
+            (pde.bbox[0], pde.bbox[1]),
+            (pde.bbox[2], pde.bbox[3]),
+        )
+        self.time_bounds = (pde.bbox[4], pde.bbox[5])
+
+    def weak_residuals(self, net, quadrature, times):
+        count_t = int(times.numel())
+        count_c, count_q, _ = quadrature.points.shape
+        spatial = quadrature.points[None, :, :, :].expand(count_t, -1, -1, -1)
+        time_grid = times[:, None, None, None].expand(-1, count_c, count_q, 1)
+        inputs = torch.cat((spatial, time_grid), dim=-1).reshape(-1, 3)
+        inputs = inputs.requires_grad_(True)
+
+        values = net(inputs)
+        if values.ndim != 2 or values.shape[1] != 3:
+            raise ValueError(
+                "NS2D weak form requires network outputs (u, v, p)."
+            )
+        u, v, pressure = values[:, 0:1], values[:, 1:2], values[:, 2:3]
+        grad_u = torch.autograd.grad(
+            u, inputs, grad_outputs=torch.ones_like(u), create_graph=True
+        )[0]
+        grad_v = torch.autograd.grad(
+            v, inputs, grad_outputs=torch.ones_like(v), create_graph=True
+        )[0]
+
+        shape_scalar = (count_t, count_c, count_q)
+        shape_vector = (count_t, count_c, count_q, 2)
+        u_grid = u[:, 0].reshape(shape_scalar)
+        v_grid = v[:, 0].reshape(shape_scalar)
+        p_grid = pressure[:, 0].reshape(shape_scalar)
+        grad_u_space = grad_u[:, :2].reshape(shape_vector)
+        grad_v_space = grad_v[:, :2].reshape(shape_vector)
+        u_t = grad_u[:, 2].reshape(shape_scalar)
+        v_t = grad_v[:, 2].reshape(shape_scalar)
+
+        x = inputs[:, 0].reshape(shape_scalar)
+        y = inputs[:, 1].reshape(shape_scalar)
+        t = inputs[:, 2].reshape(shape_scalar)
+        force_y = -torch.sin(torch.pi * x) * torch.sin(torch.pi * y) * torch.sin(
+            torch.pi * t
+        )
+
+        test_values = quadrature.test_values
+        test_gradients = quadrature.test_gradients
+        weights = quadrature.weights
+
+        transport_x = (
+            u_t
+            + u_grid * grad_u_space[..., 0]
+            + v_grid * grad_u_space[..., 1]
+        )
+        transport_y = (
+            v_t
+            + u_grid * grad_v_space[..., 0]
+            + v_grid * grad_v_space[..., 1]
+            - force_y
+        )
+        momentum_x = torch.einsum(
+            "tcq,mq,cq->tcm", transport_x, test_values, weights
+        )
+        momentum_y = torch.einsum(
+            "tcq,mq,cq->tcm", transport_y, test_values, weights
+        )
+        momentum_x -= torch.einsum(
+            "tcq,mq,cq->tcm", p_grid, test_gradients[:, :, 0], weights
+        )
+        momentum_y -= torch.einsum(
+            "tcq,mq,cq->tcm", p_grid, test_gradients[:, :, 1], weights
+        )
+        momentum_x += float(self.pde.nu) * torch.einsum(
+            "tcqd,mqd,cq->tcm", grad_u_space, test_gradients, weights
+        )
+        momentum_y += float(self.pde.nu) * torch.einsum(
+            "tcqd,mqd,cq->tcm", grad_v_space, test_gradients, weights
+        )
+
+        velocity = torch.stack((u_grid, v_grid), dim=-1)
+        continuity = -torch.einsum(
+            "tcqd,mqd,cq->tcm", velocity, test_gradients, weights
+        )
+        return torch.stack((momentum_x, momentum_y, continuity), dim=0)
+
+
 class NS2D_Classic(baseclass.BasePDE):
 
     def __init__(self, datapath="ref/ns2d.dat", nu=1, bbox=[0, 8, 0, 8], circles=[[6, 6, 1.0], [2, 1.0, 0.5]], linear=False):
@@ -311,6 +401,7 @@ class NS2D_LongTime(baseclass.BaseTimePDE):
 
     def __init__(self, datapath="ref/ns_long.dat", nu=1 / 100, bbox=[0, 2, 0, 1, 0, 5]):
         super().__init__()
+        self.nu = float(nu)
         # output dim
         self.output_config = [{'name': s} for s in ['u', 'v', 'p']]
         # geom
@@ -414,3 +505,6 @@ class NS2D_LongTime(baseclass.BaseTimePDE):
 
         # training config
         self.training_points(mul=4)
+
+    def weak_form_adapter(self):
+        return NS2DLongTimeWeakFormAdapter(self)
