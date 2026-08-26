@@ -48,12 +48,16 @@ from src.utils.args import parse_hidden_layers
 
 
 TERM_KEYS = ("term_t", "term_adv", "term_diff", "term_hyper", "residual")
+JACOBIAN_DIAGNOSTIC_EPSILONS = (1e-4, 1e-6, 1e-8)
 SUMMARY_FIELDS = (
     "T", "seed", "final_relative_l2", "final_mse", "final_mae",
     "final_pde_mse", "final_ic_mse", "final_periodic_mse",
     "jacobian_condition_initial", "jacobian_condition_mid",
     "jacobian_condition_final", "jacobian_rank_initial",
     "jacobian_rank_final", "gradient_conflict_fraction_initial",
+    "jacobian_condition_eps_1e_4_final", "jacobian_condition_eps_1e_6_final",
+    "jacobian_condition_eps_1e_8_final", "jacobian_rank_eps_1e_4_final",
+    "jacobian_rank_eps_1e_6_final", "jacobian_rank_eps_1e_8_final",
     "gradient_conflict_fraction_final", "gradient_cosine_mean_final",
     "first_layer_e_rank_initial", "first_layer_e_rank_final",
     "last_layer_e_rank_initial", "last_layer_e_rank_final",
@@ -77,6 +81,10 @@ def write_csv(path: Path, rows: list[dict], fieldnames=None) -> None:
         writer = csv.DictWriter(stream, fieldnames=fieldnames, extrasaction="ignore")
         writer.writeheader()
         writer.writerows(rows)
+
+
+def epsilon_label(value: float) -> str:
+    return f"{value:.0e}".replace("-", "").replace("+", "").replace("e0", "e_")
 
 
 def json_value(value):
@@ -265,11 +273,22 @@ def residual_vector(network, points, args):
 
 def jacobian_diagnostic(network, points, args, output_dir: Path):
     parameters = [parameter for parameter in network.parameters() if parameter.requires_grad]
-    vector = residual_vector(network, points, args)
-    rows = []
-    for index in range(vector.numel()):
-        rows.append(flatten_gradients(vector[index], parameters, index + 1 < vector.numel()).detach().cpu())
-    jacobian = torch.stack(rows).double().numpy()
+    original_dtype = parameters[0].dtype if parameters else torch.float32
+    points64 = {
+        key: value.detach().to(dtype=torch.float64)
+        for key, value in points.items()
+        if key in ("pde", "ic", "ic_exact", "boundary_t")
+    }
+    try:
+        network.to(dtype=torch.float64)
+        parameters = [parameter for parameter in network.parameters() if parameter.requires_grad]
+        vector = residual_vector(network, points64, args)
+        rows = []
+        for index in range(vector.numel()):
+            rows.append(flatten_gradients(vector[index], parameters, index + 1 < vector.numel()).detach().cpu())
+        jacobian = torch.stack(rows).numpy()
+    finally:
+        network.to(dtype=original_dtype)
     finite = bool(np.isfinite(jacobian).all())
     singular_values = (
         np.linalg.svd(jacobian, compute_uv=False)
@@ -277,21 +296,51 @@ def jacobian_diagnostic(network, points, args, output_dir: Path):
         else np.full(min(jacobian.shape), np.nan, dtype=np.float64)
     )
     sigma_max = float(singular_values[0]) if len(singular_values) else 0.0
-    threshold = args.jacobian_rank_epsilon * sigma_max
-    resolved = singular_values[np.isfinite(singular_values) & (singular_values > threshold)]
+    epsilons = sorted(set(args.jacobian_rank_epsilons + [args.jacobian_rank_epsilon]), reverse=True)
+    finite_singular_values = singular_values[np.isfinite(singular_values)]
+    by_epsilon = {}
+    for epsilon in epsilons:
+        threshold = epsilon * sigma_max
+        resolved = finite_singular_values[finite_singular_values > threshold]
+        by_epsilon[epsilon_label(epsilon)] = {
+            "epsilon": float(epsilon),
+            "resolved_threshold": float(threshold),
+            "sigma_min_resolved": float(resolved[-1]) if len(resolved) else None,
+            "jacobian_condition_number": float(sigma_max / resolved[-1]) if len(resolved) else None,
+            "jacobian_effective_rank": int(len(resolved)),
+        }
+    primary = by_epsilon[epsilon_label(args.jacobian_rank_epsilon)]
     result = {
         "residual_count": int(jacobian.shape[0]),
         "parameter_count": int(jacobian.shape[1]),
         "sigma_max": sigma_max,
         "sigma_median": float(np.median(singular_values)) if len(singular_values) else 0.0,
-        "sigma_min_resolved": float(resolved[-1]) if len(resolved) else None,
-        "jacobian_condition_number": float(sigma_max / resolved[-1]) if len(resolved) else None,
-        "jacobian_effective_rank": int(len(resolved)),
-        "resolved_threshold": float(threshold),
+        "sigma_min_resolved": primary["sigma_min_resolved"],
+        "jacobian_condition_number": primary["jacobian_condition_number"],
+        "jacobian_effective_rank": primary["jacobian_effective_rank"],
+        "resolved_threshold": primary["resolved_threshold"],
+        "threshold_diagnostics": by_epsilon,
         "finite": finite,
+        "svd_dtype": "float64",
     }
-    np.savez_compressed(output_dir / "jacobian_spectrum.npz", singular_values=singular_values,
-                        resolved_threshold=threshold)
+    condition_numbers = np.asarray([
+        np.nan if by_epsilon[epsilon_label(epsilon)]["jacobian_condition_number"] is None
+        else by_epsilon[epsilon_label(epsilon)]["jacobian_condition_number"]
+        for epsilon in epsilons
+    ], dtype=np.float64)
+    effective_ranks = np.asarray([
+        by_epsilon[epsilon_label(epsilon)]["jacobian_effective_rank"]
+        for epsilon in epsilons
+    ], dtype=np.int64)
+    np.savez_compressed(
+        output_dir / "jacobian_spectrum.npz",
+        singular_values=singular_values,
+        log10_singular_values=np.log10(singular_values),
+        rank_epsilons=np.asarray(epsilons, dtype=np.float64),
+        condition_numbers=condition_numbers,
+        effective_ranks=effective_ranks,
+        primary_rank_epsilon=np.asarray(args.jacobian_rank_epsilon, dtype=np.float64),
+    )
     return result
 
 
@@ -561,6 +610,12 @@ def run_one(args, horizon, seed, reference_solution, root_dir, device):
         "jacobian_condition_final": final["jacobian"]["jacobian_condition_number"],
         "jacobian_rank_initial": initial["jacobian"]["jacobian_effective_rank"],
         "jacobian_rank_final": final["jacobian"]["jacobian_effective_rank"],
+        "jacobian_condition_eps_1e_4_final": final["jacobian"]["threshold_diagnostics"]["1e_4"]["jacobian_condition_number"],
+        "jacobian_condition_eps_1e_6_final": final["jacobian"]["threshold_diagnostics"]["1e_6"]["jacobian_condition_number"],
+        "jacobian_condition_eps_1e_8_final": final["jacobian"]["threshold_diagnostics"]["1e_8"]["jacobian_condition_number"],
+        "jacobian_rank_eps_1e_4_final": final["jacobian"]["threshold_diagnostics"]["1e_4"]["jacobian_effective_rank"],
+        "jacobian_rank_eps_1e_6_final": final["jacobian"]["threshold_diagnostics"]["1e_6"]["jacobian_effective_rank"],
+        "jacobian_rank_eps_1e_8_final": final["jacobian"]["threshold_diagnostics"]["1e_8"]["jacobian_effective_rank"],
         "gradient_conflict_fraction_initial": initial["gradient"]["gradient_conflict_fraction"],
         "gradient_conflict_fraction_final": final["gradient"]["gradient_conflict_fraction"],
         "gradient_cosine_mean_final": final["gradient"]["gradient_cosine_mean"],
@@ -595,6 +650,21 @@ def aggregate_rows(rows):
             result[f"{field}_std"] = float(np.nanstd(values, ddof=1)) if len(values) > 1 else 0.0
         aggregate.append(result)
     return aggregate
+
+
+def validate_completed_runs(rows, args):
+    completed = {(int(row["seed"]), float(row["T"])) for row in rows}
+    expected = {(int(seed), float(horizon)) for seed in args.seeds for horizon in args.horizons}
+    missing = sorted(expected - completed, key=lambda item: (item[1], item[0]))
+    unexpected = sorted(completed - expected, key=lambda item: (item[1], item[0]))
+    if missing or unexpected:
+        details = {
+            "expected_run_count": len(expected),
+            "completed_run_count": len(completed),
+            "missing": [{"seed": seed, "T": horizon} for seed, horizon in missing],
+            "unexpected": [{"seed": seed, "T": horizon} for seed, horizon in unexpected],
+        }
+        raise RuntimeError(f"incomplete seed/horizon grid: {json.dumps(details, sort_keys=True)}")
 
 
 def plot_metric(aggregate, output, field, ylabel, log_scale=False, second_field=None):
@@ -646,7 +716,24 @@ def save_aggregate_outputs(rows, root_dir, args):
     plot_metric(aggregate, root_dir / "relative_l2_vs_T.png", "final_relative_l2", "relative L2", True)
     plot_metric(aggregate, root_dir / "pde_mse_vs_T.png", "final_pde_mse", "PDE MSE", True)
     plot_metric(aggregate, root_dir / "jacobian_condition_vs_T.png", "jacobian_condition_final", "Jacobian condition", True)
+    for epsilon in JACOBIAN_DIAGNOSTIC_EPSILONS:
+        label = epsilon_label(epsilon)
+        plot_metric(
+            aggregate,
+            root_dir / f"jacobian_condition_eps_{label}_vs_T.png",
+            f"jacobian_condition_eps_{label}_final",
+            f"Jacobian condition eps={epsilon:.0e}",
+            True,
+        )
     plot_metric(aggregate, root_dir / "jacobian_effective_rank_vs_T.png", "jacobian_rank_final", "Jacobian effective rank")
+    for epsilon in JACOBIAN_DIAGNOSTIC_EPSILONS:
+        label = epsilon_label(epsilon)
+        plot_metric(
+            aggregate,
+            root_dir / f"jacobian_rank_eps_{label}_vs_T.png",
+            f"jacobian_rank_eps_{label}_final",
+            f"Jacobian effective rank eps={epsilon:.0e}",
+        )
     plot_metric(aggregate, root_dir / "gradient_conflict_fraction_vs_T.png", "gradient_conflict_fraction_final", "gradient conflict fraction")
     plot_metric(aggregate, root_dir / "gradient_cosine_mean_vs_T.png", "gradient_cosine_mean_final", "mean gradient cosine")
     plot_metric(aggregate, root_dir / "first_last_layer_e_rank_vs_T.png", "first_layer_e_rank_final", "feature effective rank", second_field="last_layer_e_rank_final")
@@ -732,6 +819,20 @@ def validate_args(args):
     if len(set(args.diagnostic_steps)) != len(args.diagnostic_steps):
         raise ValueError("diagnostic-steps must be unique")
     args.diagnostic_steps = sorted(args.diagnostic_steps)
+    if args.jacobian_rank_epsilon <= 0.0 or args.jacobian_rank_epsilon >= 1.0 or not math.isfinite(args.jacobian_rank_epsilon):
+        raise ValueError("jacobian-rank-epsilon must be finite and in (0, 1)")
+    if any(epsilon <= 0.0 or epsilon >= 1.0 or not math.isfinite(epsilon)
+           for epsilon in args.jacobian_rank_epsilons):
+        raise ValueError("jacobian-rank-epsilons must be finite values in (0, 1)")
+    args.jacobian_rank_epsilons = sorted(
+        set(args.jacobian_rank_epsilons + list(JACOBIAN_DIAGNOSTIC_EPSILONS)),
+        reverse=True,
+    )
+    if args.jacobian_rank_epsilon not in args.jacobian_rank_epsilons:
+        args.jacobian_rank_epsilons = sorted(
+            set(args.jacobian_rank_epsilons + [args.jacobian_rank_epsilon]),
+            reverse=True,
+        )
     positive = ("domain_points", "ic_points", "boundary_points",
                 "jacobian_pde_points", "jacobian_ic_points", "jacobian_boundary_points",
                 "gradient_chunks", "gradient_points_per_chunk", "feature_points",
@@ -801,6 +902,8 @@ def parse_args(argv=None):
     parser.add_argument("--jacobian-ic-points", type=int, default=256)
     parser.add_argument("--jacobian-boundary-points", type=int, default=256)
     parser.add_argument("--jacobian-rank-epsilon", type=float, default=1e-8)
+    parser.add_argument("--jacobian-rank-epsilons", type=lambda value: parse_number_list(value, float),
+                        default=list(JACOBIAN_DIAGNOSTIC_EPSILONS))
     parser.add_argument("--gradient-chunks", type=int, default=8)
     parser.add_argument("--gradient-points-per-chunk", type=int, default=32)
     parser.add_argument("--cosine-epsilon", type=float, default=1e-20)
@@ -837,7 +940,9 @@ def main(argv=None):
     for seed in args.seeds:
         for horizon in args.horizons:
             rows.append(run_one(args, float(horizon), int(seed), reference, root_dir, device))
-            save_aggregate_outputs(rows, root_dir, args)
+            write_csv(root_dir / "horizon_ablation_progress_by_seed.csv", rows, SUMMARY_FIELDS)
+    validate_completed_runs(rows, args)
+    save_aggregate_outputs(rows, root_dir, args)
     print(f"Completed {len(rows)} runs. Results: {root_dir}")
     return root_dir
 
