@@ -7,7 +7,7 @@ sys.path.append(project_root)
 from comet_config import start_comet_experiment
 
 experiment = start_comet_experiment(
-    project_name="rlpinn_wave1d_loss_ratio_reward_optimization",
+    project_name="rlpinn_wave1d_stong_weak_chain_tol",
 )
 
 import time
@@ -202,7 +202,7 @@ def main():
     rl_agent_params = {
         "n_save_models": args.n_save_models,
         "n_trajectories": args.n_trajectories,
-        "tolerance": 0.012694936,
+        "tolerance": 0,
         "use_tol": False,
         "new_tol": True,
         "prev_tol": 0.0,
