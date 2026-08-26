@@ -87,7 +87,7 @@ def make_parser():
     parser.add_argument("--seed", type=int, default=1234)
     parser.add_argument("--hidden-layers", default="100*5")
     parser.add_argument("--lr", type=float, default=1e-3)
-    parser.add_argument("--iterations", type=int, default=5000)
+    parser.add_argument("--iterations", type=int, default=20000)
     parser.add_argument("--log-every", type=int, default=100)
     parser.add_argument("--plot-every", type=int, default=2000)
     parser.add_argument("--out", default="runs_single/weak")

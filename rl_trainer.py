@@ -9,6 +9,7 @@ import numpy as np
 from dataclasses import dataclass
 from typing import Any, Dict, Optional, Tuple, List
 import datetime
+import copy
 
 dill.settings["recurse"] = True
 import torch
@@ -34,6 +35,66 @@ device = 'cuda' if torch.cuda.is_available() else 'cpu'
 output_dir = os.path.join('.', 'transitions')
 
 os.makedirs(output_dir, exist_ok=True)
+
+
+def _build_action_space(optimizers, physics_forms=None):
+    """Build either the legacy optimizer space or a physics-form action space."""
+
+    action_space = copy.deepcopy(optimizers)
+    if physics_forms is None:
+        return action_space
+    if len(action_space) != 1:
+        raise ValueError(
+            "Physics-form action mode requires exactly one fixed optimizer."
+        )
+    if not isinstance(physics_forms, dict) or not physics_forms:
+        raise ValueError("physics_forms must be a non-empty dictionary.")
+
+    fixed_optimizer_params = next(iter(action_space.values()))
+    fixed_optimizer_params.pop("epochs", None)
+    action_space = {}
+    for form_name, form_config in physics_forms.items():
+        normalized_name = str(form_name).strip().lower()
+        if normalized_name not in {"weak", "strong"}:
+            raise ValueError(
+                f"Unknown physics form {form_name!r}; expected 'weak' or 'strong'."
+            )
+        if not isinstance(form_config, dict):
+            raise ValueError(f"physics_forms[{form_name!r}] must be a dictionary.")
+        epochs = form_config.get("epochs")
+        if not isinstance(epochs, (list, tuple)) or not epochs:
+            raise ValueError(
+                f"physics_forms[{form_name!r}]['epochs'] must be a non-empty sequence."
+            )
+        normalized_epochs = [int(epoch_count) for epoch_count in epochs]
+        if any(epoch_count <= 0 for epoch_count in normalized_epochs):
+            raise ValueError("Physics-form epoch counts must be positive.")
+        params = copy.deepcopy(fixed_optimizer_params)
+        params.update(copy.deepcopy(form_config))
+        params["epochs"] = normalized_epochs
+        action_space[normalized_name] = params
+    return action_space
+
+
+def _set_model_physics_form(model, physics_form):
+    """Switch the DeepXDE data/loss provider before recompiling a chunk."""
+
+    if physics_form is None:
+        return getattr(model, "physics_loss_kind", "strong")
+    normalized_name = str(physics_form).strip().lower()
+    if normalized_name not in {"weak", "strong"}:
+        raise ValueError(f"Unknown physics form: {physics_form!r}.")
+
+    data_attr = f"{normalized_name}_data"
+    data = getattr(model, data_attr, None)
+    if data is None:
+        raise RuntimeError(
+            f"Model does not provide {data_attr}. "
+            "Attach the weak-form loss before starting RL training."
+        )
+    model.data = data
+    model.physics_loss_kind = normalized_name
+    return normalized_name
 
 # --- утилита: реинициализация torch модулей (для "новой траектории") ---
 def reinit_torch_weights(module):
@@ -157,6 +218,59 @@ def _extract_weighted_train_loss(model) -> float:
 
     loss_train = np.asarray(loss_train, dtype=np.float64)
     loss_value = float(np.sum(loss_train))
+    if not np.isfinite(loss_value) or loss_value < 0.0:
+        return float("nan")
+    return loss_value
+
+
+def _evaluate_strong_train_loss(model, loss_weights) -> float:
+    """Evaluate every action on one canonical strong-form objective."""
+
+    strong_data = getattr(model, "strong_data", None)
+    if strong_data is None:
+        return _extract_weighted_train_loss(model)
+
+    inputs_np, targets_np, auxiliary_vars = strong_data.train_next_batch(
+        getattr(model, "batch_size", None)
+    )
+    parameter = next(model.net.parameters())
+    tensor_kwargs = {"device": parameter.device, "dtype": parameter.dtype}
+    if isinstance(inputs_np, tuple):
+        inputs = tuple(
+            torch.as_tensor(value, **tensor_kwargs).requires_grad_()
+            for value in inputs_np
+        )
+    else:
+        inputs = torch.as_tensor(inputs_np, **tensor_kwargs).requires_grad_()
+    targets = (
+        None
+        if targets_np is None
+        else torch.as_tensor(targets_np, **tensor_kwargs)
+    )
+    model.net.auxiliary_vars = (
+        [] if auxiliary_vars is None else auxiliary_vars
+    )
+    model.net.train(mode=False)
+    outputs = model.net(inputs)
+    losses = strong_data.losses_train(
+        targets,
+        outputs,
+        dde.losses.get("MSE"),
+        inputs,
+        model,
+        model.net.auxiliary_vars,
+    )
+    if not isinstance(losses, (list, tuple)):
+        losses = [losses]
+    weighted_losses = torch.stack(losses)
+    if loss_weights is not None:
+        weighted_losses = weighted_losses * torch.as_tensor(
+            loss_weights,
+            device=weighted_losses.device,
+            dtype=weighted_losses.dtype,
+        )
+    loss_value = float(weighted_losses.sum().detach().cpu())
+    dde.grad.clear()
     if not np.isfinite(loss_value) or loss_value < 0.0:
         return float("nan")
     return loss_value
@@ -298,6 +412,7 @@ def run_deepxde_rl_training(
     train_args: Dict[str, Any],
     rl_agent_params,
     optimizers_dict: Dict[str, Any],
+    physics_forms=None,
     AE_model_params=None,
     AE_train_params=None,
     loss_surface_params=None,
@@ -311,13 +426,18 @@ def run_deepxde_rl_training(
     agent_ctor: класс/фабрика DQNAgent
     """
 
+    action_space_dict = _build_action_space(optimizers_dict, physics_forms)
+    fixed_optimizer_name = (
+        next(iter(optimizers_dict)) if physics_forms is not None else None
+    )
+
     # callbacks базовые (Tester/Loss/Plot и т.п.)
     base_callbacks = train_args.get("callbacks", [])
     equation_params = train_args.get("equation_params", [])
     display_every = int(train_args.get("display_every", 100))
 
     # создаём env/agent (как раньше внутри model.py, только теперь снаружи)
-    env = EnvRLOptimizer(optimizers=optimizers_dict,
+    env = EnvRLOptimizer(optimizers=action_space_dict,
                          equation_params=equation_params,
                          callbacks=None,
                          AE_model_params=AE_model_params,
@@ -339,7 +459,7 @@ def run_deepxde_rl_training(
 
     rl_agent = DQNAgent(n_observation,
                         n_action,
-                        optimizer_dict=optimizers_dict,
+                        optimizer_dict=action_space_dict,
                         memory_size=rl_agent_params["rl_buffer_size"],
                         gamma=rl_agent_params["gamma"],
                         lr=rl_agent_params["lr"],
@@ -419,9 +539,10 @@ def run_deepxde_rl_training(
         # сброс локальных переменных траектории
         state = zero_state()
         prev_reward = -1.0
-        last_opt = None
+        last_action_key = None
         same_opt_streak = 0
         optimizers_history = []
+        physics_forms_history = []
         rl_penalty = 0
         total_reward = 0.0
         trajectory_transitions = []
@@ -438,15 +559,30 @@ def run_deepxde_rl_training(
             # --- agent action ---
             action, action_raw, is_model = rl_agent.select_action(state)
             agent_step = rl_agent.steps_done
-            action_raw[2]['epochs'] = action_raw[1]
-            action_raw = (action_raw[0], action_raw[2])
+            raw_params = dict(action_raw[2])
+            if action_raw[1] is not None:
+                raw_params['epochs'] = action_raw[1]
+            action_raw = (action_raw[0], raw_params)
 
-            # штраф за повтор оптимизатора (как у тебя было)
-            if last_opt == action["type"]:
+            # In the ablation mode the main head selects weak/strong. The
+            # optimizer is fixed, while the selected form's parameter head
+            # supplies epochs, lr, and any other Adam parameters.
+            if fixed_optimizer_name is not None:
+                selected_form = action["type"]
+                action = {
+                    **action,
+                    "type": fixed_optimizer_name,
+                    "physics_form": selected_form,
+                }
+
+            # Repeating the same optimizer with another physics form is a
+            # meaningful switch, so the repeat penalty uses the joint action.
+            action_key = (action["type"], action.get("physics_form"))
+            if last_action_key == action_key:
                 same_opt_streak += 1
             else:
                 same_opt_streak = 0
-            last_opt = action["type"]
+            last_action_key = action_key
 
             if is_model:
                 print("Action by model")
@@ -456,6 +592,9 @@ def run_deepxde_rl_training(
 
             # --- compile optimizer for this chunk ---
             chunk_iters = int(action["epochs"])
+            physics_form = _set_model_physics_form(
+                model, action.get("physics_form")
+            )
             torch_opt = _build_torch_optimizer(action["type"], model.net.parameters(), action, model=model.net)
 
 
@@ -468,6 +607,7 @@ def run_deepxde_rl_training(
                     f'\nRL agent training: step {t + 1}.'
                     f'\nTime: {datetime.datetime.now()}.'
                     f'\nUsing optimizer: {action["type"]} for {action["epochs"]} epochs.'
+                    f'\nPhysics form: {physics_form}.'
                     f'\nTotal Reward = {total_reward}.\n')
 
             model.train(
@@ -482,12 +622,20 @@ def run_deepxde_rl_training(
             tester_callback = callbacks[0]
             rmse = tester_callback.rmse
             b_rmse = tester_callback.brmse
-            train_loss = _extract_weighted_train_loss(model)
+            objective_train_loss = _extract_weighted_train_loss(model)
+            train_loss = (
+                objective_train_loss
+                if physics_form == "strong"
+                else _evaluate_strong_train_loss(model, loss_weights)
+            )
             transition_ready = False
 
-            if np.isfinite(train_loss):
+            if np.isfinite(train_loss) and np.isfinite(objective_train_loss):
                 print(f"Operator RMSE: {rmse}, Boundary RMSE: {b_rmse}")
-                print(f"Weighted train loss: {train_loss}")
+                print(
+                    f"Selected-form weighted train loss: {objective_train_loss}\n"
+                    f"Canonical strong-form reward loss: {train_loss}"
+                )
                 old_raw_reward = float(
                     (rmse if np.isfinite(rmse) else 0.0)
                     + (b_rmse if np.isfinite(b_rmse) else 0.0)
@@ -500,7 +648,11 @@ def run_deepxde_rl_training(
                 env.rl_penalty = rl_penalty
 
                 optimizers_history.append(action["type"])
-                print(f'\nPassed optimizer {action["type"]}.')
+                physics_forms_history.append(physics_form)
+                print(
+                    f'\nPassed optimizer {action["type"]} '
+                    f'with {physics_form} physics form.'
+                )
 
 
                 env.set_step_context(
@@ -524,6 +676,7 @@ def run_deepxde_rl_training(
                     "next_state": next_state,
                     "solver_models": _serialize_solver_models(solver_models),
                     "action_raw": action_raw,
+                    "physics_form": physics_form,
                     "agent_step": agent_step,
                     "done": done,
                     "opt_model_i": info["opt_model_i"],
@@ -531,6 +684,7 @@ def run_deepxde_rl_training(
                     "old_reward_model": float(reward_shaped.item()),
                     "old_raw_reward": old_raw_reward,
                     "current_loss": float(train_loss),
+                    "objective_train_loss": float(objective_train_loss),
                 })
                 trajectory_losses.append(float(train_loss))
 
@@ -544,12 +698,19 @@ def run_deepxde_rl_training(
                     "opt_model_i": -1,
                 }
                 print(f"Operator RMSE: {rmse}, Boundary RMSE: {b_rmse}. Stopping trajectory with done = -1.")
-                print(f"Weighted train loss: {train_loss}. Stopping trajectory with done = -1.")
+                print(
+                    f"Selected-form weighted train loss: {objective_train_loss}. "
+                    f"Canonical strong-form reward loss: {train_loss}. "
+                    "Stopping trajectory with done = -1."
+                )
 
-            print(f'\nCurrent reward after {action["type"]} optimizer: {info["reward_scalar"]}.\n'
+            history = ", ".join(
+                f"{optimizer}/{form}"
+                for optimizer, form in zip(optimizers_history, physics_forms_history)
+            )
+            print(f'\nCurrent reward after {action["type"]}/{physics_form}: {info["reward_scalar"]}.\n'
                     f'Reward after taking prev reward and penalty: {reward_shaped}\n'
-                    f'Total reward after using {", ".join(optimizers_history)} '
-                    f'{"optimizers" if len(optimizers_history) > 1 else "optimizer"}: {total_reward}.\n'
+                    f'Total reward after using {history}: {total_reward}.\n'
                     f'\ndone = {done}')
             
             if len(rl_agent.replay_buffer) >= rl_agent_params["agent_min_buffer"]:
@@ -608,8 +769,10 @@ def run_deepxde_rl_training(
                         'next_state': tr["next_state"],
                         'solver_models': tr["solver_models"],
                         'action': tr["action_raw"],
+                        'physics_form': tr["physics_form"],
                         'reward': tr["reward_scalar"],
                         'current_loss': tr["current_loss"],
+                        'objective_train_loss': tr["objective_train_loss"],
                         'done': tr["done"],
                         'reward_model_raw': chain_reward,
                         'reward_model': chain_reward,
@@ -669,7 +832,13 @@ def train_process_rl(data, save_path, device, seed, rl_agent_params):
         model.train(**train_args, model_save_path=save_path)
         return
 
-    get_model, train_args, optimizers, AE_model_params, AE_train_params,  loss_surface_params = payload
+    if len(payload) == 6:
+        get_model, train_args, optimizers, AE_model_params, AE_train_params, loss_surface_params = payload
+        physics_forms = None
+    elif len(payload) == 7:
+        get_model, train_args, optimizers, physics_forms, AE_model_params, AE_train_params, loss_surface_params = payload
+    else:
+        raise ValueError(f"Unsupported RL training payload length: {len(payload)}")
     model, loss_weights = get_model()
     # rl_payload структура:
     # {
@@ -687,6 +856,7 @@ def train_process_rl(data, save_path, device, seed, rl_agent_params):
         train_args=train_args,
         rl_agent_params=rl_agent_params,
         optimizers_dict=optimizers,
+        physics_forms=physics_forms,
         AE_model_params=AE_model_params,
         AE_train_params=AE_train_params,
         loss_surface_params=loss_surface_params,

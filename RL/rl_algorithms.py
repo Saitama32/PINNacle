@@ -702,10 +702,17 @@ class DQNAgent:
     
     def post_proc_model(self, optim_class, epochs_class, param_class):
         class_name = self.i2opt[optim_class]
-        epochs = self.optimizer_dict[class_name]['epochs'][epochs_class]
+        epochs = None
+        if 'epochs' in self.optimizer_dict[class_name]:
+            epochs = self.optimizer_dict[class_name]['epochs'][epochs_class]
         params = {}
         for param_name, param_val in param_class.items():
-            params[param_name] = self.optimizer_dict[class_name][param_name][param_val]
+            value = self.optimizer_dict[class_name][param_name][param_val]
+            params[param_name] = value
+        if epochs is None:
+            raise ValueError(
+                f"Action space for {class_name!r} does not define training epochs."
+            )
         action_dict = {
             'type': class_name,
             'epochs': epochs,
@@ -719,6 +726,7 @@ class DQNAgent:
         class_name = self.i2opt[optim_class]
         param_class = {}
         optim_class_dict = self.optimizer_dict[class_name]
+        epochs_class = None
 
         for key in optim_class_dict:
             if key == 'epochs': epochs_class = random.randint(0, len(optim_class_dict['epochs']) - 1)
@@ -760,6 +768,7 @@ class DQNAgent:
                 optim_name = self.i2opt[optim_class]
 
                 param_class = {}
+                epochs_class = None
                 param_dict = self.model_params(liner_out, [optim_name])[0]
 
                 for key in param_dict:
