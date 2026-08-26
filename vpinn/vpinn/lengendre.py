@@ -9,19 +9,40 @@ def legendre(n, x):
         return ((2 * n - 1) * x * legendre(n - 1, x) - (n - 1) * legendre(n - 2, x)) / n
 
 def legendre_derivative(n, x):
-    # handle special cases where x = 1 or -1
-    x_mask = (x == 1) | (x == -1)
-    result = torch.zeros_like(x)
-    
-    # calculate the derivatives of Legendre polynomials
     if n == 0:
-        return result
+        return torch.zeros_like(x)
     elif n == 1:
-        return torch.where(x_mask, torch.ones_like(x), torch.ones_like(x))
+        return torch.ones_like(x)
     else:
-        result = (n * (legendre(n - 1, x) - x * legendre(n, x))) / (1 - x**2)
-        result[x_mask] = 0.0
-        return result
+        # The quotient formula is singular at the endpoints even though the
+        # polynomial derivative is finite there.  Gauss-Lobatto quadrature
+        # includes both endpoints, so use the exact limiting values instead
+        # of the old (and mathematically incorrect) zero substitution.
+        at_right = x == 1
+        at_left = x == -1
+        at_endpoint = at_right | at_left
+        denominator = torch.where(at_endpoint, torch.ones_like(x), 1 - x**2)
+        interior = n * (legendre(n - 1, x) - x * legendre(n, x)) / denominator
+        endpoint_magnitude = n * (n + 1) / 2
+        right = torch.full_like(x, endpoint_magnitude)
+        left = torch.full_like(x, ((-1) ** (n + 1)) * endpoint_magnitude)
+        return torch.where(at_right, right, torch.where(at_left, left, interior))
+
+
+def legendre_bubble(n, x):
+    """Legendre bubble ``P_{n+1} - P_{n-1}`` for ``n >= 1``."""
+
+    if n < 1:
+        raise ValueError("Legendre bubble index must be at least 1.")
+    return legendre(n + 1, x) - legendre(n - 1, x)
+
+
+def legendre_bubble_derivative(n, x):
+    """Derivative of :func:`legendre_bubble` on the reference cell."""
+
+    if n < 1:
+        raise ValueError("Legendre bubble index must be at least 1.")
+    return legendre_derivative(n + 1, x) - legendre_derivative(n - 1, x)
 
     
 def u(k, n, x):
@@ -34,17 +55,17 @@ def u(k, n, x):
 
 def v2d(k, n1, n2, x, y):
     if k == 0:
-        return (legendre(n1 + 1, x) - legendre(n1 - 1, x)) * (legendre(n2 + 1, y) - legendre(n2 - 1, y))
+        return legendre_bubble(n1, x) * legendre_bubble(n2, y)
     
     elif k == 1:
-        return torch.cat([(legendre_derivative(n1 + 1, x) - legendre_derivative(n1 - 1, x)) * \
-            (legendre(n2 + 1, y) - legendre(n2 - 1, y)), (legendre(n1 + 1, x) - legendre(n1 - 1, x)) \
-                * (legendre_derivative(n2 + 1, y) - legendre_derivative(n2 - 1, y))], dim=1)
+        return torch.cat([
+            legendre_bubble_derivative(n1, x) * legendre_bubble(n2, y),
+            legendre_bubble(n1, x) * legendre_bubble_derivative(n2, y),
+        ], dim=1)
 
 def v3d(k, n1, n2, n3, x, y, z):
     if k == 0:
-        return (legendre(n1 + 1, x) - legendre(n1 - 1, x)) * (legendre(n2 + 1, y) - legendre(n2 - 1, y))\
-            * (legendre(n3 + 1, z) - legendre(n3 - 1, z)) 
+        return legendre_bubble(n1, x) * legendre_bubble(n2, y) * legendre_bubble(n3, z)
     
     # elif k == 1:
     #     return torch.cat([(legendre_derivative(n1 + 1, x) - legendre_derivative(n1 - 1, x)) * \

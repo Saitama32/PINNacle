@@ -4,8 +4,120 @@ from scipy import interpolate
 
 import deepxde as dde
 from . import baseclass
-from ..utils.random import generate_darcy_2d_coef
-from ..utils.func_cache import cache_tensor
+
+
+def _wave_network_derivatives(net, inputs, spatial_dim):
+    """Return first spatial derivatives and the second time derivative."""
+
+    values = net(inputs)
+    if values.ndim != 2 or values.shape[1] != 1:
+        raise ValueError("Wave weak-form adapters require a scalar network output.")
+    first = torch.autograd.grad(
+        values,
+        inputs,
+        grad_outputs=torch.ones_like(values),
+        create_graph=True,
+    )[0]
+    time_first = first[:, spatial_dim : spatial_dim + 1]
+    if time_first.requires_grad:
+        time_second = torch.autograd.grad(
+            time_first,
+            inputs,
+            grad_outputs=torch.ones_like(time_first),
+            create_graph=True,
+        )[0][:, spatial_dim : spatial_dim + 1]
+    else:
+        # Exact constant/linear trial functions legitimately have a zero
+        # second derivative and may produce a first derivative without a
+        # grad_fn.  Keep a harmless network dependency for backward().
+        time_second = torch.zeros_like(time_first) + 0.0 * values
+    return first[:, :spatial_dim], time_second
+
+
+class Wave1DWeakFormAdapter:
+    """Spatial weak form of ``u_tt - C^2 u_xx = 0``."""
+
+    def __init__(self, pde):
+        self.pde = pde
+        self.spatial_bounds = ((pde.bbox[0], pde.bbox[1]),)
+        self.time_bounds = (pde.bbox[2], pde.bbox[3])
+
+    def weak_residuals(self, net, quadrature, times):
+        count_t = int(times.numel())
+        count_c, count_q, _ = quadrature.points.shape
+        spatial = quadrature.points[None, :, :, :].expand(count_t, -1, -1, -1)
+        time_grid = times[:, None, None, None].expand(-1, count_c, count_q, 1)
+        inputs = torch.cat((spatial, time_grid), dim=-1).reshape(-1, 2)
+        inputs = inputs.requires_grad_(True)
+        spatial_gradient, time_second = _wave_network_derivatives(net, inputs, 1)
+        u_x = spatial_gradient[:, 0].reshape(count_t, count_c, count_q)
+        u_tt = time_second[:, 0].reshape(count_t, count_c, count_q)
+
+        mass = torch.einsum(
+            "tcq,mq,cq->tcm",
+            u_tt,
+            quadrature.test_values,
+            quadrature.weights,
+        )
+        stiffness = torch.einsum(
+            "tcq,mq,cq->tcm",
+            u_x,
+            quadrature.test_gradients[:, :, 0],
+            quadrature.weights,
+        )
+        return mass + float(self.pde.C) ** 2 * stiffness
+
+
+class Wave2DHeterogeneousWeakFormAdapter:
+    """Spatial weak form of ``Delta u - u_tt / a(x, y) = 0``."""
+
+    def __init__(self, pde):
+        self.pde = pde
+        self.spatial_bounds = (
+            (pde.bbox[0], pde.bbox[1]),
+            (pde.bbox[2], pde.bbox[3]),
+        )
+        self.time_bounds = (pde.bbox[4], pde.bbox[5])
+        self._coefficient_cache = {}
+
+    def _coefficient(self, quadrature):
+        points = quadrature.points
+        key = (points.data_ptr(), str(points.device), str(points.dtype))
+        coefficient = self._coefficient_cache.get(key)
+        if coefficient is None:
+            coefficient = self.pde.wave_coefficient(points.reshape(-1, 2)).reshape(
+                points.shape[0], points.shape[1]
+            )
+            if not torch.isfinite(coefficient).all():
+                raise RuntimeError("Wave coefficient is non-finite on weak quadrature points.")
+            self._coefficient_cache[key] = coefficient
+        return coefficient
+
+    def weak_residuals(self, net, quadrature, times):
+        count_t = int(times.numel())
+        count_c, count_q, _ = quadrature.points.shape
+        spatial = quadrature.points[None, :, :, :].expand(count_t, -1, -1, -1)
+        time_grid = times[:, None, None, None].expand(-1, count_c, count_q, 1)
+        inputs = torch.cat((spatial, time_grid), dim=-1).reshape(-1, 3)
+        inputs = inputs.requires_grad_(True)
+        spatial_gradient, time_second = _wave_network_derivatives(net, inputs, 2)
+        spatial_gradient = spatial_gradient.reshape(count_t, count_c, count_q, 2)
+        u_tt = time_second[:, 0].reshape(count_t, count_c, count_q)
+        coefficient = self._coefficient(quadrature)
+
+        stiffness = torch.einsum(
+            "tcqd,mqd,cq->tcm",
+            spatial_gradient,
+            quadrature.test_gradients,
+            quadrature.weights,
+        )
+        mass = torch.einsum(
+            "tcq,mq,cq->tcm",
+            u_tt / coefficient[None, :, :],
+            quadrature.test_values,
+            quadrature.weights,
+        )
+        return stiffness + mass
 
 
 class Wave1D(baseclass.BasePDE):
@@ -14,6 +126,7 @@ class Wave1D(baseclass.BasePDE):
         super().__init__()
         # output dim
         self.output_dim = 1
+        self.C = float(C)
         # geom
         self.bbox = [0, scale, 0, scale]
         self.geom = dde.geometry.Rectangle(xmin=[self.bbox[0], self.bbox[2]], xmax=[self.bbox[1], self.bbox[3]])
@@ -23,7 +136,7 @@ class Wave1D(baseclass.BasePDE):
             u_xx = dde.grad.hessian(u, x, i=0, j=0)
             u_tt = dde.grad.hessian(u, x, i=1, j=1)
 
-            return u_tt - C**2 * u_xx
+            return u_tt - self.C**2 * u_xx
 
         self.pde = wave_pde
         self.set_pdeloss(num=1)
@@ -60,6 +173,9 @@ class Wave1D(baseclass.BasePDE):
         # training config
         self.training_points()
 
+    def weak_form_adapter(self):
+        return Wave1DWeakFormAdapter(self)
+
 
 class Wave2D_Heterogeneous(baseclass.BasePDE):
 
@@ -75,18 +191,13 @@ class Wave2D_Heterogeneous(baseclass.BasePDE):
         # PDE
         # self.darcy_2d_coef = generate_darcy_2d_coef(N_res=256, alpha=4, bbox=bbox[0:4])
         self.darcy_2d_coef = np.loadtxt("ref/darcy_2d_coef_256.dat")
-
-        @cache_tensor
-        def coef(x):
-            return torch.Tensor(
-                interpolate.griddata(self.darcy_2d_coef[:, 0:2], self.darcy_2d_coef[:, 2], (x.detach().cpu().numpy()[:, 0:2] + 1) / 2)
-            ).unsqueeze(dim=-1)
+        self._wave_coefficient_value_cache = {}
 
         def wave_pde(x, u):
             u_xx = dde.grad.hessian(u, x, i=0, j=0) + dde.grad.hessian(u, x, i=1, j=1)
             u_tt = dde.grad.hessian(u, x, i=2, j=2)
 
-            return u_xx - u_tt / coef(x)
+            return u_xx - u_tt / self.wave_coefficient(x)
 
         self.pde = wave_pde
         self.set_pdeloss(num=1)
@@ -122,6 +233,46 @@ class Wave2D_Heterogeneous(baseclass.BasePDE):
 
         # training config
         self.training_points(mul=4)
+
+    def wave_coefficient(self, x):
+        """Evaluate the fixed heterogeneous coefficient on a torch point set."""
+
+        spatial = x.detach()[:, 0:2]
+        cache = getattr(self, "_wave_coefficient_value_cache", None)
+        if cache is None:
+            cache = self._wave_coefficient_value_cache = {}
+        cache_key = (
+            tuple(spatial.shape),
+            str(spatial.device),
+            str(spatial.dtype),
+            float(torch.sum(spatial).cpu()),
+            float(torch.sum(spatial.square()).cpu()),
+        )
+        cached = cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        query = (x.detach().cpu().numpy()[:, 0:2] + 1.0) / 2.0
+        values = interpolate.griddata(
+            self.darcy_2d_coef[:, 0:2],
+            self.darcy_2d_coef[:, 2],
+            query,
+            method="linear",
+        )
+        missing = ~np.isfinite(values)
+        if np.any(missing):
+            values[missing] = interpolate.griddata(
+                self.darcy_2d_coef[:, 0:2],
+                self.darcy_2d_coef[:, 2],
+                query[missing],
+                method="nearest",
+            )
+        result = torch.as_tensor(values, device=x.device, dtype=x.dtype).unsqueeze(-1)
+        cache[cache_key] = result
+        return result
+
+    def weak_form_adapter(self):
+        return Wave2DHeterogeneousWeakFormAdapter(self)
 
 
 class Wave2D_LongTime(baseclass.BaseTimePDE):
