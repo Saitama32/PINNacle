@@ -218,25 +218,11 @@ def build_reference_interpolator(points, values, bounds, device, dtype):
     }
 
 
-def mild_duhamel_defects(network, left_times, grid, args, backward=True):
-    """Compute local mild defects without u_t, u_xx, u_xxx, or u_xxxx."""
+def mild_step_from_state(network, state_hat, left_times, grid, args, backward=True):
+    """Apply one unchanged Duhamel step to supplied Fourier endpoint states."""
 
     left_times = left_times.to(device=grid["x"].device, dtype=grid["x"].dtype)
-    dt = args.resolved_mild_delta_t
-    right_times = left_times + dt
-    endpoint_times = torch.cat((left_times, right_times), dim=0)
-    endpoint_values, _ = evaluate_space_time(
-        network, grid["x"], endpoint_times, False, backward
-    )
     count = len(left_times)
-    value_left = endpoint_values[:count]
-    value_right = endpoint_values[count:]
-    # norm="forward" makes these discrete approximations of Fourier-series
-    # coefficients. Parseval then requires an additional Nx when a mean over
-    # Fourier modes is used to recover the physical-space mean-square defect.
-    hat_left = torch.fft.fft(value_left, dim=1, norm="forward")
-    hat_right = torch.fft.fft(value_right, dim=1, norm="forward")
-
     quadrature_times = (
         left_times[:, None] + grid["relative_times"][None, :]
     ).reshape(-1)
@@ -253,7 +239,28 @@ def mild_duhamel_defects(network, left_times, grid, args, backward=True):
         * nonlinear_hat,
         dim=1,
     )
-    defect = hat_right - grid["propagator"][None, :] * hat_left - integral
+    return grid["propagator"][None, :] * state_hat + integral
+
+
+def mild_duhamel_defects(network, left_times, grid, args, backward=True):
+    """Compute local mild defects without u_t, u_xx, u_xxx, or u_xxxx."""
+
+    left_times = left_times.to(device=grid["x"].device, dtype=grid["x"].dtype)
+    right_times = left_times + args.resolved_mild_delta_t
+    endpoint_times = torch.cat((left_times, right_times), dim=0)
+    endpoint_values, _ = evaluate_space_time(
+        network, grid["x"], endpoint_times, False, backward
+    )
+    count = len(left_times)
+    # norm="forward" makes these discrete approximations of Fourier-series
+    # coefficients. Parseval then requires an additional Nx when a mean over
+    # Fourier modes is used to recover the physical-space mean-square defect.
+    hat_left = torch.fft.fft(endpoint_values[:count], dim=1, norm="forward")
+    hat_right = torch.fft.fft(endpoint_values[count:], dim=1, norm="forward")
+    propagated = mild_step_from_state(
+        network, hat_left, left_times, grid, args, backward
+    )
+    defect = hat_right - propagated
     squared_magnitude = defect.real.square() + defect.imag.square()
     nx = defect.shape[1]
     fourier_mse = torch.mean(squared_magnitude)
@@ -289,34 +296,11 @@ def two_step_duhamel_defects(network, left_times, grid, args, backward=True):
         endpoint_values[count:], dim=1, norm="forward"
     )
 
-    first_quadrature_times = (
-        left_times[:, None] + grid["relative_times"][None, :]
+    propagated_one = mild_step_from_state(
+        network, hat_start, left_times, grid, args, backward
     )
-    second_quadrature_times = first_quadrature_times + dt
-    quadrature_times = torch.cat(
-        (first_quadrature_times, second_quadrature_times), dim=0
-    ).reshape(-1)
-    values_q, derivative_x_q = evaluate_space_time(
-        network, grid["x"], quadrature_times, True, backward
-    )
-    nonlinear_hat = torch.fft.fft(
-        -args.alpha * values_q * derivative_x_q,
-        dim=1,
-        norm="forward",
-    ).reshape(2, count, args.mild_quadrature_points, -1)
-    weighted_kernel = (
-        grid["quadrature_weights"][:, None] * grid["quadrature_kernel"]
-    )
-    first_integral = torch.sum(
-        nonlinear_hat[0] * weighted_kernel[None, :, :], dim=1
-    )
-    second_integral = torch.sum(
-        nonlinear_hat[1] * weighted_kernel[None, :, :], dim=1
-    )
-
-    propagated_one = grid["propagator"][None, :] * hat_start + first_integral
-    propagated_two = (
-        grid["propagator"][None, :] * propagated_one + second_integral
+    propagated_two = mild_step_from_state(
+        network, propagated_one, left_times + dt, grid, args, backward
     )
     defect = hat_end - propagated_two
     squared_magnitude = defect.real.square() + defect.imag.square()
@@ -333,6 +317,49 @@ def two_step_duhamel_defects(network, left_times, grid, args, backward=True):
         "per_interval_rms": torch.sqrt(nx * per_interval_fourier_mse),
         "per_interval_mean_abs": torch.mean(torch.abs(defect), dim=1),
         "per_interval_max_abs": torch.max(torch.abs(defect), dim=1).values,
+    }
+
+
+def causal_chain_rollout(network, grid, args, backward=True):
+    """Roll out H steps from the exact IC with an unbroken autograd graph."""
+
+    steps = args.mild_chain_steps
+    dtype = grid["x"].dtype
+    device = grid["x"].device
+    exact_ic = exact_initial_condition_torch(grid["x"][:, None])[:, 0]
+    roll_hat = torch.fft.fft(exact_ic[None, :], dim=1, norm="forward")
+    rollout_states = [exact_ic]
+    all_times = args.time_lower + torch.arange(
+        0, steps + 1, dtype=dtype, device=device
+    ) * args.resolved_mild_delta_t
+    network_states, _ = evaluate_space_time(
+        network, grid["x"], all_times, False, backward
+    )
+    for step in range(steps):
+        left_time = torch.as_tensor(
+            [args.time_lower + step * args.resolved_mild_delta_t],
+            dtype=dtype,
+            device=device,
+        )
+        # Core invariant: this propagated state, not u_theta(t_j), starts the
+        # next step. No detach is permitted anywhere in this loop.
+        roll_hat = mild_step_from_state(
+            network, roll_hat, left_time, grid, args, backward
+        )
+        rollout_states.append(
+            torch.fft.ifft(roll_hat, dim=1, norm="forward").real[0]
+        )
+    rollout_endpoints = torch.stack(rollout_states[1:])
+    difference = network_states[1:] - rollout_endpoints
+    per_step_mse = torch.mean(difference.square(), dim=1)
+    return {
+        "loss": torch.mean(per_step_mse),
+        "per_step_mse": per_step_mse,
+        "per_step_rms": torch.sqrt(per_step_mse),
+        "rollout_states": torch.stack(rollout_states),
+        "network_states": network_states,
+        "difference": difference,
+        "times": all_times,
     }
 
 
@@ -430,6 +457,37 @@ def fixed_mild_diagnostics(network, fixed_ic_x, grid, args, device):
         "two_step_interval_mean_abs": torch.cat(two_means).cpu().numpy(),
         "two_step_interval_max_abs": torch.cat(two_maxima).cpu().numpy(),
     }
+
+
+def fixed_chain_diagnostics(network, fixed_ic_x, grid, args):
+    result = causal_chain_rollout(network, grid, args, backward=False)
+    chain_loss = result["loss"].detach()
+    step_rms = result["per_step_rms"].detach()
+    ic_loss = initial_condition_loss(network, fixed_ic_x, args.time_lower).detach()
+    total = args.mild_loss_weight * chain_loss + args.ic_loss_weight * ic_loss
+    return {
+        "chain_loss": float(chain_loss.cpu()),
+        "max_chain_error": float(torch.max(step_rms).cpu()),
+        "chain_step_rms": step_rms.cpu().numpy(),
+        "ic_loss": float(ic_loss.cpu()),
+        "total_loss": float(total.cpu()),
+    }
+
+
+def save_chain_rollout_artifact(network, grid, args, run_dir):
+    result = causal_chain_rollout(network, grid, args, backward=False)
+    rollout = result["rollout_states"].detach().cpu().numpy()
+    network_states = result["network_states"].detach().cpu().numpy()
+    difference = network_states - rollout
+    np.savez_compressed(
+        run_dir / "mild_chain_rollout_final.npz",
+        x=grid["x"].detach().cpu().numpy(),
+        t=result["times"].detach().cpu().numpy(),
+        rollout_states=rollout,
+        network_states=network_states,
+        difference=difference,
+        endpoint_rms=result["per_step_rms"].detach().cpu().numpy(),
+    )
 
 
 def evaluate_reference_duhamel(points, values, bounds, args, device, run_dir):
@@ -727,6 +785,7 @@ def train_mild(
         two_step_max_abs=final_diagnostics["two_step_interval_max_abs"],
     )
     return {
+        "mode": "mild_local",
         "iterations": args.mild_epochs,
         "best_iteration": best_iteration,
         "best_total_loss": best_score,
@@ -760,6 +819,161 @@ def train_mild(
         "uses_full_chain_rollout": False,
         "uses_two_step_endpoint_rollout": args.mild_two_step_weight != 0.0,
         "nonlinear_forcing_source": "single global u_theta at quadrature nodes",
+        "history_rows": len(rows),
+    }
+
+
+def train_mild_chain(
+    network,
+    points,
+    values,
+    validation_points,
+    validation_values,
+    bounds,
+    args,
+    device,
+    metadata,
+    run_dir,
+):
+    """Train one global u_theta against a causal rollout starting at exact IC."""
+
+    grid = build_mild_grid(bounds[0], bounds[1], args, device)
+    optimizer, scheduler = build_mild_optimizer(network, args)
+    rng = np.random.default_rng(args.seed + 313)
+    dtype_np = NUMPY_DTYPES[args.precision]
+    dtype_torch = grid["x"].dtype
+    fixed_ic_x = torch.linspace(
+        float(bounds[0][0]),
+        float(bounds[1][0]),
+        args.pinn_train_ic_points,
+        dtype=dtype_torch,
+        device=device,
+    ).reshape(-1, 1)
+    rows = []
+    best_score = math.inf
+    best_iteration = 0
+    best_state = cpu_state_dict(network)
+    gradients_verified = False
+
+    print(
+        f"Starting causal-chain Duhamel KS for {args.mild_epochs} iterations; "
+        f"optimizer={args.pinn_optimizer}; H={args.mild_chain_steps}; "
+        f"dt={args.resolved_mild_delta_t:.8g}; Q={args.mild_quadrature_points}; "
+        f"Nx={args.mild_num_x_fft}; hard_rollout_start=exact_IC; detach=false."
+    )
+
+    def closure_for(ic_x):
+        optimizer.zero_grad(set_to_none=True)
+        ic_loss = initial_condition_loss(network, ic_x, args.time_lower)
+        chain = causal_chain_rollout(network, grid, args, backward=True)
+        total = (
+            args.ic_loss_weight * ic_loss
+            + args.mild_loss_weight * chain["loss"]
+        )
+        total.backward()
+        return total
+
+    for iteration in range(1, args.mild_epochs + 1):
+        network.train()
+        sampled = rng.uniform(
+            bounds[0][0], bounds[1][0], size=(args.pinn_train_ic_points, 1)
+        ).astype(dtype_np)
+        ic_x = torch.as_tensor(sampled, device=device)
+        if args.pinn_optimizer == "lbfgs":
+            optimizer.step(lambda: closure_for(ic_x))
+        else:
+            closure_for(ic_x)
+            if args.pinn_grad_clip > 0:
+                torch.nn.utils.clip_grad_norm_(network.parameters(), args.pinn_grad_clip)
+            optimizer.step()
+        if not gradients_verified:
+            gradients = [
+                parameter.grad
+                for parameter in network.parameters()
+                if parameter.requires_grad and parameter.grad is not None
+            ]
+            if not gradients or not all(torch.isfinite(item).all() for item in gradients):
+                raise RuntimeError("Causal chain loss produced missing/non-finite gradients")
+            if not any(bool(torch.any(item != 0)) for item in gradients):
+                raise RuntimeError("Causal chain loss produced only zero gradients")
+            gradients_verified = True
+        if scheduler is not None:
+            scheduler.step()
+
+        if iteration % args.mild_log_every == 0 or iteration == args.mild_epochs:
+            network.eval()
+            diagnostics = fixed_chain_diagnostics(network, fixed_ic_x, grid, args)
+            data_metric = prediction_metrics(
+                network,
+                validation_points,
+                validation_values,
+                args.eval_batch_size,
+                device,
+            )
+            if math.isfinite(diagnostics["total_loss"]) and diagnostics["total_loss"] < best_score:
+                best_score = diagnostics["total_loss"]
+                best_iteration = iteration
+                best_state = cpu_state_dict(network)
+            step_fields = {
+                f"chain_error_step_{index}": float(value)
+                for index, value in enumerate(diagnostics["chain_step_rms"], start=1)
+            }
+            row = {
+                "iteration": iteration,
+                "chain_loss": diagnostics["chain_loss"],
+                "max_chain_error": diagnostics["max_chain_error"],
+                "ic_loss": diagnostics["ic_loss"],
+                "total_loss": diagnostics["total_loss"],
+                **step_fields,
+                "delta_t": args.resolved_mild_delta_t,
+                "chain_steps": args.mild_chain_steps,
+                "quadrature_points": args.mild_quadrature_points,
+                "data_relative_l2": data_metric["relative_l2"],
+                "lr": optimizer.param_groups[0]["lr"],
+            }
+            rows.append(row)
+            errors_text = " ".join(
+                f"E{index}={value:.3e}"
+                for index, value in enumerate(diagnostics["chain_step_rms"], start=1)
+            )
+            print(
+                f"Mild chain step={iteration:7d} "
+                f"chain={diagnostics['chain_loss']:.6e} "
+                f"max={diagnostics['max_chain_error']:.6e} "
+                f"ic={diagnostics['ic_loss']:.6e} "
+                f"total={diagnostics['total_loss']:.6e} {errors_text} "
+                f"L2={data_metric['relative_l2']:.6e} "
+                f"lr={optimizer.param_groups[0]['lr']:.6e}"
+            )
+
+    last_state = cpu_state_dict(network)
+    save_checkpoint(run_dir / "weights_mild_last.pt", network, metadata)
+    network.load_state_dict(best_state, strict=True)
+    save_checkpoint(run_dir / "weights_mild_best.pt", network, metadata)
+    network.load_state_dict(last_state, strict=True)
+    save_history(run_dir / "mild_history.csv", rows)
+    final_diagnostics = fixed_chain_diagnostics(network, fixed_ic_x, grid, args)
+    save_chain_rollout_artifact(network, grid, args, run_dir)
+    return {
+        "mode": "mild_chain",
+        "iterations": args.mild_epochs,
+        "best_iteration": best_iteration,
+        "best_total_loss": best_score,
+        "last_chain_loss": final_diagnostics["chain_loss"],
+        "last_max_chain_error": final_diagnostics["max_chain_error"],
+        "last_chain_step_rms": final_diagnostics["chain_step_rms"].tolist(),
+        "last_ic_loss": final_diagnostics["ic_loss"],
+        "loss_definition": "mean_j mean_x |u_theta(x,t_j)-u_roll[j](x)|^2",
+        "chain_steps": args.mild_chain_steps,
+        "hard_rollout_start": "exact_initial_condition",
+        "next_step_initial_state": "previous propagated endpoint",
+        "detach_between_steps": False,
+        "gradients_verified": gradients_verified,
+        "resolved_delta_t": args.resolved_mild_delta_t,
+        "quadrature_points": args.mild_quadrature_points,
+        "training_max_spatial_derivative": "u_x",
+        "nonlinear_forcing_source": "single global u_theta at quadrature nodes",
+        "rollout_artifact": str(run_dir / "mild_chain_rollout_final.npz"),
         "history_rows": len(rows),
     }
 
@@ -816,6 +1030,8 @@ def run(args) -> Path:
         raise ValueError("mild-loss-weight must be finite and non-negative")
     if args.mild_two_step_weight < 0 or not math.isfinite(args.mild_two_step_weight):
         raise ValueError("two-step-weight must be finite and non-negative")
+    if args.mild_chain_steps <= 0:
+        raise ValueError("mild-chain-steps must be positive")
     if args.pinn_precision not in {"float32", "float64"}:
         raise ValueError("Duhamel KS supports float32 or float64")
     device = torch.device(
@@ -893,11 +1109,16 @@ def run(args) -> Path:
     ) = resolve_time_chain(args.time_lower, args.time_upper, args.mild_delta_t)
     if args.resolved_mild_intervals < 2:
         raise ValueError("Two-step diagnostics require at least two time intervals")
+    if args.mild_mode == "mild_chain" and args.mild_chain_steps > args.resolved_mild_intervals:
+        raise ValueError(
+            "mild-chain-steps exceeds the number of resolved intervals before time_upper"
+        )
 
     timestamp = time.strftime("%m.%d-%H.%M.%S", time.localtime())
     origin = "pretrained" if source_dir is not None else "scratch"
+    mode_suffix = "-mild-chain" if args.mild_mode == "mild_chain" else ""
     run_dir = Path(args.out).expanduser().resolve() / (
-        f"{timestamp}-{origin}-ks-duhamel-to-strong-"
+        f"{timestamp}-{origin}-ks-duhamel-to-strong{mode_suffix}-"
         f"{args.pinn_optimizer}-{args.precision}"
     )
     run_dir.mkdir(parents=True, exist_ok=False)
@@ -912,11 +1133,18 @@ def run(args) -> Path:
         model_metadata=metadata,
         max_spatial_derivative_in_mild_training="u_x",
         mild_endpoint_evaluation=(
-            "global u_theta at t_i and t_{i+2}; only the intermediate "
+            "causal rollout from exact IC; every next step starts from the previous "
+            "propagated endpoint"
+            if args.mild_mode == "mild_chain"
+            else "global u_theta at t_i and t_{i+2}; only the intermediate "
             "two-step endpoint is propagated"
         ),
         mild_nonlinear_forcing="global u_theta at every quadrature node",
-        mild_loss_definition="L1 + two_step_weight * L2; each Lj = Nx * mean |D_hat_j|^2",
+        mild_loss_definition=(
+            "mean_j mean_x |u_theta(x,t_j)-u_roll[j](x)|^2"
+            if args.mild_mode == "mild_chain"
+            else "L1 + two_step_weight * L2; each Lj = Nx * mean |D_hat_j|^2"
+        ),
         mild_fft_normalization="forward",
     )
     with (run_dir / "run_config.json").open("w", encoding="utf-8") as file_obj:
@@ -929,7 +1157,8 @@ def run(args) -> Path:
         reference_duhamel = evaluate_reference_duhamel(
             points, values, (lower, upper), args, device, run_dir
         )
-    mild_info = train_mild(
+    mild_trainer = train_mild_chain if args.mild_mode == "mild_chain" else train_mild
+    mild_info = mild_trainer(
         network,
         points,
         values,
@@ -1023,6 +1252,18 @@ def build_parser():
     )
     parser.add_argument("--mild-epochs", type=int, default=5000)
     parser.add_argument("--mild-delta-t", type=float, default=0.01)
+    parser.add_argument(
+        "--mild-mode",
+        choices=["mild_local", "mild_chain"],
+        default="mild_local",
+        help="Use existing independent local defects or a causal rollout from exact IC.",
+    )
+    parser.add_argument(
+        "--mild-chain-steps",
+        type=int,
+        default=5,
+        help="Causal rollout horizon H; used only when --mild-mode mild_chain.",
+    )
     parser.add_argument("--mild-quadrature-points", type=int, default=5)
     parser.add_argument("--mild-loss-weight", type=float, default=1.0)
     parser.add_argument(
