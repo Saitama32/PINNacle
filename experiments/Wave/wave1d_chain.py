@@ -76,9 +76,9 @@ def main():
     parser.add_argument("--scale", type=float, default=1.0, help="Space-time domain scaling")
     parser.add_argument("--a", type=int, default=4, help="High-frequency mode multiplier")
     parser.add_argument("--weak-spatial-cells", type=int, default=8)
-    parser.add_argument("--weak-quadrature-order", type=int, default=8)
-    parser.add_argument("--weak-test-functions", type=int, default=6)
-    parser.add_argument("--weak-time-samples", type=int, default=16)
+    parser.add_argument("--weak-quadrature-order", type=int, default=10)
+    parser.add_argument("--weak-test-functions", type=int, default=8)
+    parser.add_argument("--weak-time-samples", type=int, default=128)
 
     args = parser.parse_args()
 

@@ -75,11 +75,11 @@ def main():
     parser.add_argument("--out", type=str, default="runs_single")
 
     parser.add_argument("--datapath", type=str, default="ref/wave_darcy.dat", help="Reference data path")
-    parser.add_argument("--weak-spatial-cells-x", type=int, default=4)
-    parser.add_argument("--weak-spatial-cells-y", type=int, default=4)
-    parser.add_argument("--weak-quadrature-order", type=int, default=6)
-    parser.add_argument("--weak-test-functions", type=int, default=4)
-    parser.add_argument("--weak-time-samples", type=int, default=8)
+    parser.add_argument("--weak-spatial-cells-x", type=int, default=8)
+    parser.add_argument("--weak-spatial-cells-y", type=int, default=8)
+    parser.add_argument("--weak-quadrature-order", type=int, default=10)
+    parser.add_argument("--weak-test-functions", type=int, default=8)
+    parser.add_argument("--weak-time-samples", type=int, default=128)
 
     args = parser.parse_args()
 
