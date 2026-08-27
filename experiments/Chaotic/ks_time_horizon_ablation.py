@@ -807,8 +807,8 @@ def validate_args(args):
         raise ValueError("all horizons must satisfy 0 < T <= 1")
     if len(set(args.horizons)) != len(args.horizons):
         raise ValueError("horizons must be unique")
-    if len(args.seeds) != 3 and not args.allow_nonstandard_seed_count:
-        raise ValueError("this ablation requires exactly three seeds")
+    if len(set(args.seeds)) != len(args.seeds):
+        raise ValueError("seeds must be unique")
     if any(value < 0.0 or value > 1.0 for value in args.diagnostic_steps):
         raise ValueError("diagnostic step fractions must be in [0, 1]")
     required_diagnostic_steps = (0.0, 0.5, 1.0)
@@ -917,8 +917,6 @@ def parse_args(argv=None):
     parser.add_argument("--critical-relative-l2", type=float, default=0.2)
     parser.add_argument("--log-every", type=int, default=100)
     parser.add_argument("--device", choices=("auto", "cpu", "cuda"), default="auto")
-    parser.add_argument("--allow-nonstandard-seed-count", action="store_true",
-                        help="Only for smoke tests; production defaults to exactly three seeds.")
     return parser.parse_args(argv)
 
 
