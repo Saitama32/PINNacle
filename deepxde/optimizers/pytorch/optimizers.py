@@ -5,6 +5,7 @@ import torch
 # from .nncg import NNCG
 from .causal import CausalOptimizer
 from .muon import MuonWithAuxAdam
+from .mop import MOPWithAuxAdam
 from .pcgrad import PCGrad
 from .pso import PSO
 from .soap import SOAP
@@ -15,6 +16,7 @@ from ..config import (
     LBFGS_options,
     NNCG_options,
     MUON_options,
+    MOP_options,
     PCGRAD_options,
     PSO_options,
     SSBROYDEN_options,
@@ -112,6 +114,50 @@ def _make_muon_optimizer(params, learning_rate, weight_decay=0, model=None):
     return MuonWithAuxAdam(param_groups)
 
 
+def _make_mop_optimizer(params, learning_rate, weight_decay=0, model=None):
+    if learning_rate is None:
+        raise ValueError("No learning rate for MOP.")
+
+    params = list(params)
+    mop_ids = _hidden_linear_weight_ids(model)
+    mop_params = [p for p in params if id(p) in mop_ids and p.ndim == 2]
+    mop_ids = {id(p) for p in mop_params}
+    aux_params = [p for p in params if id(p) not in mop_ids]
+
+    if not mop_params:
+        print(
+            "Warning: MOP found no hidden Linear.weight parameters; "
+            "all parameters will use auxiliary Adam."
+        )
+
+    param_groups = []
+    if mop_params:
+        param_groups.append(
+            {
+                "params": mop_params,
+                "use_mop": True,
+                "lr": learning_rate,
+                "momentum": MOP_options["momentum"],
+                "nesterov": MOP_options["nesterov"],
+                "scale_mode": MOP_options["scale_mode"],
+                "extra_scale_factor": MOP_options["extra_scale_factor"],
+                "weight_decay": MOP_options["mop_weight_decay"] or weight_decay,
+            }
+        )
+    if aux_params:
+        param_groups.append(
+            {
+                "params": aux_params,
+                "use_mop": False,
+                "lr": learning_rate if MOP_options["adam_lr"] is None else MOP_options["adam_lr"],
+                "betas": MOP_options["adam_betas"],
+                "eps": MOP_options["adam_eps"],
+                "weight_decay": MOP_options["adam_weight_decay"] or weight_decay,
+            }
+        )
+    return MOPWithAuxAdam(param_groups)
+
+
 def _make_base_optimizer(params, optimizer, learning_rate=None, decay=None, weight_decay=0, model=None):
     if optimizer in ["L-BFGS", "L-BFGS-B"]:
         if weight_decay > 0:
@@ -186,9 +232,12 @@ def _make_base_optimizer(params, optimizer, learning_rate=None, decay=None, weig
     if optimizer in ["muon", "Muon"]:
         return _make_muon_optimizer(params, learning_rate, weight_decay=weight_decay, model=model)
 
+    if optimizer in ["mop", "MOP"]:
+        return _make_mop_optimizer(params, learning_rate, weight_decay=weight_decay, model=model)
+
     raise NotImplementedError(
         f"Causal base optimizer {optimizer} is not supported. "
-        "Use one of: adam, soap, muon, L-BFGS, L-BFGS-B, PSO."
+        "Use one of: adam, soap, muon, MOP, L-BFGS, L-BFGS-B, PSO."
     )
 
 
@@ -287,6 +336,13 @@ def get(params, optimizer, learning_rate=None, decay=None, weight_decay=0, model
             )
         elif optimizer in ["muon", "Muon"]:
             optim = _make_muon_optimizer(
+                params,
+                learning_rate,
+                weight_decay=weight_decay,
+                model=model,
+            )
+        elif optimizer in ["mop", "MOP"]:
+            optim = _make_mop_optimizer(
                 params,
                 learning_rate,
                 weight_decay=weight_decay,

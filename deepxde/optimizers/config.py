@@ -6,6 +6,8 @@ __all__ = [
     "set_SOAP_options",
     "MUON_options",
     "set_MUON_options",
+    "MOP_options",
+    "set_MOP_options",
     "set_PCGRAD_options",
     "set_SSBROYDEN_options",
     "set_CAUSAL_options",
@@ -21,6 +23,7 @@ PSO_options = {}
 ZOCGE_options = {}
 SOAP_options = {}
 MUON_options = {}
+MOP_options = {}
 PCGRAD_options = {}
 SSBROYDEN_options = {}
 CAUSAL_options = {}
@@ -277,6 +280,35 @@ def set_MUON_options(
     MUON_options["adam_weight_decay"] = adam_weight_decay
 
 
+def set_MOP_options(
+    momentum=0.95,
+    nesterov=False,
+    scale_mode="nuclear_norm",
+    extra_scale_factor=1.0,
+    adam_lr=3e-4,
+    adam_betas=(0.9, 0.95),
+    adam_eps=1e-10,
+    mop_weight_decay=0.01,
+    adam_weight_decay=0.0,
+):
+    """Sets the hyperparameters of MOPWithAuxAdam.
+
+    Hidden ``Linear.weight`` matrices use NVIDIA MOP's exact SVD polar
+    decomposition. Other parameters use the auxiliary Adam branch.
+    """
+    if scale_mode not in {"nuclear_norm", "shape_scaling", "spectral", "unit_rms_norm"}:
+        raise ValueError(f"Invalid MOP scale mode: {scale_mode}")
+    MOP_options["momentum"] = momentum
+    MOP_options["nesterov"] = nesterov
+    MOP_options["scale_mode"] = scale_mode
+    MOP_options["extra_scale_factor"] = extra_scale_factor
+    MOP_options["adam_lr"] = adam_lr
+    MOP_options["adam_betas"] = adam_betas
+    MOP_options["adam_eps"] = adam_eps
+    MOP_options["mop_weight_decay"] = mop_weight_decay
+    MOP_options["adam_weight_decay"] = adam_weight_decay
+
+
 def set_PCGRAD_options(base_optimizer="adam"):
     """Sets the hyperparameters of PCGrad optimizer wrapper.
 
@@ -400,6 +432,7 @@ set_NNCG_options()
 set_PSO_options()
 set_SOAP_options()
 set_MUON_options()
+set_MOP_options()
 set_PCGRAD_options()
 set_SSBROYDEN_options()
 set_CAUSAL_options()
