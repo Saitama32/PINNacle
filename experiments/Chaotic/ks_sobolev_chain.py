@@ -29,6 +29,7 @@ import deepxde as dde
 from src.pde.chaotic import KuramotoSivashinskyEquation
 from src.model import RWFMLP, SFLIConfig, materialize_effective_mlp
 from src.utils.args import parse_hidden_layers
+from src.utils.callbacks import TesterCallback
 from rl_trainer import train_process_rl
 from experiments.Chaotic.run_data_ks import load_data
 from experiments.Chaotic.run_data_ks_exact_mlp import reference_derivative_targets
@@ -293,7 +294,12 @@ def main():
                 period=1,
                 pde_points=args.pde_weight > 0.0,
                 bc_points=True,
-            )
+            ),
+            TesterCallback(
+                log_every=args.log_every,
+                verbose=True,
+                fRMSE_param={"enable": False},
+            ),
         ],
         "n_trajectories": args.n_trajectories,
         "n_save_models": args.n_save_models,
