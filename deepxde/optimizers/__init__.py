@@ -13,6 +13,8 @@ from .config import (
     set_ZOCGE_options,
     SOAP_options,
     set_SOAP_options,
+    KLOPT_options,
+    set_KLOPT_options,
     MUON_options,
     set_MUON_options,
     MOP_options,

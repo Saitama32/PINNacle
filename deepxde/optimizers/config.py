@@ -4,6 +4,8 @@ __all__ = [
     "set_PSO_options",
     "set_ZOCGE_options",
     "set_SOAP_options",
+    "KLOPT_options",
+    "set_KLOPT_options",
     "MUON_options",
     "set_MUON_options",
     "MOP_options",
@@ -22,6 +24,7 @@ NNCG_options = {}
 PSO_options = {}
 ZOCGE_options = {}
 SOAP_options = {}
+KLOPT_options = {}
 MUON_options = {}
 MOP_options = {}
 PCGRAD_options = {}
@@ -241,6 +244,67 @@ def set_SOAP_options(
     SOAP_options["bias_correction"] = bias_correction
 
 
+def set_KLOPT_options(
+    beta1=0.9,
+    beta2=0.98,
+    shampoo_beta=None,
+    epsilon=1e-8,
+    precondition_frequency=10,
+    using_klsoap=False,
+    normalize_grads=False,
+    init_factor=0.1,
+    using_damping=False,
+    using_clamping=True,
+    max_clamp_value=4000,
+    cast_dtype="bfloat16",
+):
+    """Sets the hyperparameters of KL-Shampoo/KL-SOAP.
+
+    The optimizer only supports PyTorch. Supported matrix/tensor parameters use
+    the prototype KLOpt algorithm; biases, scalars, and singleton matrices use
+    an AdamW fallback so it can be selected through the regular DeepXDE API.
+
+    Args:
+        beta1 (float): First-moment coefficient.
+        beta2 (float): KL curvature and KL-SOAP second-moment coefficient.
+        shampoo_beta (float): Curvature coefficient. If ``None``, uses beta2.
+        epsilon (float): Numerical stability constant and optional damping.
+        precondition_frequency (int): Eigenbasis QR update frequency.
+        using_klsoap (bool): Select KL-SOAP instead of KL-Shampoo for ``klopt``.
+        normalize_grads (bool): Normalize each KL-preconditioned update.
+        init_factor (float): Initial eigenvalue estimate.
+        using_damping (bool): Add damping while learning curvature factors.
+        using_clamping (bool): Clamp inverse square-root eigenvalue estimates.
+        max_clamp_value (int): Upper bound used by eigenvalue clamping.
+        cast_dtype: PyTorch dtype or one of ``float32``, ``float64``,
+            ``float16``, and ``bfloat16``.
+    """
+    if not 0 <= beta1 < 1 or not 0 <= beta2 < 1:
+        raise ValueError("KLOpt beta values must be in [0, 1)")
+    if shampoo_beta is not None and not 0 <= shampoo_beta < 1:
+        raise ValueError("shampoo_beta must be in [0, 1)")
+    if epsilon <= 0:
+        raise ValueError("epsilon must be positive")
+    if precondition_frequency < 1:
+        raise ValueError("precondition_frequency must be >= 1")
+    if init_factor <= 0:
+        raise ValueError("init_factor must be positive")
+    if max_clamp_value < 1:
+        raise ValueError("max_clamp_value must be >= 1")
+    KLOPT_options["beta1"] = beta1
+    KLOPT_options["beta2"] = beta2
+    KLOPT_options["shampoo_beta"] = -1 if shampoo_beta is None else shampoo_beta
+    KLOPT_options["epsilon"] = epsilon
+    KLOPT_options["precondition_frequency"] = precondition_frequency
+    KLOPT_options["using_klsoap"] = using_klsoap
+    KLOPT_options["normalize_grads"] = normalize_grads
+    KLOPT_options["init_factor"] = init_factor
+    KLOPT_options["using_damping"] = using_damping
+    KLOPT_options["using_clamping"] = using_clamping
+    KLOPT_options["max_clamp_value"] = max_clamp_value
+    KLOPT_options["cast_dtype"] = cast_dtype
+
+
 def set_MUON_options(
     momentum=0.95,
     nesterov=True,
@@ -431,6 +495,7 @@ set_LBFGS_options()
 set_NNCG_options()
 set_PSO_options()
 set_SOAP_options()
+set_KLOPT_options()
 set_MUON_options()
 set_MOP_options()
 set_PCGRAD_options()

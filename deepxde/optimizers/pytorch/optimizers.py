@@ -6,6 +6,7 @@ import torch
 from .causal import CausalOptimizer
 from .muon import MuonWithAuxAdam
 from .mop import MOPWithAuxAdam
+from .klopt import KLOptWithAuxAdam
 from .pcgrad import PCGrad
 from .pso import PSO
 from .soap import SOAP
@@ -17,12 +18,74 @@ from ..config import (
     NNCG_options,
     MUON_options,
     MOP_options,
+    KLOPT_options,
     PCGRAD_options,
     PSO_options,
     SSBROYDEN_options,
     SOAP_options,
     ZOCGE_options,
 )
+
+
+_KLOPT_NAMES = {"klopt", "kl-shampoo", "klshampoo", "kl-soap", "klsoap"}
+
+
+def _resolve_torch_dtype(value):
+    if isinstance(value, torch.dtype):
+        return value
+    if isinstance(value, str):
+        name = value.lower().replace("torch.", "")
+        dtype = getattr(torch, name, None)
+        if isinstance(dtype, torch.dtype):
+            return dtype
+    raise ValueError(f"Unsupported PyTorch dtype: {value!r}")
+
+
+def _make_klopt_optimizer(params, learning_rate, weight_decay=0, mode=None):
+    if learning_rate is None:
+        raise ValueError("No learning rate for KLOpt.")
+    flat_params = []
+    for item in params:
+        if isinstance(item, dict):
+            flat_params.extend(item["params"])
+        else:
+            flat_params.append(item)
+    params = [p for p in flat_params if p.requires_grad]
+    kl_params = [
+        p for p in params if 2 <= sum(size != 1 for size in p.shape) <= 3
+    ]
+    kl_ids = {id(p) for p in kl_params}
+    aux_params = [p for p in params if id(p) not in kl_ids]
+    groups = []
+    if kl_params:
+        groups.append({"params": kl_params, "use_klopt": True})
+    if aux_params:
+        groups.append({"params": aux_params, "use_klopt": False})
+    if not groups:
+        raise ValueError("KLOpt has no trainable parameters.")
+
+    normalized_mode = None if mode is None else mode.lower()
+    using_klsoap = KLOPT_options["using_klsoap"]
+    if normalized_mode in {"kl-soap", "klsoap"}:
+        using_klsoap = True
+    elif normalized_mode in {"kl-shampoo", "klshampoo"}:
+        using_klsoap = False
+    return KLOptWithAuxAdam(
+        groups,
+        lr=learning_rate,
+        betas=(KLOPT_options["beta1"], KLOPT_options["beta2"]),
+        shampoo_beta=KLOPT_options["shampoo_beta"],
+        eps=KLOPT_options["epsilon"],
+        weight_decay=weight_decay,
+        precondition_frequency=KLOPT_options["precondition_frequency"],
+        using_klsoap=using_klsoap,
+        normalize_grads=KLOPT_options["normalize_grads"],
+        init_factor=KLOPT_options["init_factor"],
+        using_damping=KLOPT_options["using_damping"],
+        using_clamping=KLOPT_options["using_clamping"],
+        max_clamp_value=KLOPT_options["max_clamp_value"],
+        cast_dtype=_resolve_torch_dtype(KLOPT_options["cast_dtype"]),
+    )
 
 
 # NOTE: edited
@@ -229,6 +292,14 @@ def _make_base_optimizer(params, optimizer, learning_rate=None, decay=None, weig
             bias_correction=SOAP_options["bias_correction"],
         )
 
+    if isinstance(optimizer, str) and optimizer.lower() in _KLOPT_NAMES:
+        return _make_klopt_optimizer(
+            params,
+            learning_rate,
+            weight_decay=weight_decay,
+            mode=optimizer,
+        )
+
     if optimizer in ["muon", "Muon"]:
         return _make_muon_optimizer(params, learning_rate, weight_decay=weight_decay, model=model)
 
@@ -237,7 +308,8 @@ def _make_base_optimizer(params, optimizer, learning_rate=None, decay=None, weig
 
     raise NotImplementedError(
         f"Causal base optimizer {optimizer} is not supported. "
-        "Use one of: adam, soap, muon, MOP, L-BFGS, L-BFGS-B, PSO."
+        "Use one of: adam, soap, klopt, kl-shampoo, kl-soap, muon, MOP, "
+        "L-BFGS, L-BFGS-B, PSO."
     )
 
 
@@ -333,6 +405,13 @@ def get(params, optimizer, learning_rate=None, decay=None, weight_decay=0, model
                 precondition_frequency=SOAP_options["precondition_frequency"],
                 max_precondition_dim=SOAP_options["max_precondition_dim"],
                 bias_correction=SOAP_options["bias_correction"],
+            )
+        elif isinstance(optimizer, str) and optimizer.lower() in _KLOPT_NAMES:
+            optim = _make_klopt_optimizer(
+                params,
+                learning_rate,
+                weight_decay=weight_decay,
+                mode=optimizer,
             )
         elif optimizer in ["muon", "Muon"]:
             optim = _make_muon_optimizer(
