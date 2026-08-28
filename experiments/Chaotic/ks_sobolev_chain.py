@@ -11,7 +11,7 @@ from comet_config import start_comet_experiment
 from comet_ml.integration.pytorch import log_model
 
 experiment = start_comet_experiment(
-    project_name="rlpinn-ks-sobolev-separate",
+    project_name="rlpinn-ks-sobolev-expand-set-rwf",
 )
 
 
