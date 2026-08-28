@@ -61,7 +61,7 @@ CHAIN_DEFAULTS = {
     "max_l2_growth": 0.2,
 
     # Chain settings. Each step starts from the previous step's best checkpoint.
-    "chain_steps": 5,
+    "chain_steps": 40,
     "chain_seed_stride": 100000,
     "chain_stop_pde": 0.0,
     "chain_out": str(PROJECT_ROOT / "runs_data_ks_local_basin_chain"),

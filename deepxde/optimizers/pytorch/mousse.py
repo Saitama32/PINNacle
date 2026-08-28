@@ -117,16 +117,16 @@ class MousseWithAuxLion(torch.optim.Optimizer):
                 rows, rows, device=parameter.device, dtype=torch.float32
             )
             state["eig_L"] = (
-                torch.zeros(rows, device=parameter.device),
-                torch.eye(rows, device=parameter.device),
+                torch.zeros(rows, device=parameter.device, dtype=torch.float32),
+                torch.eye(rows, device=parameter.device, dtype=torch.float32),
             )
         if use_l_or_r in (0, 2):
             state["R"] = torch.zeros(
                 columns, columns, device=parameter.device, dtype=torch.float32
             )
             state["eig_R"] = (
-                torch.zeros(columns, device=parameter.device),
-                torch.eye(columns, device=parameter.device),
+                torch.zeros(columns, device=parameter.device, dtype=torch.float32),
+                torch.eye(columns, device=parameter.device, dtype=torch.float32),
             )
 
     @staticmethod
@@ -153,7 +153,11 @@ class MousseWithAuxLion(torch.optim.Optimizer):
             matrix = state["L"] / correction
             matrix = matrix * (matrix.shape[0] / matrix.trace())
             eigenvalues, eigenvectors = torch.linalg.eigh(
-                matrix + epsilon * torch.eye(matrix.shape[0], device=matrix.device)
+                matrix
+                + epsilon
+                * torch.eye(
+                    matrix.shape[0], device=matrix.device, dtype=matrix.dtype
+                )
             )
             state["eig_L"] = (
                 _clean_eigenvalues(eigenvalues, epsilon),
@@ -163,7 +167,11 @@ class MousseWithAuxLion(torch.optim.Optimizer):
             matrix = state["R"] / correction
             matrix = matrix * (matrix.shape[0] / matrix.trace())
             eigenvalues, eigenvectors = torch.linalg.eigh(
-                matrix + epsilon * torch.eye(matrix.shape[0], device=matrix.device)
+                matrix
+                + epsilon
+                * torch.eye(
+                    matrix.shape[0], device=matrix.device, dtype=matrix.dtype
+                )
             )
             state["eig_R"] = (
                 _clean_eigenvalues(eigenvalues, epsilon),
