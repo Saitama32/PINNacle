@@ -6,6 +6,8 @@ import torch
 from .causal import CausalOptimizer
 from .muon import MuonWithAuxAdam
 from .mop import MOPWithAuxAdam
+from .mousse import MousseWithAuxLion
+from .psgd_pro import PSGDPro
 from .klopt import KLOptWithAuxAdam
 from .pcgrad import PCGrad
 from .pso import PSO
@@ -18,6 +20,8 @@ from ..config import (
     NNCG_options,
     MUON_options,
     MOP_options,
+    MOUSSE_options,
+    PSGDPRO_options,
     KLOPT_options,
     PCGRAD_options,
     PSO_options,
@@ -28,6 +32,7 @@ from ..config import (
 
 
 _KLOPT_NAMES = {"klopt", "kl-shampoo", "klshampoo", "kl-soap", "klsoap"}
+_PSGDPRO_NAMES = {"psgdpro", "psgd-pro", "psgd_pro", "pcggradpro"}
 
 
 def _resolve_torch_dtype(value):
@@ -85,6 +90,102 @@ def _make_klopt_optimizer(params, learning_rate, weight_decay=0, mode=None):
         using_clamping=KLOPT_options["using_clamping"],
         max_clamp_value=KLOPT_options["max_clamp_value"],
         cast_dtype=_resolve_torch_dtype(KLOPT_options["cast_dtype"]),
+    )
+
+
+def _make_mousse_optimizer(params, learning_rate, weight_decay=0, model=None):
+    if learning_rate is None:
+        raise ValueError("No learning rate for Mousse.")
+    params = [p for p in params if p.requires_grad]
+    matrix_ids = _hidden_linear_weight_ids(model)
+    matrix_params = [p for p in params if id(p) in matrix_ids and p.ndim == 2]
+    selected_ids = {id(p) for p in matrix_params}
+    auxiliary = [p for p in params if id(p) not in selected_ids]
+    groups = []
+    if matrix_params:
+        groups.append(
+            {
+                "params": matrix_params,
+                "algorithm": "mousse",
+                "weight_decay": (
+                    weight_decay
+                    if weight_decay != 0
+                    else MOUSSE_options["mousse_weight_decay"]
+                ),
+            }
+        )
+    if auxiliary:
+        groups.append(
+            {
+                "params": auxiliary,
+                "algorithm": "lion",
+                "weight_decay": MOUSSE_options["lion_weight_decay"],
+            }
+        )
+    if not groups:
+        raise ValueError("Mousse has no trainable parameters.")
+    return MousseWithAuxLion(
+        groups,
+        lr=learning_rate,
+        mu=MOUSSE_options["momentum"],
+        betas=MOUSSE_options["lion_betas"],
+        epsilon=MOUSSE_options["epsilon"],
+        nesterov=MOUSSE_options["nesterov"],
+        adjust_lr=MOUSSE_options["adjust_lr"],
+        shampoo_epsilon=MOUSSE_options["shampoo_epsilon"],
+        shampoo_beta=MOUSSE_options["shampoo_beta"],
+        shampoo_update_freq=MOUSSE_options["shampoo_update_frequency"],
+        shampoo_alpha=MOUSSE_options["shampoo_alpha"],
+        lr_correction=MOUSSE_options["lr_correction"],
+        apply_norm=MOUSSE_options["apply_norm"],
+        use_l_or_r=MOUSSE_options["use_l_or_r"],
+    )
+
+
+def _make_psgdpro_optimizer(params, learning_rate, weight_decay=0):
+    if learning_rate is None:
+        raise ValueError("No learning rate for PSGDPro.")
+    params = [p for p in params if p.requires_grad]
+    psgd_params = [p for p in params if p.ndim >= 1]
+    psgd_ids = {id(p) for p in psgd_params}
+    auxiliary = [p for p in params if id(p) not in psgd_ids]
+    groups = []
+    if psgd_params:
+        groups.append(
+            {
+                "params": psgd_params,
+                "use_psgd": True,
+                "weight_decay": (
+                    weight_decay
+                    if weight_decay != 0
+                    else PSGDPRO_options["psgd_weight_decay"]
+                ),
+            }
+        )
+    if auxiliary:
+        groups.append(
+            {
+                "params": auxiliary,
+                "use_psgd": False,
+                "weight_decay": PSGDPRO_options["auxiliary_weight_decay"],
+            }
+        )
+    if not groups:
+        raise ValueError("PSGDPro has no trainable parameters.")
+    return PSGDPro(
+        groups,
+        lr=learning_rate,
+        momentum=PSGDPRO_options["momentum"],
+        beta_lip=PSGDPRO_options["beta_lip"],
+        precond_lr=PSGDPRO_options["preconditioner_lr"],
+        precond_init_scale=PSGDPRO_options["preconditioner_init_scale"],
+        damping_noise_scale=PSGDPRO_options["damping_noise_scale"],
+        min_precond_lr=PSGDPRO_options["min_preconditioner_lr"],
+        warmup_steps=PSGDPRO_options["warmup_steps"],
+        max_update_rms=PSGDPRO_options["max_update_rms"],
+        weight_decay_method=PSGDPRO_options["weight_decay_method"],
+        auxiliary_betas=PSGDPRO_options["auxiliary_betas"],
+        auxiliary_eps=PSGDPRO_options["auxiliary_epsilon"],
     )
 
 
@@ -306,9 +407,20 @@ def _make_base_optimizer(params, optimizer, learning_rate=None, decay=None, weig
     if optimizer in ["mop", "MOP"]:
         return _make_mop_optimizer(params, learning_rate, weight_decay=weight_decay, model=model)
 
+    if optimizer in ["mousse", "Mousse"]:
+        return _make_mousse_optimizer(
+            params, learning_rate, weight_decay=weight_decay, model=model
+        )
+
+    if isinstance(optimizer, str) and optimizer.lower() in _PSGDPRO_NAMES:
+        return _make_psgdpro_optimizer(
+            params, learning_rate, weight_decay=weight_decay
+        )
+
     raise NotImplementedError(
         f"Causal base optimizer {optimizer} is not supported. "
         "Use one of: adam, soap, klopt, kl-shampoo, kl-soap, muon, MOP, "
+        "mousse, psgdpro, "
         "L-BFGS, L-BFGS-B, PSO."
     )
 
@@ -426,6 +538,19 @@ def get(params, optimizer, learning_rate=None, decay=None, weight_decay=0, model
                 learning_rate,
                 weight_decay=weight_decay,
                 model=model,
+            )
+        elif optimizer in ["mousse", "Mousse"]:
+            optim = _make_mousse_optimizer(
+                params,
+                learning_rate,
+                weight_decay=weight_decay,
+                model=model,
+            )
+        elif isinstance(optimizer, str) and optimizer.lower() in _PSGDPRO_NAMES:
+            optim = _make_psgdpro_optimizer(
+                params,
+                learning_rate,
+                weight_decay=weight_decay,
             )
         elif optimizer == "ZOCGE":
             optim = ZOCGE(

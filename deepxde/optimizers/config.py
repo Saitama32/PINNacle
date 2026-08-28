@@ -10,6 +10,10 @@ __all__ = [
     "set_MUON_options",
     "MOP_options",
     "set_MOP_options",
+    "MOUSSE_options",
+    "set_MOUSSE_options",
+    "PSGDPRO_options",
+    "set_PSGDPRO_options",
     "set_PCGRAD_options",
     "set_SSBROYDEN_options",
     "set_CAUSAL_options",
@@ -27,6 +31,8 @@ SOAP_options = {}
 KLOPT_options = {}
 MUON_options = {}
 MOP_options = {}
+MOUSSE_options = {}
+PSGDPRO_options = {}
 PCGRAD_options = {}
 SSBROYDEN_options = {}
 CAUSAL_options = {}
@@ -373,6 +379,108 @@ def set_MOP_options(
     MOP_options["adam_weight_decay"] = adam_weight_decay
 
 
+def set_MOUSSE_options(
+    momentum=0.95,
+    lion_betas=(0.9, 0.95),
+    epsilon=1e-8,
+    nesterov=False,
+    adjust_lr="spectral_norm",
+    shampoo_epsilon=1e-10,
+    shampoo_beta=0.95,
+    shampoo_update_frequency=10,
+    shampoo_alpha=0.125,
+    lr_correction=True,
+    apply_norm=True,
+    use_l_or_r=0,
+    mousse_weight_decay=0.01,
+    lion_weight_decay=0.0,
+):
+    """Sets hyperparameters for Mousse with an auxiliary Lion optimizer."""
+    if not 0 <= momentum < 1:
+        raise ValueError("Mousse momentum must be in [0, 1)")
+    if len(lion_betas) != 2 or any(not 0 <= beta < 1 for beta in lion_betas):
+        raise ValueError("Mousse Lion betas must be in [0, 1)")
+    if epsilon <= 0:
+        raise ValueError("Mousse epsilon must be positive")
+    if adjust_lr not in ("spectral_norm", "rms_norm", "None", None):
+        raise ValueError("adjust_lr must be spectral_norm, rms_norm, or None")
+    if shampoo_epsilon <= 0 or not 0 <= shampoo_beta < 1:
+        raise ValueError("Invalid Mousse Shampoo epsilon or beta")
+    if shampoo_update_frequency < 1 or shampoo_alpha < 0:
+        raise ValueError("Invalid Mousse Shampoo frequency or alpha")
+    if use_l_or_r not in (0, 1, 2):
+        raise ValueError("use_l_or_r must be 0, 1, or 2")
+    if mousse_weight_decay < 0 or lion_weight_decay < 0:
+        raise ValueError("Mousse weight decay values must be non-negative")
+    MOUSSE_options.update(
+        momentum=momentum,
+        lion_betas=lion_betas,
+        epsilon=epsilon,
+        nesterov=nesterov,
+        adjust_lr=adjust_lr,
+        shampoo_epsilon=shampoo_epsilon,
+        shampoo_beta=shampoo_beta,
+        shampoo_update_frequency=shampoo_update_frequency,
+        shampoo_alpha=shampoo_alpha,
+        lr_correction=lr_correction,
+        apply_norm=apply_norm,
+        use_l_or_r=use_l_or_r,
+        mousse_weight_decay=mousse_weight_decay,
+        lion_weight_decay=lion_weight_decay,
+    )
+
+
+def set_PSGDPRO_options(
+    momentum=0.9,
+    beta_lip=0.9,
+    preconditioner_lr=0.1,
+    preconditioner_init_scale=1.0,
+    damping_noise_scale=0.1,
+    min_preconditioner_lr=0.01,
+    warmup_steps=10000,
+    max_update_rms=0.0,
+    weight_decay_method="decoupled",
+    psgd_weight_decay=0.01,
+    auxiliary_betas=(0.9, 0.999),
+    auxiliary_epsilon=1e-8,
+    auxiliary_weight_decay=0.0,
+):
+    """Sets hyperparameters for NVIDIA PSGDPro."""
+    if not 0 <= momentum < 1 or not 0 <= beta_lip < 1:
+        raise ValueError("PSGDPro momentum and beta_lip must be in [0, 1)")
+    if preconditioner_lr <= 0 or min_preconditioner_lr < 0:
+        raise ValueError("PSGDPro preconditioner learning rates are invalid")
+    if preconditioner_init_scale <= 0 or warmup_steps < 1:
+        raise ValueError("PSGDPro initialization scale and warmup must be positive")
+    if damping_noise_scale < 0 or max_update_rms < 0:
+        raise ValueError("PSGDPro damping and maximum RMS must be non-negative")
+    if weight_decay_method not in ("decoupled", "independent", "l2", "palm"):
+        raise ValueError("Invalid PSGDPro weight decay method")
+    if len(auxiliary_betas) != 2 or any(
+        not 0 <= beta < 1 for beta in auxiliary_betas
+    ):
+        raise ValueError("PSGDPro auxiliary betas must be in [0, 1)")
+    if auxiliary_epsilon <= 0:
+        raise ValueError("PSGDPro auxiliary epsilon must be positive")
+    if psgd_weight_decay < 0 or auxiliary_weight_decay < 0:
+        raise ValueError("PSGDPro weight decay values must be non-negative")
+    PSGDPRO_options.update(
+        momentum=momentum,
+        beta_lip=beta_lip,
+        preconditioner_lr=preconditioner_lr,
+        preconditioner_init_scale=preconditioner_init_scale,
+        damping_noise_scale=damping_noise_scale,
+        min_preconditioner_lr=min_preconditioner_lr,
+        warmup_steps=warmup_steps,
+        max_update_rms=max_update_rms,
+        weight_decay_method=weight_decay_method,
+        psgd_weight_decay=psgd_weight_decay,
+        auxiliary_betas=auxiliary_betas,
+        auxiliary_epsilon=auxiliary_epsilon,
+        auxiliary_weight_decay=auxiliary_weight_decay,
+    )
+
+
 def set_PCGRAD_options(base_optimizer="adam"):
     """Sets the hyperparameters of PCGrad optimizer wrapper.
 
@@ -498,6 +606,8 @@ set_SOAP_options()
 set_KLOPT_options()
 set_MUON_options()
 set_MOP_options()
+set_MOUSSE_options()
+set_PSGDPRO_options()
 set_PCGRAD_options()
 set_SSBROYDEN_options()
 set_CAUSAL_options()
