@@ -14,6 +14,8 @@ from itertools import repeat
 
 import torch
 
+from .soap import soap_step_parameter
+
 
 _POLAR_EXPRESS_COEFFS = [
     (8.28721201814563, -23.595886519098837, 17.300387312530933),
@@ -333,7 +335,7 @@ def polar(matrix, method="qdwh", max_iterations=5, eps=None, ns_coeffs=(3.4445, 
 
 
 class PolarGradWithAuxAdam(torch.optim.Optimizer):
-    """Upstream PolarGrad update plus Adam for non-PolarGrad parameters."""
+    """Upstream PolarGrad plus Adam or SOAP for auxiliary parameters."""
 
     def __init__(
         self,
@@ -369,8 +371,18 @@ class PolarGradWithAuxAdam(torch.optim.Optimizer):
             betas=betas,
             eps=eps,
             use_polargrad=True,
+            auxiliary_optimizer="adam",
+            shampoo_beta=0.999,
+            precondition_frequency=10,
+            max_precondition_dim=4096,
+            bias_correction=True,
         )
         super().__init__(params, defaults)
+        for group in self.param_groups:
+            if group["auxiliary_optimizer"] not in {"adam", "soap"}:
+                raise ValueError(
+                    "PolarGrad auxiliary optimizer must be 'adam' or 'soap'."
+                )
 
     @torch.no_grad()
     def step(self, closure=None):
@@ -414,6 +426,11 @@ class PolarGradWithAuxAdam(torch.optim.Optimizer):
                     parameter.mul_(1 - group["lr"] * group["weight_decay"])
                     parameter.add_(update, alpha=-group["lr"])
                 else:
+                    if group["auxiliary_optimizer"] == "soap":
+                        soap_step_parameter(
+                            parameter, gradient, state, group
+                        )
+                        continue
                     if len(state) == 0:
                         state["step"] = 0
                         state["exp_avg"] = torch.zeros_like(parameter)

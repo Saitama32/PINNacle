@@ -9,6 +9,37 @@ oversized matrices use an AdamW-style fallback.
 import torch
 
 
+def soap_step_parameter(parameter, gradient, state, group):
+    """Apply one SOAP update while storing state in an owning optimizer.
+
+    This functional entry point lets hybrid optimizers use SOAP for their
+    auxiliary parameter groups without nesting another Optimizer object.
+    """
+    if gradient.is_sparse:
+        raise RuntimeError("SOAP does not support sparse gradients.")
+    if not torch.isfinite(gradient).all():
+        return
+
+    helper = object.__new__(SOAP)
+    beta1, beta2 = group["betas"]
+    if len(state) == 0:
+        state["step"] = 0
+        state["exp_avg"] = torch.zeros_like(parameter)
+        state["exp_avg_sq"] = torch.zeros_like(parameter)
+        if helper._use_preconditioner(parameter, group):
+            helper._init_preconditioner(parameter, gradient, state, group)
+
+    state["step"] += 1
+    if group["weight_decay"] != 0:
+        parameter.mul_(1 - group["lr"] * group["weight_decay"])
+
+    if helper._use_preconditioner(parameter, group):
+        helper._soap_step(parameter, gradient, state, group, beta1, beta2)
+        helper._update_preconditioner(gradient, state, group)
+    else:
+        helper._adamw_step(parameter, gradient, state, group, beta1, beta2)
+
+
 class SOAP(torch.optim.Optimizer):
     """SOAP optimizer with 2D matrix preconditioning and AdamW fallback."""
 
@@ -61,34 +92,10 @@ class SOAP(torch.optim.Optimizer):
                 loss = closure()
 
         for group in self.param_groups:
-            beta1, beta2 = group["betas"]
             for p in group["params"]:
                 if p.grad is None:
                     continue
-                grad = p.grad
-                if grad.is_sparse:
-                    raise RuntimeError("SOAP does not support sparse gradients.")
-                if not torch.isfinite(grad).all():
-                    continue
-
-                state = self.state[p]
-                if len(state) == 0:
-                    state["step"] = 0
-                    state["exp_avg"] = torch.zeros_like(p)
-                    state["exp_avg_sq"] = torch.zeros_like(p)
-                    if self._use_preconditioner(p, group):
-                        self._init_preconditioner(p, grad, state, group)
-
-                state["step"] += 1
-
-                if group["weight_decay"] != 0:
-                    p.mul_(1 - group["lr"] * group["weight_decay"])
-
-                if self._use_preconditioner(p, group):
-                    self._soap_step(p, grad, state, group, beta1, beta2)
-                    self._update_preconditioner(grad, state, group)
-                else:
-                    self._adamw_step(p, grad, state, group, beta1, beta2)
+                soap_step_parameter(p, p.grad, self.state[p], group)
 
         return loss
 

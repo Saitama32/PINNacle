@@ -6,12 +6,13 @@
 The matrix update follows NVIDIA NeMo Emerging-Optimizers' MOP implementation:
 momentum is orthogonalized by an exact polar decomposition computed with SVD,
 then scaled by the momentum's nuclear norm by default.  As with the local Muon
-integration, non-matrix parameters are handled by an auxiliary Adam branch.
+integration, non-matrix parameters are handled by auxiliary Adam or SOAP.
 """
 
 import torch
 
 from .muon import adam_update
+from .soap import soap_step_parameter
 
 
 _SCALE_MODES = {"nuclear_norm", "shape_scaling", "spectral", "unit_rms_norm"}
@@ -57,11 +58,11 @@ def mop_update(
 
 
 class MOPWithAuxAdam(torch.optim.Optimizer):
-    """MOP for matrix groups plus AdamW-style updates for auxiliary groups.
+    """MOP for matrix groups plus Adam or SOAP for auxiliary groups.
 
     Parameter groups must set ``use_mop``. Groups with ``use_mop=True`` must
-    contain only 2D tensors; all other groups use the same auxiliary Adam
-    implementation as :class:`MuonWithAuxAdam`.
+    contain only 2D tensors; all other groups select the auxiliary algorithm
+    with ``auxiliary_optimizer``.
     """
 
     def __init__(self, param_groups):
@@ -90,10 +91,17 @@ class MOPWithAuxAdam(torch.optim.Optimizer):
                 if group["scale_mode"] not in _SCALE_MODES:
                     raise ValueError(f"Invalid MOP scale mode: {group['scale_mode']}")
             else:
+                group.setdefault("auxiliary_optimizer", "adam")
+                if group["auxiliary_optimizer"] not in {"adam", "soap"}:
+                    raise ValueError("MOP auxiliary optimizer must be 'adam' or 'soap'.")
                 group.setdefault("lr", 3e-4)
                 group.setdefault("betas", (0.9, 0.95))
                 group.setdefault("eps", 1e-10)
                 group.setdefault("weight_decay", 0.0)
+                group.setdefault("shampoo_beta", 0.999)
+                group.setdefault("precondition_frequency", 10)
+                group.setdefault("max_precondition_dim", 4096)
+                group.setdefault("bias_correction", True)
             group.setdefault("maximize", False)
             group["params"] = params
             if params:
@@ -113,6 +121,8 @@ class MOPWithAuxAdam(torch.optim.Optimizer):
         for group in self.param_groups:
             if group["use_mop"]:
                 self._mop_step(group)
+            elif group["auxiliary_optimizer"] == "soap":
+                self._soap_step(group)
             else:
                 self._adam_step(group)
         return loss
@@ -142,6 +152,13 @@ class MOPWithAuxAdam(torch.optim.Optimizer):
             if group["weight_decay"]:
                 p.mul_(1 - lr * group["weight_decay"])
             p.add_(update, alpha=-lr)
+
+    def _soap_step(self, group):
+        for p in group["params"]:
+            if p.grad is None:
+                continue
+            grad = -p.grad if group["maximize"] else p.grad
+            soap_step_parameter(p, grad, self.state[p], group)
 
     def _adam_step(self, group):
         lr = group["lr"]

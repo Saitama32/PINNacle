@@ -323,13 +323,15 @@ def set_MUON_options(
     adam_eps=1e-10,
     muon_weight_decay=0.0,
     adam_weight_decay=0.0,
+    auxiliary_optimizer="adam",
+    auxiliary_lr=None,
+    auxiliary_weight_decay=None,
 ):
-    """Sets the hyperparameters of MuonWithAuxAdam.
+    """Sets the hyperparameters of Muon with an auxiliary optimizer.
 
     The PyTorch Muon integration applies Muon only to hidden ``Linear.weight``
     matrices. Input/output layer weights, biases, external trainable variables,
-    and any non-linear-layer parameters are handled by the auxiliary Adam
-    branch.
+    and any non-linear-layer parameters are handled by auxiliary Adam or SOAP.
 
     Args:
         momentum (float): Muon momentum coefficient.
@@ -342,7 +344,27 @@ def set_MUON_options(
         muon_weight_decay (float): Decoupled weight decay for Muon parameters.
         adam_weight_decay (float): Decoupled weight decay for auxiliary
             parameters.
+        auxiliary_optimizer (str): ``"adam"`` or ``"soap"``.
+        auxiliary_lr (float): Optional optimizer-independent fallback learning
+            rate. If omitted, ``adam_lr`` remains the backward-compatible value.
+        auxiliary_weight_decay (float): Optional optimizer-independent fallback
+            weight decay. If omitted, ``adam_weight_decay`` is used.
     """
+    if not isinstance(auxiliary_optimizer, str) or auxiliary_optimizer.lower() not in {
+        "adam",
+        "soap",
+    }:
+        raise ValueError("Muon auxiliary_optimizer must be 'adam' or 'soap'")
+    resolved_lr = adam_lr if auxiliary_lr is None else auxiliary_lr
+    resolved_weight_decay = (
+        adam_weight_decay
+        if auxiliary_weight_decay is None
+        else auxiliary_weight_decay
+    )
+    if resolved_lr is not None and resolved_lr < 0:
+        raise ValueError("Muon auxiliary learning rate must be nonnegative")
+    if resolved_weight_decay < 0:
+        raise ValueError("Muon auxiliary weight decay must be nonnegative")
     MUON_options["momentum"] = momentum
     MUON_options["nesterov"] = nesterov
     MUON_options["ns_steps"] = ns_steps
@@ -351,6 +373,9 @@ def set_MUON_options(
     MUON_options["adam_eps"] = adam_eps
     MUON_options["muon_weight_decay"] = muon_weight_decay
     MUON_options["adam_weight_decay"] = adam_weight_decay
+    MUON_options["auxiliary_optimizer"] = auxiliary_optimizer.lower()
+    MUON_options["auxiliary_lr"] = resolved_lr
+    MUON_options["auxiliary_weight_decay"] = resolved_weight_decay
 
 
 def set_MOP_options(
@@ -363,14 +388,32 @@ def set_MOP_options(
     adam_eps=1e-10,
     mop_weight_decay=0.01,
     adam_weight_decay=0.0,
+    auxiliary_optimizer="adam",
+    auxiliary_lr=None,
+    auxiliary_weight_decay=None,
 ):
-    """Sets the hyperparameters of MOPWithAuxAdam.
+    """Sets the hyperparameters of MOP with auxiliary Adam or SOAP.
 
     Hidden ``Linear.weight`` matrices use NVIDIA MOP's exact SVD polar
-    decomposition. Other parameters use the auxiliary Adam branch.
+    decomposition. Other parameters use the selected auxiliary optimizer.
     """
     if scale_mode not in {"nuclear_norm", "shape_scaling", "spectral", "unit_rms_norm"}:
         raise ValueError(f"Invalid MOP scale mode: {scale_mode}")
+    if not isinstance(auxiliary_optimizer, str) or auxiliary_optimizer.lower() not in {
+        "adam",
+        "soap",
+    }:
+        raise ValueError("MOP auxiliary_optimizer must be 'adam' or 'soap'")
+    resolved_lr = adam_lr if auxiliary_lr is None else auxiliary_lr
+    resolved_weight_decay = (
+        adam_weight_decay
+        if auxiliary_weight_decay is None
+        else auxiliary_weight_decay
+    )
+    if resolved_lr is not None and resolved_lr < 0:
+        raise ValueError("MOP auxiliary learning rate must be nonnegative")
+    if resolved_weight_decay < 0:
+        raise ValueError("MOP auxiliary weight decay must be nonnegative")
     MOP_options["momentum"] = momentum
     MOP_options["nesterov"] = nesterov
     MOP_options["scale_mode"] = scale_mode
@@ -380,6 +423,9 @@ def set_MOP_options(
     MOP_options["adam_eps"] = adam_eps
     MOP_options["mop_weight_decay"] = mop_weight_decay
     MOP_options["adam_weight_decay"] = adam_weight_decay
+    MOP_options["auxiliary_optimizer"] = auxiliary_optimizer.lower()
+    MOP_options["auxiliary_lr"] = resolved_lr
+    MOP_options["auxiliary_weight_decay"] = resolved_weight_decay
 
 
 def set_POLARGRAD_options(
@@ -395,11 +441,14 @@ def set_POLARGRAD_options(
     adam_eps=1e-10,
     polargrad_weight_decay=0.0,
     adam_weight_decay=0.0,
+    auxiliary_optimizer="adam",
+    auxiliary_lr=None,
+    auxiliary_weight_decay=None,
 ):
-    """Sets hyperparameters for PolarGrad with an auxiliary Adam optimizer.
+    """Sets hyperparameters for PolarGrad with auxiliary Adam or SOAP.
 
     Hidden ``Linear.weight`` matrices use PolarGrad. Input/output weights,
-    biases, external variables, and other parameters use auxiliary Adam.
+    biases, external variables, and other parameters use the selected fallback.
 
     ``method`` may be ``qdwh``, ``zolo-pd``, ``ns``, ``precond_ns``, or
     ``polar_express``. The defaults match the upstream PolarGrad class.
@@ -419,6 +468,21 @@ def set_POLARGRAD_options(
         raise ValueError("PolarGrad auxiliary Adam epsilon must be positive")
     if polargrad_weight_decay < 0 or adam_weight_decay < 0:
         raise ValueError("PolarGrad weight decay values must be nonnegative")
+    if not isinstance(auxiliary_optimizer, str) or auxiliary_optimizer.lower() not in {
+        "adam",
+        "soap",
+    }:
+        raise ValueError("PolarGrad auxiliary_optimizer must be 'adam' or 'soap'")
+    resolved_lr = adam_lr if auxiliary_lr is None else auxiliary_lr
+    resolved_weight_decay = (
+        adam_weight_decay
+        if auxiliary_weight_decay is None
+        else auxiliary_weight_decay
+    )
+    if resolved_lr is not None and resolved_lr < 0:
+        raise ValueError("PolarGrad auxiliary learning rate must be nonnegative")
+    if resolved_weight_decay < 0:
+        raise ValueError("PolarGrad auxiliary weight decay must be nonnegative")
     POLARGRAD_options.update(
         momentum=momentum,
         polar_first=polar_first,
@@ -432,6 +496,9 @@ def set_POLARGRAD_options(
         adam_eps=adam_eps,
         polargrad_weight_decay=polargrad_weight_decay,
         adam_weight_decay=adam_weight_decay,
+        auxiliary_optimizer=auxiliary_optimizer.lower(),
+        auxiliary_lr=resolved_lr,
+        auxiliary_weight_decay=resolved_weight_decay,
     )
 
 

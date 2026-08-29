@@ -4,11 +4,12 @@ Adapted from KellerJordan/Muon's public ``MuonWithAuxAdam`` implementation:
 https://github.com/KellerJordan/Muon
 
 Muon is intended for hidden weight matrices. Biases, external trainable
-variables, and non-hidden parameters should be handled by the auxiliary Adam
-branch.
+variables, and non-hidden parameters are handled by auxiliary Adam or SOAP.
 """
 
 import torch
+
+from .soap import soap_step_parameter
 
 
 def zeropower_via_newtonschulz5(g, steps):
@@ -51,11 +52,11 @@ def adam_update(grad, buf1, buf2, step, betas, eps):
 
 
 class MuonWithAuxAdam(torch.optim.Optimizer):
-    """Muon for matrix groups plus AdamW-style updates for auxiliary groups.
+    """Muon for matrix groups plus Adam or SOAP for auxiliary groups.
 
     Parameter groups must set ``use_muon``. Groups with ``use_muon=True`` are
-    updated by Muon and must contain only 2D tensors. Other groups are updated
-    by the auxiliary Adam branch.
+    updated by Muon and must contain only 2D tensors. Other groups select their
+    update with ``auxiliary_optimizer``.
     """
 
     def __init__(self, param_groups):
@@ -82,10 +83,17 @@ class MuonWithAuxAdam(torch.optim.Optimizer):
                 group.setdefault("ns_steps", 5)
                 group.setdefault("weight_decay", 0.0)
             else:
+                group.setdefault("auxiliary_optimizer", "adam")
+                if group["auxiliary_optimizer"] not in {"adam", "soap"}:
+                    raise ValueError("Muon auxiliary optimizer must be 'adam' or 'soap'.")
                 group.setdefault("lr", 3e-4)
                 group.setdefault("betas", (0.9, 0.95))
                 group.setdefault("eps", 1e-10)
                 group.setdefault("weight_decay", 0.0)
+                group.setdefault("shampoo_beta", 0.999)
+                group.setdefault("precondition_frequency", 10)
+                group.setdefault("max_precondition_dim", 4096)
+                group.setdefault("bias_correction", True)
             group.setdefault("maximize", False)
             group["params"] = params
             if params:
@@ -105,6 +113,8 @@ class MuonWithAuxAdam(torch.optim.Optimizer):
         for group in self.param_groups:
             if group["use_muon"]:
                 self._muon_step(group)
+            elif group["auxiliary_optimizer"] == "soap":
+                self._soap_step(group)
             else:
                 self._adam_step(group)
         return loss
@@ -141,6 +151,13 @@ class MuonWithAuxAdam(torch.optim.Optimizer):
             if weight_decay:
                 p.mul_(1 - lr * weight_decay)
             p.add_(update.reshape(p.shape), alpha=-lr)
+
+    def _soap_step(self, group):
+        for p in group["params"]:
+            if p.grad is None:
+                continue
+            grad = -p.grad if group["maximize"] else p.grad
+            soap_step_parameter(p, grad, self.state[p], group)
 
     def _adam_step(self, group):
         lr = group["lr"]

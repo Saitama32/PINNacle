@@ -238,6 +238,39 @@ def _hidden_linear_weight_ids(model):
     return muon_param_ids
 
 
+def _make_auxiliary_group(
+    params, use_flag, options, learning_rate, weight_decay
+):
+    """Build an Adam/SOAP fallback group for a matrix optimizer."""
+    optimizer_name = options["auxiliary_optimizer"]
+    group = {
+        "params": params,
+        use_flag: False,
+        "auxiliary_optimizer": optimizer_name,
+        "lr": (
+            learning_rate
+            if options["auxiliary_lr"] is None
+            else options["auxiliary_lr"]
+        ),
+        "weight_decay": options["auxiliary_weight_decay"] or weight_decay,
+    }
+    if optimizer_name == "soap":
+        group.update(
+            betas=(SOAP_options["beta1"], SOAP_options["beta2"]),
+            shampoo_beta=SOAP_options["shampoo_beta"],
+            eps=SOAP_options["epsilon"],
+            precondition_frequency=SOAP_options["precondition_frequency"],
+            max_precondition_dim=SOAP_options["max_precondition_dim"],
+            bias_correction=SOAP_options["bias_correction"],
+        )
+    else:
+        group.update(
+            betas=options["adam_betas"],
+            eps=options["adam_eps"],
+        )
+    return group
+
+
 def _make_muon_optimizer(params, learning_rate, weight_decay=0, model=None):
     if learning_rate is None:
         raise ValueError("No learning rate for muon.")
@@ -251,7 +284,7 @@ def _make_muon_optimizer(params, learning_rate, weight_decay=0, model=None):
     if not muon_params:
         print(
             "Warning: muon found no hidden Linear.weight parameters; "
-            "all parameters will use auxiliary Adam."
+            f"all parameters will use auxiliary {MUON_options['auxiliary_optimizer']}."
         )
 
     param_groups = []
@@ -269,14 +302,9 @@ def _make_muon_optimizer(params, learning_rate, weight_decay=0, model=None):
         )
     if aux_params:
         param_groups.append(
-            {
-                "params": aux_params,
-                "use_muon": False,
-                "lr": learning_rate if MUON_options["adam_lr"] is None else MUON_options["adam_lr"],
-                "betas": MUON_options["adam_betas"],
-                "eps": MUON_options["adam_eps"],
-                "weight_decay": MUON_options["adam_weight_decay"] or weight_decay,
-            }
+            _make_auxiliary_group(
+                aux_params, "use_muon", MUON_options, learning_rate, weight_decay
+            )
         )
     return MuonWithAuxAdam(param_groups)
 
@@ -294,7 +322,7 @@ def _make_mop_optimizer(params, learning_rate, weight_decay=0, model=None):
     if not mop_params:
         print(
             "Warning: MOP found no hidden Linear.weight parameters; "
-            "all parameters will use auxiliary Adam."
+            f"all parameters will use auxiliary {MOP_options['auxiliary_optimizer']}."
         )
 
     param_groups = []
@@ -313,14 +341,9 @@ def _make_mop_optimizer(params, learning_rate, weight_decay=0, model=None):
         )
     if aux_params:
         param_groups.append(
-            {
-                "params": aux_params,
-                "use_mop": False,
-                "lr": learning_rate if MOP_options["adam_lr"] is None else MOP_options["adam_lr"],
-                "betas": MOP_options["adam_betas"],
-                "eps": MOP_options["adam_eps"],
-                "weight_decay": MOP_options["adam_weight_decay"] or weight_decay,
-            }
+            _make_auxiliary_group(
+                aux_params, "use_mop", MOP_options, learning_rate, weight_decay
+            )
         )
     return MOPWithAuxAdam(param_groups)
 
@@ -344,7 +367,8 @@ def _make_polargrad_optimizer(params, learning_rate, weight_decay=0, model=None)
     if not polargrad_params:
         print(
             "Warning: PolarGrad found no hidden Linear.weight parameters; "
-            "all parameters will use auxiliary Adam."
+            "all parameters will use auxiliary "
+            f"{POLARGRAD_options['auxiliary_optimizer']}."
         )
 
     groups = []
@@ -368,20 +392,13 @@ def _make_polargrad_optimizer(params, learning_rate, weight_decay=0, model=None)
         )
     if auxiliary_params:
         groups.append(
-            {
-                "params": auxiliary_params,
-                "use_polargrad": False,
-                "lr": (
-                    learning_rate
-                    if POLARGRAD_options["adam_lr"] is None
-                    else POLARGRAD_options["adam_lr"]
-                ),
-                "betas": POLARGRAD_options["adam_betas"],
-                "eps": POLARGRAD_options["adam_eps"],
-                "weight_decay": (
-                    POLARGRAD_options["adam_weight_decay"] or weight_decay
-                ),
-            }
+            _make_auxiliary_group(
+                auxiliary_params,
+                "use_polargrad",
+                POLARGRAD_options,
+                learning_rate,
+                weight_decay,
+            )
         )
     if not groups:
         raise ValueError("PolarGrad has no trainable parameters.")
