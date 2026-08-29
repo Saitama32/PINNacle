@@ -56,7 +56,7 @@ def get_state_shape(loss_surface_params):
 
     coords = torch.arange(min_x, max_x + step_size, step_size)
 
-    return tuple(torch.meshgrid(*([coords] * latent_dim), indexing="ij")[0].shape)
+    return (len(coords),) * latent_dim
 
 
 def _serialize_solver_models(solver_models):
