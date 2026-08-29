@@ -1,8 +1,8 @@
 """Train a KS MLP on ``.dat`` values and derivatives from an exact teacher.
 
 The teacher is the Fourier-in-space/cubic-spline-in-time representation of the
-rectangular reference data.  A regular RWF MLP (the student) is trained with a
-normalized Sobolev loss on ``u``, ``u_t``, ``u_x``, ``u_xx`` and ``u_xxxx``.
+rectangular reference data.  A dense or RWF MLP (the student) is trained with
+a normalized Sobolev loss on ``u``, ``u_t``, ``u_x``, ``u_xx`` and ``u_xxxx``.
 """
 
 from __future__ import annotations
@@ -30,6 +30,7 @@ import torch
 from deepxde.optimizers.pytorch.mousse import MousseWithAuxLion
 from deepxde.optimizers.pytorch.muon import MuonWithAuxAdam
 from deepxde.optimizers.pytorch.mop import MOPWithAuxAdam
+from deepxde.optimizers.pytorch.polargrad import PolarGradWithAuxAdam
 from scipy.interpolate import CubicSpline
 
 from experiments.Chaotic.run_data_ks import (
@@ -215,7 +216,7 @@ def build_student(args, points, values, device):
     if not math.isfinite(output_std) or output_std <= 0.0:
         output_std = 1.0
     metadata = {
-        "model": "RWFMLP",
+        "model": "RWFMLP" if args.network == "rwf" else "MLP",
         "precision": args.precision,
         "layer_sizes": [2, *hidden, 1],
         "rwf_mu": args.rwf_mu,
@@ -244,10 +245,54 @@ def loss_weights(args):
 
 
 def build_training_optimizer(student, args):
-    """Build an optimizer with RWF-aware routing for matrix optimizers."""
+    """Build an optimizer with dense/RWF-aware routing for matrix optimizers."""
+
+    hidden_matrices = [
+        layer.V if hasattr(layer, "V") else layer.weight
+        for layer in student.linears[:-1]
+    ]
+
+    if args.optimizer == "polargrad":
+        hidden_ids = {id(parameter) for parameter in hidden_matrices}
+        auxiliary = [
+            parameter
+            for parameter in student.parameters()
+            if parameter.requires_grad and id(parameter) not in hidden_ids
+        ]
+        groups = []
+        if hidden_matrices:
+            groups.append(
+                {
+                    "params": hidden_matrices,
+                    "use_polargrad": True,
+                    "lr": args.lr,
+                    "momentum": args.polargrad_momentum,
+                    "polar_first": args.polargrad_polar_first,
+                    "method": args.polargrad_method,
+                    "inner_steps": args.polargrad_inner_steps,
+                    "a": args.polargrad_a,
+                    "b": args.polargrad_b,
+                    "c": args.polargrad_c,
+                    "weight_decay": args.polargrad_weight_decay,
+                }
+            )
+        if auxiliary:
+            groups.append(
+                {
+                    "params": auxiliary,
+                    "use_polargrad": False,
+                    "lr": args.polargrad_adam_lr,
+                    "betas": (
+                        args.polargrad_adam_beta1,
+                        args.polargrad_adam_beta2,
+                    ),
+                    "eps": args.polargrad_adam_epsilon,
+                    "weight_decay": args.polargrad_adam_weight_decay,
+                }
+            )
+        return PolarGradWithAuxAdam(groups)
 
     if args.optimizer == "mousse":
-        hidden_matrices = [layer.V for layer in student.linears[:-1]]
         hidden_ids = {id(parameter) for parameter in hidden_matrices}
         auxiliary = [
             parameter
@@ -312,14 +357,14 @@ def build_training_optimizer(student, args):
         optimizer_args.optimizer = "psgdpro"
         return build_data_optimizer(student, optimizer_args)
 
-    if args.optimizer == "kl-shampoo":
+    if args.optimizer in {"kl-shampoo", "kl-soap"}:
         dde.optimizers.set_KLOPT_options(
             beta1=args.kl_beta1,
             beta2=args.kl_beta2,
             shampoo_beta=args.kl_shampoo_beta,
             epsilon=args.kl_epsilon,
             precondition_frequency=args.kl_precondition_frequency,
-            using_klsoap=False,
+            using_klsoap=args.optimizer == "kl-soap",
             normalize_grads=args.kl_normalize_grads,
             init_factor=args.kl_init_factor,
             using_damping=args.kl_damping,
@@ -332,7 +377,6 @@ def build_training_optimizer(student, args):
     if args.optimizer not in {"muon", "mop"}:
         return build_data_optimizer(student, args)
 
-    hidden_matrices = [layer.V for layer in student.linears[:-1]]
     hidden_ids = {id(parameter) for parameter in hidden_matrices}
     auxiliary = [
         parameter
@@ -666,7 +710,10 @@ def run(args):
     student, student_metadata = build_student(args, points, values, device)
 
     timestamp = time.strftime("%m.%d-%H.%M.%S", time.localtime())
-    run_dir = Path(args.out).expanduser().resolve() / f"{timestamp}-ks-data-derivative-rwf"
+    run_dir = (
+        Path(args.out).expanduser().resolve()
+        / f"{timestamp}-ks-data-derivative-{args.network}"
+    )
     run_dir.mkdir(parents=True, exist_ok=False)
     configuration = {
         **vars(args),
@@ -765,7 +812,8 @@ def run(args):
     )
     save_solution_plot(
         run_dir / "solution.png", points, values[:, 0], prediction,
-        f"Data+derivative RWF MLP, relative L2={data_metric['relative_l2']:.3e}",
+        f"Data+derivative {'RWF MLP' if args.network == 'rwf' else 'MLP'}, "
+        f"relative L2={data_metric['relative_l2']:.3e}",
     )
     metrics = {
         "student_data": data_metric,
@@ -779,7 +827,8 @@ def run(args):
         json.dump(metrics, file_obj, indent=2, sort_keys=True)
     pde_role = "diagnostic_only" if args.pde_weight == 0.0 else "included_in_training"
     print(
-        f"Data+derivative RWF MLP: L2={data_metric['relative_l2']:.6e}; "
+        f"Data+derivative {'RWF MLP' if args.network == 'rwf' else 'MLP'}: "
+        f"L2={data_metric['relative_l2']:.6e}; "
         f"PDE_MSE={pinn_metric['pde_mse']:.6e} "
         f"(pde_weight={args.pde_weight:.6g}, {pde_role}); "
         f"ut_rel={supervised_derivatives['u_t']['relative_l2']:.6e}; "
@@ -794,6 +843,9 @@ def parse_args(argv=None):
     parser.add_argument("--data", default=str(PROJECT_ROOT / "ref" / "Kuramoto_Sivashinsky.dat"))
     parser.add_argument("--out", default=str(PROJECT_ROOT / "runs_data_ks_exact_mlp"))
     parser.add_argument("--hidden-layers", default="100*5")
+    parser.add_argument(
+        "--network", "--network-type", choices=["mlp", "rwf"], default="mlp"
+    )
     parser.add_argument("--rwf-mu", type=float, default=1.0)
     parser.add_argument("--rwf-sigma", type=float, default=0.1)
     parser.add_argument("--precision", choices=["float32", "float64"], default="float64")
@@ -802,10 +854,10 @@ def parse_args(argv=None):
     parser.add_argument(
         "--optimizer",
         choices=[
-            "adam", "rmsprop", "soap", "kl-shampoo", "muon", "mop",
-            "mousse", "psgdpro", "pcgpro",
+            "adam", "rmsprop", "soap", "kl-shampoo", "kl-soap", "muon", "mop",
+            "mousse", "psgdpro", "pcgpro", "polargrad",
         ],
-        default="mousse",
+        default="polargrad",
     )
     parser.add_argument("--lr", type=float, default=5e-4)
     parser.add_argument("--lr-min", type=float, default=5e-4)
@@ -996,6 +1048,34 @@ def parse_args(argv=None):
     parser.add_argument("--mop-adam-epsilon", type=float, default=None)
     parser.add_argument("--mop-weight-decay", type=float, default=0.01)
     parser.add_argument("--mop-adam-weight-decay", type=float, default=0.0)
+    parser.add_argument("--polargrad-momentum", type=float, default=0.95)
+    polargrad_order_group = parser.add_mutually_exclusive_group()
+    polargrad_order_group.add_argument(
+        "--polargrad-polar-first",
+        dest="polargrad_polar_first",
+        action="store_true",
+    )
+    polargrad_order_group.add_argument(
+        "--no-polargrad-polar-first",
+        dest="polargrad_polar_first",
+        action="store_false",
+    )
+    parser.set_defaults(polargrad_polar_first=False)
+    parser.add_argument(
+        "--polargrad-method",
+        choices=["qdwh", "zolo-pd", "ns", "precond_ns", "polar_express"],
+        default="zolo-pd",
+    )
+    parser.add_argument("--polargrad-inner-steps", type=int, default=2)
+    parser.add_argument("--polargrad-a", type=float, default=3.4445)
+    parser.add_argument("--polargrad-b", type=float, default=-4.7750)
+    parser.add_argument("--polargrad-c", type=float, default=2.031)
+    parser.add_argument("--polargrad-adam-lr", type=float, default=3e-4)
+    parser.add_argument("--polargrad-adam-beta1", type=float, default=0.9)
+    parser.add_argument("--polargrad-adam-beta2", type=float, default=0.95)
+    parser.add_argument("--polargrad-adam-epsilon", type=float, default=1e-10)
+    parser.add_argument("--polargrad-weight-decay", type=float, default=0.0)
+    parser.add_argument("--polargrad-adam-weight-decay", type=float, default=0.0)
     parser.add_argument("--grad-clip", type=float, default=1.0)
     parser.add_argument("--log-every", type=int, default=100)
     parser.add_argument("--derivative-warmup", type=int, default=3000)

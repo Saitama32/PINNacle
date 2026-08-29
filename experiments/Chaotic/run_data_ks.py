@@ -106,16 +106,25 @@ def _output_transform(mean: float, std: float):
     return transform
 
 
-def build_network(metadata: dict) -> RWFMLP:
-    """Build the RWF MLP represented by a saved run/checkpoint metadata dict."""
+def build_network(metadata: dict) -> torch.nn.Module:
+    """Build the dense or RWF MLP represented by checkpoint metadata."""
 
     precision = metadata.get("precision", "float32")
     dde.config.set_default_float(precision)
-    network = RWFMLP(
-        metadata["layer_sizes"],
-        mu=metadata["rwf_mu"],
-        sigma=metadata["rwf_sigma"],
-    ).to(dtype=TORCH_DTYPES[precision])
+    model_type = metadata.get("model", "RWFMLP").lower()
+    if model_type == "rwfmlp":
+        network = RWFMLP(
+            metadata["layer_sizes"],
+            mu=metadata["rwf_mu"],
+            sigma=metadata["rwf_sigma"],
+        )
+    elif model_type in {"mlp", "fnn"}:
+        network = dde.nn.FNN(
+            metadata["layer_sizes"], "tanh", "Glorot normal"
+        )
+    else:
+        raise ValueError(f"Unsupported network model in metadata: {metadata.get('model')!r}")
+    network = network.to(dtype=TORCH_DTYPES[precision])
     network.apply_feature_transform(
         _normalization_transform(metadata["input_min"], metadata["input_scale"])
     )
@@ -125,7 +134,7 @@ def build_network(metadata: dict) -> RWFMLP:
     return network
 
 
-def build_optimizer(network: RWFMLP, args) -> torch.optim.Optimizer:
+def build_optimizer(network: torch.nn.Module, args) -> torch.optim.Optimizer:
     """Build one of the repository's Adam, RMSprop, Muon, or SOAP optimizers."""
 
     if args.optimizer == "adam":
@@ -192,7 +201,7 @@ def build_scheduler(optimizer: torch.optim.Optimizer, args):
     raise ValueError(f"Unsupported learning-rate scheduler: {args.lr_scheduler}")
 
 
-def load_checkpoint(path: os.PathLike, device="cpu") -> tuple[RWFMLP, dict]:
+def load_checkpoint(path: os.PathLike, device="cpu") -> tuple[torch.nn.Module, dict]:
     """Restore a model saved by this script."""
 
     try:
@@ -210,7 +219,7 @@ def _cpu_state_dict(network):
     return {name: value.detach().cpu().clone() for name, value in network.state_dict().items()}
 
 
-def save_checkpoint(path: Path, network: RWFMLP, metadata: dict) -> None:
+def save_checkpoint(path: Path, network: torch.nn.Module, metadata: dict) -> None:
     torch.save({"state_dict": _cpu_state_dict(network), "metadata": metadata}, path)
 
 
