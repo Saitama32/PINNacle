@@ -374,13 +374,20 @@ class KLOpt(torch.optim.Optimizer):
                 _, basis = torch.linalg.eigh(
                     matrix
                     + 1e-30
-                    * torch.eye(matrix.shape[0], device=matrix.device)
+                    * torch.eye(
+                        matrix.shape[0], device=matrix.device, dtype=matrix.dtype
+                    )
                 )
             except RuntimeError:
+                work_matrix = matrix.to(torch.float64)
                 _, basis = torch.linalg.eigh(
-                    matrix.to(torch.float64)
+                    work_matrix
                     + 1e-30
-                    * torch.eye(matrix.shape[0], device=matrix.device)
+                    * torch.eye(
+                        work_matrix.shape[0],
+                        device=work_matrix.device,
+                        dtype=work_matrix.dtype,
+                    )
                 )
                 basis = basis.to(matrix.dtype)
             basis = torch.flip(basis, [1])

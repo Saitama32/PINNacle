@@ -6,6 +6,7 @@ import torch
 from .causal import CausalOptimizer
 from .muon import MuonWithAuxAdam
 from .mop import MOPWithAuxAdam
+from .polargrad import PolarGradWithAuxAdam
 from .mousse import MousseWithAuxLion
 from .psgd_pro import PSGDPro
 from .klopt import KLOptWithAuxAdam
@@ -20,6 +21,7 @@ from ..config import (
     NNCG_options,
     MUON_options,
     MOP_options,
+    POLARGRAD_options,
     MOUSSE_options,
     PSGDPRO_options,
     KLOPT_options,
@@ -33,6 +35,7 @@ from ..config import (
 
 _KLOPT_NAMES = {"klopt", "kl-shampoo", "klshampoo", "kl-soap", "klsoap"}
 _PSGDPRO_NAMES = {"psgdpro", "psgd-pro", "psgd_pro", "pcggradpro"}
+_POLARGRAD_NAMES = {"polargrad", "polar-grad", "polar_grad"}
 
 
 def _resolve_torch_dtype(value):
@@ -322,6 +325,69 @@ def _make_mop_optimizer(params, learning_rate, weight_decay=0, model=None):
     return MOPWithAuxAdam(param_groups)
 
 
+def _make_polargrad_optimizer(params, learning_rate, weight_decay=0, model=None):
+    if learning_rate is None:
+        raise ValueError("No learning rate for PolarGrad.")
+
+    params = [parameter for parameter in params if parameter.requires_grad]
+    polargrad_ids = _hidden_linear_weight_ids(model)
+    polargrad_params = [
+        parameter
+        for parameter in params
+        if id(parameter) in polargrad_ids and parameter.ndim == 2
+    ]
+    selected_ids = {id(parameter) for parameter in polargrad_params}
+    auxiliary_params = [
+        parameter for parameter in params if id(parameter) not in selected_ids
+    ]
+
+    if not polargrad_params:
+        print(
+            "Warning: PolarGrad found no hidden Linear.weight parameters; "
+            "all parameters will use auxiliary Adam."
+        )
+
+    groups = []
+    if polargrad_params:
+        groups.append(
+            {
+                "params": polargrad_params,
+                "use_polargrad": True,
+                "lr": learning_rate,
+                "momentum": POLARGRAD_options["momentum"],
+                "polar_first": POLARGRAD_options["polar_first"],
+                "method": POLARGRAD_options["method"],
+                "inner_steps": POLARGRAD_options["inner_steps"],
+                "a": POLARGRAD_options["a"],
+                "b": POLARGRAD_options["b"],
+                "c": POLARGRAD_options["c"],
+                "weight_decay": (
+                    POLARGRAD_options["polargrad_weight_decay"] or weight_decay
+                ),
+            }
+        )
+    if auxiliary_params:
+        groups.append(
+            {
+                "params": auxiliary_params,
+                "use_polargrad": False,
+                "lr": (
+                    learning_rate
+                    if POLARGRAD_options["adam_lr"] is None
+                    else POLARGRAD_options["adam_lr"]
+                ),
+                "betas": POLARGRAD_options["adam_betas"],
+                "eps": POLARGRAD_options["adam_eps"],
+                "weight_decay": (
+                    POLARGRAD_options["adam_weight_decay"] or weight_decay
+                ),
+            }
+        )
+    if not groups:
+        raise ValueError("PolarGrad has no trainable parameters.")
+    return PolarGradWithAuxAdam(groups)
+
+
 def _make_base_optimizer(params, optimizer, learning_rate=None, decay=None, weight_decay=0, model=None):
     if optimizer in ["L-BFGS", "L-BFGS-B"]:
         if weight_decay > 0:
@@ -407,6 +473,11 @@ def _make_base_optimizer(params, optimizer, learning_rate=None, decay=None, weig
     if optimizer in ["mop", "MOP"]:
         return _make_mop_optimizer(params, learning_rate, weight_decay=weight_decay, model=model)
 
+    if isinstance(optimizer, str) and optimizer.lower() in _POLARGRAD_NAMES:
+        return _make_polargrad_optimizer(
+            params, learning_rate, weight_decay=weight_decay, model=model
+        )
+
     if optimizer in ["mousse", "Mousse"]:
         return _make_mousse_optimizer(
             params, learning_rate, weight_decay=weight_decay, model=model
@@ -420,7 +491,7 @@ def _make_base_optimizer(params, optimizer, learning_rate=None, decay=None, weig
     raise NotImplementedError(
         f"Causal base optimizer {optimizer} is not supported. "
         "Use one of: adam, soap, klopt, kl-shampoo, kl-soap, muon, MOP, "
-        "mousse, psgdpro, "
+        "mousse, psgdpro, polargrad, "
         "L-BFGS, L-BFGS-B, PSO."
     )
 
@@ -534,6 +605,13 @@ def get(params, optimizer, learning_rate=None, decay=None, weight_decay=0, model
             )
         elif optimizer in ["mop", "MOP"]:
             optim = _make_mop_optimizer(
+                params,
+                learning_rate,
+                weight_decay=weight_decay,
+                model=model,
+            )
+        elif isinstance(optimizer, str) and optimizer.lower() in _POLARGRAD_NAMES:
+            optim = _make_polargrad_optimizer(
                 params,
                 learning_rate,
                 weight_decay=weight_decay,

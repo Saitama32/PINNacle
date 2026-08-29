@@ -10,6 +10,8 @@ __all__ = [
     "set_MUON_options",
     "MOP_options",
     "set_MOP_options",
+    "POLARGRAD_options",
+    "set_POLARGRAD_options",
     "MOUSSE_options",
     "set_MOUSSE_options",
     "PSGDPRO_options",
@@ -31,6 +33,7 @@ SOAP_options = {}
 KLOPT_options = {}
 MUON_options = {}
 MOP_options = {}
+POLARGRAD_options = {}
 MOUSSE_options = {}
 PSGDPRO_options = {}
 PCGRAD_options = {}
@@ -379,6 +382,59 @@ def set_MOP_options(
     MOP_options["adam_weight_decay"] = adam_weight_decay
 
 
+def set_POLARGRAD_options(
+    momentum=0.95,
+    polar_first=False,
+    method="qdwh",
+    inner_steps=2,
+    a=3.4445,
+    b=-4.7750,
+    c=2.031,
+    adam_lr=3e-4,
+    adam_betas=(0.9, 0.95),
+    adam_eps=1e-10,
+    polargrad_weight_decay=0.0,
+    adam_weight_decay=0.0,
+):
+    """Sets hyperparameters for PolarGrad with an auxiliary Adam optimizer.
+
+    Hidden ``Linear.weight`` matrices use PolarGrad. Input/output weights,
+    biases, external variables, and other parameters use auxiliary Adam.
+
+    ``method`` may be ``qdwh``, ``zolo-pd``, ``ns``, ``precond_ns``, or
+    ``polar_express``. The defaults match the upstream PolarGrad class.
+    """
+    methods = {"qdwh", "zolo-pd", "ns", "precond_ns", "polar_express"}
+    if not 0 <= momentum < 1:
+        raise ValueError("PolarGrad momentum must be in [0, 1)")
+    if method not in methods:
+        raise ValueError(f"Invalid PolarGrad method: {method}")
+    if not isinstance(inner_steps, int) or inner_steps < 0:
+        raise ValueError("PolarGrad inner_steps must be a nonnegative integer")
+    if len(adam_betas) != 2 or any(not 0 <= beta < 1 for beta in adam_betas):
+        raise ValueError("PolarGrad auxiliary Adam betas must be in [0, 1)")
+    if adam_lr is not None and adam_lr < 0:
+        raise ValueError("PolarGrad auxiliary Adam learning rate must be nonnegative")
+    if adam_eps <= 0:
+        raise ValueError("PolarGrad auxiliary Adam epsilon must be positive")
+    if polargrad_weight_decay < 0 or adam_weight_decay < 0:
+        raise ValueError("PolarGrad weight decay values must be nonnegative")
+    POLARGRAD_options.update(
+        momentum=momentum,
+        polar_first=polar_first,
+        method=method,
+        inner_steps=inner_steps,
+        a=a,
+        b=b,
+        c=c,
+        adam_lr=adam_lr,
+        adam_betas=adam_betas,
+        adam_eps=adam_eps,
+        polargrad_weight_decay=polargrad_weight_decay,
+        adam_weight_decay=adam_weight_decay,
+    )
+
+
 def set_MOUSSE_options(
     momentum=0.95,
     lion_betas=(0.9, 0.95),
@@ -606,6 +662,7 @@ set_SOAP_options()
 set_KLOPT_options()
 set_MUON_options()
 set_MOP_options()
+set_POLARGRAD_options()
 set_MOUSSE_options()
 set_PSGDPRO_options()
 set_PCGRAD_options()

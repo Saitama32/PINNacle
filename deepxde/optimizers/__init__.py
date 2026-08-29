@@ -19,6 +19,8 @@ from .config import (
     set_MUON_options,
     MOP_options,
     set_MOP_options,
+    POLARGRAD_options,
+    set_POLARGRAD_options,
     MOUSSE_options,
     set_MOUSSE_options,
     PSGDPRO_options,
