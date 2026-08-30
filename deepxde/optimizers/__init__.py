@@ -15,6 +15,8 @@ from .config import (
     set_SOAP_options,
     KLOPT_options,
     set_KLOPT_options,
+    REKLSV3_options,
+    set_REKLSV3_options,
     MUON_options,
     set_MUON_options,
     MOP_options,

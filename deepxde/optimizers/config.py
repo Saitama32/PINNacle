@@ -6,6 +6,8 @@ __all__ = [
     "set_SOAP_options",
     "KLOPT_options",
     "set_KLOPT_options",
+    "REKLSV3_options",
+    "set_REKLSV3_options",
     "MUON_options",
     "set_MUON_options",
     "MOP_options",
@@ -31,6 +33,7 @@ PSO_options = {}
 ZOCGE_options = {}
 SOAP_options = {}
 KLOPT_options = {}
+REKLSV3_options = {}
 MUON_options = {}
 MOP_options = {}
 POLARGRAD_options = {}
@@ -312,6 +315,50 @@ def set_KLOPT_options(
     KLOPT_options["using_clamping"] = using_clamping
     KLOPT_options["max_clamp_value"] = max_clamp_value
     KLOPT_options["cast_dtype"] = cast_dtype
+
+
+def set_REKLSV3_options(
+    betas=(0.9, 0.95),
+    shampoo_beta=0.95,
+    epsilon=1e-8,
+    rekls_weight_decay=0.01,
+    auxiliary_lr=None,
+    auxiliary_betas=None,
+    auxiliary_epsilon=1e-8,
+    auxiliary_weight_decay=0.0,
+):
+    """Sets hyperparameters for NVIDIA REKLS V3 with auxiliary AdamW.
+
+    REKLS V3 is applied to every trainable 2D tensor. Biases, scalars, and
+    other tensor ranks use auxiliary AdamW so the optimizer can be selected
+    through the regular DeepXDE ``Model.compile`` interface.
+    """
+    if len(betas) != 2 or any(not 0 <= beta < 1 for beta in betas):
+        raise ValueError("REKLS V3 betas must be in [0, 1)")
+    if not 0 <= shampoo_beta < 1:
+        raise ValueError("REKLS V3 shampoo_beta must be in [0, 1)")
+    if epsilon <= 0 or auxiliary_epsilon <= 0:
+        raise ValueError("REKLS V3 epsilon values must be positive")
+    if rekls_weight_decay < 0 or auxiliary_weight_decay < 0:
+        raise ValueError("REKLS V3 weight decay values must be nonnegative")
+    if auxiliary_lr is not None and auxiliary_lr < 0:
+        raise ValueError("REKLS V3 auxiliary learning rate must be nonnegative")
+    if auxiliary_betas is None:
+        auxiliary_betas = betas
+    if len(auxiliary_betas) != 2 or any(
+        not 0 <= beta < 1 for beta in auxiliary_betas
+    ):
+        raise ValueError("REKLS V3 auxiliary betas must be in [0, 1)")
+    REKLSV3_options.update(
+        betas=betas,
+        shampoo_beta=shampoo_beta,
+        epsilon=epsilon,
+        rekls_weight_decay=rekls_weight_decay,
+        auxiliary_lr=auxiliary_lr,
+        auxiliary_betas=auxiliary_betas,
+        auxiliary_epsilon=auxiliary_epsilon,
+        auxiliary_weight_decay=auxiliary_weight_decay,
+    )
 
 
 def set_MUON_options(
@@ -727,6 +774,7 @@ set_NNCG_options()
 set_PSO_options()
 set_SOAP_options()
 set_KLOPT_options()
+set_REKLSV3_options()
 set_MUON_options()
 set_MOP_options()
 set_POLARGRAD_options()

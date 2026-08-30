@@ -10,6 +10,7 @@ from .polargrad import PolarGradWithAuxAdam
 from .mousse import MousseWithAuxLion
 from .psgd_pro import PSGDPro
 from .klopt import KLOptWithAuxAdam
+from .rekls_v3 import ReklsV3WithAuxAdam
 from .pcgrad import PCGrad
 from .pso import PSO
 from .soap import SOAP
@@ -25,6 +26,7 @@ from ..config import (
     MOUSSE_options,
     PSGDPRO_options,
     KLOPT_options,
+    REKLSV3_options,
     PCGRAD_options,
     PSO_options,
     SSBROYDEN_options,
@@ -34,6 +36,7 @@ from ..config import (
 
 
 _KLOPT_NAMES = {"klopt", "kl-shampoo", "klshampoo", "kl-soap", "klsoap"}
+_REKLSV3_NAMES = {"rekls", "reklsv3", "rekls-v3", "rekls_v3"}
 _PSGDPRO_NAMES = {"psgdpro", "psgd-pro", "psgd_pro", "pcggradpro"}
 _POLARGRAD_NAMES = {"polargrad", "polar-grad", "polar_grad"}
 
@@ -93,6 +96,62 @@ def _make_klopt_optimizer(params, learning_rate, weight_decay=0, mode=None):
         using_clamping=KLOPT_options["using_clamping"],
         max_clamp_value=KLOPT_options["max_clamp_value"],
         cast_dtype=_resolve_torch_dtype(KLOPT_options["cast_dtype"]),
+    )
+
+
+def _make_reklsv3_optimizer(params, learning_rate, weight_decay=0):
+    if learning_rate is None:
+        raise ValueError("No learning rate for REKLS V3.")
+    flat_params = []
+    for item in params:
+        if isinstance(item, dict):
+            flat_params.extend(item["params"])
+        else:
+            flat_params.append(item)
+    params = [parameter for parameter in flat_params if parameter.requires_grad]
+    rekls_params = [parameter for parameter in params if parameter.ndim == 2]
+    rekls_ids = {id(parameter) for parameter in rekls_params}
+    auxiliary_params = [
+        parameter for parameter in params if id(parameter) not in rekls_ids
+    ]
+
+    groups = []
+    if rekls_params:
+        groups.append(
+            {
+                "params": rekls_params,
+                "use_rekls": True,
+                "lr": learning_rate,
+                "weight_decay": (
+                    weight_decay
+                    if weight_decay != 0
+                    else REKLSV3_options["rekls_weight_decay"]
+                ),
+            }
+        )
+    if auxiliary_params:
+        groups.append(
+            {
+                "params": auxiliary_params,
+                "use_rekls": False,
+                "lr": (
+                    learning_rate
+                    if REKLSV3_options["auxiliary_lr"] is None
+                    else REKLSV3_options["auxiliary_lr"]
+                ),
+                "weight_decay": REKLSV3_options["auxiliary_weight_decay"],
+            }
+        )
+    if not groups:
+        raise ValueError("REKLS V3 has no trainable parameters.")
+    return ReklsV3WithAuxAdam(
+        groups,
+        lr=learning_rate,
+        betas=REKLSV3_options["betas"],
+        shampoo_beta=REKLSV3_options["shampoo_beta"],
+        eps=REKLSV3_options["epsilon"],
+        auxiliary_betas=REKLSV3_options["auxiliary_betas"],
+        auxiliary_eps=REKLSV3_options["auxiliary_epsilon"],
     )
 
 
@@ -484,6 +543,11 @@ def _make_base_optimizer(params, optimizer, learning_rate=None, decay=None, weig
             mode=optimizer,
         )
 
+    if isinstance(optimizer, str) and optimizer.lower() in _REKLSV3_NAMES:
+        return _make_reklsv3_optimizer(
+            params, learning_rate, weight_decay=weight_decay
+        )
+
     if optimizer in ["muon", "Muon"]:
         return _make_muon_optimizer(params, learning_rate, weight_decay=weight_decay, model=model)
 
@@ -507,7 +571,7 @@ def _make_base_optimizer(params, optimizer, learning_rate=None, decay=None, weig
 
     raise NotImplementedError(
         f"Causal base optimizer {optimizer} is not supported. "
-        "Use one of: adam, soap, klopt, kl-shampoo, kl-soap, muon, MOP, "
+        "Use one of: adam, soap, klopt, kl-shampoo, kl-soap, rekls-v3, muon, MOP, "
         "mousse, psgdpro, polargrad, "
         "L-BFGS, L-BFGS-B, PSO."
     )
@@ -612,6 +676,12 @@ def get(params, optimizer, learning_rate=None, decay=None, weight_decay=0, model
                 learning_rate,
                 weight_decay=weight_decay,
                 mode=optimizer,
+            )
+        elif isinstance(optimizer, str) and optimizer.lower() in _REKLSV3_NAMES:
+            optim = _make_reklsv3_optimizer(
+                params,
+                learning_rate,
+                weight_decay=weight_decay,
             )
         elif optimizer in ["muon", "Muon"]:
             optim = _make_muon_optimizer(
