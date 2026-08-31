@@ -800,7 +800,7 @@ def build_parser():
     parser.add_argument("--n-iter-pinn", type=int, default=1000)
     parser.add_argument(
         "--pinn-optimizer",
-        choices=["adam", "rmsprop", "madam", "muon", "soap", "kl-m-soap", "lbfgs"],
+        choices=["adam", "rmsprop", "madam", "muon", "muown", "soap", "kl-m-soap", "lbfgs"],
         default="soap",
     )
     parser.add_argument("--pinn-lr", type=float, default=1e-5)
@@ -898,6 +898,22 @@ def build_parser():
     parser.add_argument("--madam-beta2", type=float, default=0.999)
     parser.add_argument("--madam-scale-log2", type=float, default=16.0)
     parser.add_argument("--madam-bias-correction", action="store_true", default=True)
+    parser.add_argument("--muown-momentum", type=float, default=0.95)
+    parser.add_argument("--muown-beta1", type=float, default=0.9)
+    parser.add_argument("--muown-beta2", type=float, default=0.95)
+    parser.add_argument("--muown-adam-epsilon", type=float, default=1e-8)
+    parser.add_argument("--muown-fp32-matmul-precision", choices=["medium", "high", "highest"], default="medium")
+    parser.add_argument("--muown-coefficient-type", choices=["simple", "quintic", "polar_express", "cans", "aol", "deepseekv4", "cubic5"], default="quintic")
+    parser.add_argument("--muown-ns-steps", type=int, default=5)
+    parser.add_argument("--muown-scale-mode", choices=["shape_scaling", "spectral", "unit_rms_norm"], default="spectral")
+    parser.add_argument("--muown-extra-scale-factor", type=float, default=1.0)
+    parser.add_argument("--muown-weight-decay", type=float, default=0.0)
+    parser.add_argument("--muown-auxiliary-optimizer", choices=["adam", "soap"], default="adam")
+    parser.add_argument("--muown-auxiliary-lr", type=float, default=None)
+    parser.add_argument("--muown-auxiliary-beta1", type=float, default=0.9)
+    parser.add_argument("--muown-auxiliary-beta2", type=float, default=0.95)
+    parser.add_argument("--muown-auxiliary-epsilon", type=float, default=1e-8)
+    parser.add_argument("--muown-auxiliary-weight-decay", type=float, default=0.0)
     parser.add_argument("--muon-momentum", type=float, default=0.95)
     parser.add_argument("--muon-nesterov", action="store_true", default=True)
     parser.add_argument("--muon-ns-steps", type=int, default=5)

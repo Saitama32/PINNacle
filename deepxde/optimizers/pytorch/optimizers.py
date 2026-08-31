@@ -5,6 +5,7 @@ import torch
 # from .nncg import NNCG
 from .causal import CausalOptimizer
 from .muon import MuonWithAuxAdam
+from .muown import MuownWithAuxAdam
 from .mop import MOPWithAuxAdam
 from .polargrad import PolarGradWithAuxAdam
 from .mousse import MousseWithAuxLion
@@ -23,6 +24,7 @@ from ..config import (
     LBFGS_options,
     NNCG_options,
     MUON_options,
+    MUOWN_options,
     MOP_options,
     POLARGRAD_options,
     MOUSSE_options,
@@ -43,6 +45,7 @@ _KLOPT_NAMES = {"klopt", "kl-shampoo", "klshampoo", "kl-soap", "klsoap"}
 _REKLSV3_NAMES = {"rekls", "reklsv3", "rekls-v3", "rekls_v3"}
 _KLMSOAP_NAMES = {"kl-m-soap", "kl_m_soap", "klmsoap", "kl-msoap"}
 _MADAM_NAMES = {"madam", "m-adam", "m_adam"}
+_MUOWN_NAMES = {"muown", "mu-own", "mu_own"}
 _PSGDPRO_NAMES = {"psgdpro", "psgd-pro", "psgd_pro", "pcggradpro"}
 _POLARGRAD_NAMES = {"polargrad", "polar-grad", "polar_grad"}
 
@@ -443,6 +446,64 @@ def _make_muon_optimizer(params, learning_rate, weight_decay=0, model=None):
     return MuonWithAuxAdam(param_groups)
 
 
+def _make_muown_optimizer(params, learning_rate, weight_decay=0, model=None):
+    if learning_rate is None:
+        raise ValueError("No learning rate for MuOwn.")
+    params = list(params)
+    selected_ids = _hidden_linear_weight_ids(model)
+    matrix_params = [
+        parameter
+        for parameter in params
+        if id(parameter) in selected_ids and parameter.ndim == 2
+    ]
+    selected_ids = {id(parameter) for parameter in matrix_params}
+    auxiliary_params = [
+        parameter for parameter in params if id(parameter) not in selected_ids
+    ]
+    if not matrix_params:
+        print(
+            "Warning: MuOwn found no hidden Linear.weight parameters; "
+            f"all parameters will use auxiliary {MUOWN_options['auxiliary_optimizer']}."
+        )
+
+    groups = []
+    if matrix_params:
+        groups.append(
+            {
+                "params": matrix_params,
+                "use_muown": True,
+                "lr": learning_rate,
+                "momentum": MUOWN_options["momentum"],
+                "betas": MUOWN_options["betas"],
+                "adam_eps": MUOWN_options["adam_eps"],
+                "fp32_matmul_precision": MUOWN_options["fp32_matmul_precision"],
+                "coefficient_type": MUOWN_options["coefficient_type"],
+                "ns_steps": MUOWN_options["ns_steps"],
+                "scale_mode": MUOWN_options["scale_mode"],
+                "extra_scale_factor": MUOWN_options["extra_scale_factor"],
+                "weight_decay": MUOWN_options["muown_weight_decay"] or weight_decay,
+            }
+        )
+    if auxiliary_params:
+        fallback_options = {
+            "auxiliary_optimizer": MUOWN_options["auxiliary_optimizer"],
+            "auxiliary_lr": MUOWN_options["auxiliary_lr"],
+            "auxiliary_weight_decay": MUOWN_options["auxiliary_weight_decay"],
+            "adam_betas": MUOWN_options["auxiliary_betas"],
+            "adam_eps": MUOWN_options["auxiliary_eps"],
+        }
+        groups.append(
+            _make_auxiliary_group(
+                auxiliary_params,
+                "use_muown",
+                fallback_options,
+                learning_rate,
+                weight_decay,
+            )
+        )
+    return MuownWithAuxAdam(groups)
+
+
 def _make_mop_optimizer(params, learning_rate, weight_decay=0, model=None):
     if learning_rate is None:
         raise ValueError("No learning rate for MOP.")
@@ -634,6 +695,11 @@ def _make_base_optimizer(params, optimizer, learning_rate=None, decay=None, weig
     if optimizer in ["muon", "Muon"]:
         return _make_muon_optimizer(params, learning_rate, weight_decay=weight_decay, model=model)
 
+    if isinstance(optimizer, str) and optimizer.lower() in _MUOWN_NAMES:
+        return _make_muown_optimizer(
+            params, learning_rate, weight_decay=weight_decay, model=model
+        )
+
     if optimizer in ["mop", "MOP"]:
         return _make_mop_optimizer(params, learning_rate, weight_decay=weight_decay, model=model)
 
@@ -655,7 +721,7 @@ def _make_base_optimizer(params, optimizer, learning_rate=None, decay=None, weig
     raise NotImplementedError(
         f"Causal base optimizer {optimizer} is not supported. "
         "Use one of: adam, madam, soap, klopt, kl-shampoo, kl-soap, kl-m-soap, "
-        "rekls-v3, muon, MOP, "
+        "rekls-v3, muon, muown, MOP, "
         "mousse, psgdpro, polargrad, "
         "L-BFGS, L-BFGS-B, PSO."
     )
@@ -781,6 +847,13 @@ def get(params, optimizer, learning_rate=None, decay=None, weight_decay=0, model
             )
         elif optimizer in ["muon", "Muon"]:
             optim = _make_muon_optimizer(
+                params,
+                learning_rate,
+                weight_decay=weight_decay,
+                model=model,
+            )
+        elif isinstance(optimizer, str) and optimizer.lower() in _MUOWN_NAMES:
+            optim = _make_muown_optimizer(
                 params,
                 learning_rate,
                 weight_decay=weight_decay,

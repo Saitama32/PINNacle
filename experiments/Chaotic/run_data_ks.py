@@ -172,6 +172,23 @@ def build_optimizer(network: torch.nn.Module, args) -> torch.optim.Optimizer:
             scale_log2=args.madam_scale_log2,
             correct_bias=args.madam_bias_correction,
         )
+    elif args.optimizer == "muown":
+        dde.optimizers.set_MUOWN_options(
+            momentum=args.muown_momentum,
+            betas=(args.muown_beta1, args.muown_beta2),
+            adam_eps=args.muown_adam_epsilon,
+            fp32_matmul_precision=args.muown_fp32_matmul_precision,
+            coefficient_type=args.muown_coefficient_type,
+            ns_steps=args.muown_ns_steps,
+            scale_mode=args.muown_scale_mode,
+            extra_scale_factor=args.muown_extra_scale_factor,
+            muown_weight_decay=args.muown_weight_decay,
+            auxiliary_optimizer=args.muown_auxiliary_optimizer,
+            auxiliary_lr=args.muown_auxiliary_lr,
+            auxiliary_betas=(args.muown_auxiliary_beta1, args.muown_auxiliary_beta2),
+            auxiliary_eps=args.muown_auxiliary_epsilon,
+            auxiliary_weight_decay=args.muown_auxiliary_weight_decay,
+        )
     elif args.optimizer == "muon":
         dde.optimizers.set_MUON_options(
             momentum=args.muon_momentum,
@@ -1073,7 +1090,7 @@ def parse_args(argv: Optional[list[str]] = None):
     parser.add_argument("--eval-batch-size", type=int, default=16384)
     parser.add_argument(
         "--optimizer",
-        choices=["adam", "rmsprop", "madam", "muon", "soap", "kl-m-soap"],
+        choices=["adam", "rmsprop", "madam", "muon", "muown", "soap", "kl-m-soap"],
         default="soap",
     )
     parser.add_argument(
@@ -1126,6 +1143,22 @@ def parse_args(argv: Optional[list[str]] = None):
         "--no-madam-bias-correction", dest="madam_bias_correction", action="store_false"
     )
     parser.set_defaults(madam_bias_correction=True)
+    parser.add_argument("--muown-momentum", type=float, default=0.95)
+    parser.add_argument("--muown-beta1", type=float, default=0.9)
+    parser.add_argument("--muown-beta2", type=float, default=0.95)
+    parser.add_argument("--muown-adam-epsilon", type=float, default=1e-8)
+    parser.add_argument("--muown-fp32-matmul-precision", choices=["medium", "high", "highest"], default="medium")
+    parser.add_argument("--muown-coefficient-type", choices=["simple", "quintic", "polar_express", "cans", "aol", "deepseekv4", "cubic5"], default="quintic")
+    parser.add_argument("--muown-ns-steps", type=int, default=5)
+    parser.add_argument("--muown-scale-mode", choices=["shape_scaling", "spectral", "unit_rms_norm"], default="spectral")
+    parser.add_argument("--muown-extra-scale-factor", type=float, default=1.0)
+    parser.add_argument("--muown-weight-decay", type=float, default=0.0)
+    parser.add_argument("--muown-auxiliary-optimizer", choices=["adam", "soap"], default="adam")
+    parser.add_argument("--muown-auxiliary-lr", type=float, default=None)
+    parser.add_argument("--muown-auxiliary-beta1", type=float, default=0.9)
+    parser.add_argument("--muown-auxiliary-beta2", type=float, default=0.95)
+    parser.add_argument("--muown-auxiliary-epsilon", type=float, default=1e-8)
+    parser.add_argument("--muown-auxiliary-weight-decay", type=float, default=0.0)
     parser.add_argument("--muon-momentum", type=float, default=0.95)
     muon_nesterov_group = parser.add_mutually_exclusive_group()
     muon_nesterov_group.add_argument(

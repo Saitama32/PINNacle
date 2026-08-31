@@ -23,6 +23,8 @@ from .config import (
     set_MADAM_options,
     MUON_options,
     set_MUON_options,
+    MUOWN_options,
+    set_MUOWN_options,
     MOP_options,
     set_MOP_options,
     POLARGRAD_options,

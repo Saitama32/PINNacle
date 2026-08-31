@@ -265,6 +265,23 @@ def _base_optimizer(network, args):
             scale_log2=args.madam_scale_log2,
             correct_bias=args.madam_bias_correction,
         )
+    elif optimizer_name == "muown":
+        dde.optimizers.set_MUOWN_options(
+            momentum=args.muown_momentum,
+            betas=(args.muown_beta1, args.muown_beta2),
+            adam_eps=args.muown_adam_epsilon,
+            fp32_matmul_precision=args.muown_fp32_matmul_precision,
+            coefficient_type=args.muown_coefficient_type,
+            ns_steps=args.muown_ns_steps,
+            scale_mode=args.muown_scale_mode,
+            extra_scale_factor=args.muown_extra_scale_factor,
+            muown_weight_decay=args.muown_weight_decay,
+            auxiliary_optimizer=args.matrix_fallback,
+            auxiliary_lr=args.muown_auxiliary_lr,
+            auxiliary_betas=(args.muown_auxiliary_beta1, args.muown_auxiliary_beta2),
+            auxiliary_eps=args.muown_auxiliary_epsilon,
+            auxiliary_weight_decay=args.muown_auxiliary_weight_decay,
+        )
     elif optimizer_name in {"psgdpro", "pcgpro"}:
         dde.optimizers.set_PSGDPRO_options(
             momentum=args.psgdpro_momentum,
@@ -880,7 +897,7 @@ def parse_args(argv=None):
         "--optimizer",
         choices=[
             "adam", "rmsprop", "madam", "soap", "kl-shampoo", "kl-soap", "kl-m-soap", "muon",
-            "mop", "mousse", "psgdpro", "pcgpro", "polargrad", "rekls-v3",
+            "mop", "mousse", "psgdpro", "pcgpro", "polargrad", "rekls-v3", "muown",
         ],
         default="rekls-v3",
     )
@@ -951,6 +968,21 @@ def parse_args(argv=None):
     parser.add_argument("--madam-beta2", type=float, default=0.999)
     parser.add_argument("--madam-scale-log2", type=float, default=16.0)
     parser.add_argument("--madam-bias-correction", type=parse_bool, default=True)
+    parser.add_argument("--muown-momentum", type=float, default=0.95)
+    parser.add_argument("--muown-beta1", type=float, default=0.9)
+    parser.add_argument("--muown-beta2", type=float, default=0.95)
+    parser.add_argument("--muown-adam-epsilon", type=float, default=1e-8)
+    parser.add_argument("--muown-fp32-matmul-precision", choices=["medium", "high", "highest"], default="medium")
+    parser.add_argument("--muown-coefficient-type", choices=["simple", "quintic", "polar_express", "cans", "aol", "deepseekv4", "cubic5"], default="quintic")
+    parser.add_argument("--muown-ns-steps", type=int, default=5)
+    parser.add_argument("--muown-scale-mode", choices=["shape_scaling", "spectral", "unit_rms_norm"], default="spectral")
+    parser.add_argument("--muown-extra-scale-factor", type=float, default=1.0)
+    parser.add_argument("--muown-weight-decay", type=float, default=0.0)
+    parser.add_argument("--muown-auxiliary-lr", type=float, default=None)
+    parser.add_argument("--muown-auxiliary-beta1", type=float, default=0.9)
+    parser.add_argument("--muown-auxiliary-beta2", type=float, default=0.95)
+    parser.add_argument("--muown-auxiliary-epsilon", type=float, default=1e-8)
+    parser.add_argument("--muown-auxiliary-weight-decay", type=float, default=0.0)
 
     parser.add_argument("--mousse-momentum", type=float, default=0.95)
     parser.add_argument("--mousse-lion-beta1", type=float, default=0.9)

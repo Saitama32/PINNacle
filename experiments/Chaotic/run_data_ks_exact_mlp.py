@@ -12,6 +12,7 @@ import io
 import json
 import math
 import os
+import re
 import sys
 import time
 from pathlib import Path
@@ -32,29 +33,475 @@ from deepxde.optimizers.pytorch.muon import MuonWithAuxAdam
 from deepxde.optimizers.pytorch.mop import MOPWithAuxAdam
 from deepxde.optimizers.pytorch.polargrad import PolarGradWithAuxAdam
 from scipy.interpolate import CubicSpline
-
-from experiments.Chaotic.run_data_ks import (
-    KS_ALPHA,
-    KS_BETA,
-    KS_GAMMA,
-    build_network,
-    build_optimizer as build_data_optimizer,
-    evaluate_derivative_grid,
-    evaluate_pinn_loss,
-    ks_terms,
-    load_data,
-    prediction_metrics,
-    save_checkpoint as save_student_checkpoint,
-    save_solution_plot,
-)
-from src.utils.args import parse_hidden_layers
+from src.model import RWFMLP
 
 
+KS_ALPHA = 100.0 / 16.0
+KS_BETA = 100.0 / (16.0**2)
+KS_GAMMA = 100.0 / (16.0**4)
 TORCH_DTYPES = {
     "float32": torch.float32,
     "float64": torch.float64,
 }
+NUMPY_DTYPES = {
+    "float32": np.float32,
+    "float64": np.float64,
+}
 DERIVATIVE_KEYS = ("u_t", "u_x", "u_xx", "u_xxxx")
+
+
+def parse_hidden_layers(command_args):
+    """Parse layer specifications such as ``128*4`` or ``128_128_128``."""
+
+    layers = []
+    for value in re.split(r"[,_-]", command_args.hidden_layers):
+        if "*" in value:
+            size, count = value.split("*")
+            layers += [int(size)] * int(count)
+        else:
+            layers.append(int(value))
+    return layers
+
+
+def load_data(path: os.PathLike, precision: str = "float32"):
+    """Load a finite three-column ``x, t, u`` data set."""
+
+    raw = np.loadtxt(path, comments="%", dtype=np.float64)
+    if raw.ndim != 2 or raw.shape[1] < 3:
+        raise ValueError("KS data must have at least three columns: x, t, u")
+    raw = raw[:, :3]
+    if len(raw) < 2:
+        raise ValueError("KS data must contain at least two observations")
+    if not np.isfinite(raw).all():
+        raise ValueError("KS data contains NaN or infinite values")
+    numpy_dtype = NUMPY_DTYPES[precision]
+    points = raw[:, :2].astype(numpy_dtype)
+    values = raw[:, 2:3].astype(numpy_dtype)
+    if np.any(np.ptp(points, axis=0) <= 0):
+        raise ValueError("Both x and t must vary in the KS data")
+    return points, values
+
+
+def _normalization_transform(lower, scale):
+    lower_values = tuple(float(value) for value in lower)
+    scale_values = tuple(float(value) for value in scale)
+
+    def transform(inputs):
+        lower_tensor = inputs.new_tensor(lower_values)
+        scale_tensor = inputs.new_tensor(scale_values)
+        return 2.0 * (inputs - lower_tensor) / scale_tensor - 1.0
+
+    return transform
+
+
+def _output_transform(mean: float, std: float):
+    def transform(_, outputs):
+        return outputs * std + mean
+
+    return transform
+
+
+def build_network(metadata: dict) -> torch.nn.Module:
+    """Build the dense or RWF student network represented by metadata."""
+
+    precision = metadata.get("precision", "float32")
+    dde.config.set_default_float(precision)
+    model_type = metadata.get("model", "RWFMLP").lower()
+    if model_type == "rwfmlp":
+        network = RWFMLP(
+            metadata["layer_sizes"],
+            mu=metadata["rwf_mu"],
+            sigma=metadata["rwf_sigma"],
+        )
+    elif model_type in {"mlp", "fnn"}:
+        network = dde.nn.FNN(metadata["layer_sizes"], "tanh", "Glorot normal")
+    else:
+        raise ValueError(f"Unsupported network model in metadata: {metadata.get('model')!r}")
+    network = network.to(dtype=TORCH_DTYPES[precision])
+    network.apply_feature_transform(
+        _normalization_transform(metadata["input_min"], metadata["input_scale"])
+    )
+    network.apply_output_transform(
+        _output_transform(metadata["output_mean"], metadata["output_std"])
+    )
+    return network
+
+
+def build_data_optimizer(network: torch.nn.Module, args) -> torch.optim.Optimizer:
+    """Build a repository optimizer for the student network."""
+
+    if args.optimizer == "adam":
+        return torch.optim.Adam(
+            network.parameters(),
+            lr=args.lr,
+            eps=args.adam_epsilon,
+            weight_decay=args.weight_decay,
+        )
+    if args.optimizer == "soap":
+        dde.optimizers.set_SOAP_options(
+            beta1=args.soap_beta1,
+            beta2=args.soap_beta2,
+            shampoo_beta=args.soap_shampoo_beta,
+            epsilon=args.soap_epsilon,
+            precondition_frequency=args.soap_precondition_frequency,
+            max_precondition_dim=args.soap_max_precondition_dim,
+            bias_correction=args.soap_bias_correction,
+        )
+    elif args.optimizer == "kl-m-soap":
+        dde.optimizers.set_KLMSOAP_options(
+            betas=(args.kl_m_soap_beta1, args.kl_m_soap_beta2),
+            shampoo_beta=args.kl_m_soap_shampoo_beta,
+            epsilon=args.kl_m_soap_epsilon,
+            kl_m_soap_weight_decay=args.kl_m_soap_weight_decay,
+            scale_log2=args.kl_m_soap_scale_log2,
+            auxiliary_lr=args.kl_m_soap_auxiliary_lr,
+            auxiliary_betas=(args.kl_m_soap_auxiliary_beta1, args.kl_m_soap_auxiliary_beta2),
+            auxiliary_scale_log2=args.kl_m_soap_auxiliary_scale_log2,
+            auxiliary_weight_decay=args.kl_m_soap_auxiliary_weight_decay,
+        )
+    elif args.optimizer == "madam":
+        dde.optimizers.set_MADAM_options(
+            betas=(args.madam_beta1, args.madam_beta2),
+            scale_log2=args.madam_scale_log2,
+            correct_bias=args.madam_bias_correction,
+        )
+    elif args.optimizer == "muown":
+        dde.optimizers.set_MUOWN_options(
+            momentum=args.muown_momentum,
+            betas=(args.muown_beta1, args.muown_beta2),
+            adam_eps=args.muown_adam_epsilon,
+            fp32_matmul_precision=args.muown_fp32_matmul_precision,
+            coefficient_type=args.muown_coefficient_type,
+            ns_steps=args.muown_ns_steps,
+            scale_mode=args.muown_scale_mode,
+            extra_scale_factor=args.muown_extra_scale_factor,
+            muown_weight_decay=args.muown_weight_decay,
+            auxiliary_optimizer=args.matrix_fallback,
+            auxiliary_lr=args.muown_auxiliary_lr,
+            auxiliary_betas=(args.muown_auxiliary_beta1, args.muown_auxiliary_beta2),
+            auxiliary_eps=args.muown_auxiliary_epsilon,
+            auxiliary_weight_decay=args.muown_auxiliary_weight_decay,
+        )
+    elif args.optimizer == "muon":
+        dde.optimizers.set_MUON_options(
+            momentum=args.muon_momentum,
+            nesterov=args.muon_nesterov,
+            ns_steps=args.muon_ns_steps,
+            adam_lr=args.muon_adam_lr,
+            adam_betas=(args.muon_adam_beta1, args.muon_adam_beta2),
+            adam_eps=args.muon_adam_epsilon,
+            muon_weight_decay=args.muon_weight_decay,
+            adam_weight_decay=args.muon_adam_weight_decay,
+        )
+    optimizer, _ = dde.optimizers.get(
+        network.parameters(),
+        args.optimizer,
+        learning_rate=args.lr,
+        weight_decay=args.weight_decay,
+        model=network,
+    )
+    return optimizer
+
+
+def _cpu_state_dict(network):
+    return {
+        name: value.detach().cpu().clone()
+        for name, value in network.state_dict().items()
+    }
+
+
+def save_student_checkpoint(path: Path, network: torch.nn.Module, metadata: dict):
+    torch.save({"state_dict": _cpu_state_dict(network), "metadata": metadata}, path)
+
+
+def save_solution_plot(path: os.PathLike, points, exact, prediction, title: str):
+    """Save exact, predicted, and absolute-error KS fields as a PNG."""
+
+    import matplotlib.pyplot as plt
+
+    points = np.asarray(points)
+    exact = np.asarray(exact).reshape(-1)
+    prediction = np.asarray(prediction).reshape(-1)
+    if len(points) != len(exact) or len(exact) != len(prediction):
+        raise ValueError("points, exact, and prediction must have the same length")
+
+    x = np.unique(points[:, 0])
+    t = np.unique(points[:, 1])
+    error = np.abs(prediction - exact)
+    solution_min = float(min(np.min(exact), np.min(prediction)))
+    solution_max = float(max(np.max(exact), np.max(prediction)))
+    figure, axes = plt.subplots(1, 3, figsize=(16, 4.5), constrained_layout=True)
+    if len(points) == len(x) * len(t):
+        x_indices = np.searchsorted(x, points[:, 0])
+        t_indices = np.searchsorted(t, points[:, 1])
+        fields = []
+        for values in (exact, prediction, error):
+            field = np.empty((len(t), len(x)), dtype=values.dtype)
+            field[t_indices, x_indices] = values
+            fields.append(field)
+        images = [
+            axes[0].pcolormesh(
+                x, t, fields[0], shading="auto", cmap="jet",
+                vmin=solution_min, vmax=solution_max,
+            ),
+            axes[1].pcolormesh(
+                x, t, fields[1], shading="auto", cmap="jet",
+                vmin=solution_min, vmax=solution_max,
+            ),
+            axes[2].pcolormesh(x, t, fields[2], shading="auto", cmap="magma"),
+        ]
+    else:
+        images = [
+            axes[0].tricontourf(
+                points[:, 0], points[:, 1], exact, levels=100, cmap="jet",
+                vmin=solution_min, vmax=solution_max,
+            ),
+            axes[1].tricontourf(
+                points[:, 0], points[:, 1], prediction, levels=100, cmap="jet",
+                vmin=solution_min, vmax=solution_max,
+            ),
+            axes[2].tricontourf(
+                points[:, 0], points[:, 1], error, levels=100, cmap="magma"
+            ),
+        ]
+    for axis, image, label in zip(
+        axes, images, ("Exact solution", "MLP prediction", "Absolute error")
+    ):
+        axis.set_title(label)
+        axis.set_xlabel("x")
+        axis.set_ylabel("t")
+        figure.colorbar(image, ax=axis)
+    figure.suptitle(title)
+    figure.savefig(path, dpi=180)
+    plt.close(figure)
+
+
+def prediction_metrics(network, points, values, batch_size: int, device):
+    squared_error = 0.0
+    squared_reference = 0.0
+    absolute_error = 0.0
+    count = 0
+    network.eval()
+    with torch.no_grad():
+        for start in range(0, len(points), batch_size):
+            stop = min(start + batch_size, len(points))
+            inputs = torch.as_tensor(points[start:stop], device=device)
+            targets = torch.as_tensor(values[start:stop], device=device)
+            error = network(inputs) - targets
+            metric_error = error.double()
+            metric_targets = targets.double()
+            squared_error += float(torch.sum(metric_error.square()).cpu())
+            squared_reference += float(torch.sum(metric_targets.square()).cpu())
+            absolute_error += float(torch.sum(metric_error.abs()).cpu())
+            count += error.numel()
+    mse = squared_error / count
+    return {
+        "mse": mse,
+        "rmse": math.sqrt(mse),
+        "mae": absolute_error / count,
+        "relative_l2": (
+            math.sqrt(squared_error / squared_reference)
+            if squared_reference > 0
+            else None
+        ),
+    }
+
+
+def ks_terms(
+    network,
+    points,
+    alpha=KS_ALPHA,
+    beta=KS_BETA,
+    gamma=KS_GAMMA,
+    create_graph_for_backward: bool = False,
+):
+    """Evaluate physical-coordinate KS derivatives and equation terms."""
+
+    values = network(points)
+    first = torch.autograd.grad(
+        values, points, grad_outputs=torch.ones_like(values), create_graph=True
+    )[0]
+    u_x = first[:, 0:1]
+    u_t = first[:, 1:2]
+    u_xx = torch.autograd.grad(
+        u_x, points, grad_outputs=torch.ones_like(u_x), create_graph=True
+    )[0][:, 0:1]
+    u_xxx = torch.autograd.grad(
+        u_xx, points, grad_outputs=torch.ones_like(u_xx), create_graph=True
+    )[0][:, 0:1]
+    u_xxxx = torch.autograd.grad(
+        u_xxx,
+        points,
+        grad_outputs=torch.ones_like(u_xxx),
+        create_graph=create_graph_for_backward,
+    )[0][:, 0:1]
+    term_adv = alpha * values * u_x
+    term_diff = beta * u_xx
+    term_hyper = gamma * u_xxxx
+    residual = u_t + term_adv + term_diff + term_hyper
+    return {
+        "u": values,
+        "u_t": u_t,
+        "u_x": u_x,
+        "u_xx": u_xx,
+        "u_xxx": u_xxx,
+        "u_xxxx": u_xxxx,
+        "term_t": u_t,
+        "term_adv": term_adv,
+        "term_diff": term_diff,
+        "term_hyper": term_hyper,
+        "residual": residual,
+    }
+
+
+def ks_residual(network, points, alpha=KS_ALPHA, beta=KS_BETA, gamma=KS_GAMMA):
+    return ks_terms(network, points, alpha=alpha, beta=beta, gamma=gamma)["residual"]
+
+
+def _plot_grid_fields(path, x, t, fields, title: str, log_absolute: bool = False):
+    import matplotlib.pyplot as plt
+
+    figure, axes = plt.subplots(2, 3, figsize=(17, 8), constrained_layout=True)
+    for axis, (label, raw_values) in zip(axes.flat, fields):
+        values = np.log10(1.0 + np.abs(raw_values)) if log_absolute else raw_values
+        if log_absolute:
+            image = axis.pcolormesh(x, t, values, shading="auto", cmap="magma")
+        else:
+            limit = float(np.quantile(np.abs(values), 0.99))
+            if not math.isfinite(limit) or limit <= 0:
+                limit = 1.0
+            image = axis.pcolormesh(
+                x, t, values, shading="auto", cmap="coolwarm", vmin=-limit, vmax=limit
+            )
+        axis.set_title(label)
+        axis.set_xlabel("x")
+        axis.set_ylabel("t")
+        figure.colorbar(image, ax=axis)
+    for axis in axes.flat[len(fields):]:
+        axis.set_visible(False)
+    figure.suptitle(title)
+    figure.savefig(path, dpi=180)
+    plt.close(figure)
+
+
+def evaluate_derivative_grid(
+    network,
+    bounds,
+    alpha: float,
+    beta: float,
+    gamma: float,
+    nx: int,
+    nt: int,
+    batch_size: int,
+    output_dir: os.PathLike,
+    device,
+):
+    """Save post-training derivative, KS-term, and residual diagnostics."""
+
+    network_dtype = next(network.parameters()).dtype
+    numpy_dtype = NUMPY_DTYPES[str(network_dtype).split(".")[-1]]
+    lower = np.asarray(bounds[0], dtype=numpy_dtype)
+    upper = np.asarray(bounds[1], dtype=numpy_dtype)
+    x = np.linspace(lower[0], upper[0], nx, dtype=numpy_dtype)
+    t = np.linspace(lower[1], upper[1], nt, dtype=numpy_dtype)
+    xx, tt = np.meshgrid(x, t, indexing="xy")
+    grid_points = np.column_stack((xx.reshape(-1), tt.reshape(-1))).astype(numpy_dtype)
+    keys = (
+        "u", "u_t", "u_x", "u_xx", "u_xxx", "u_xxxx",
+        "term_t", "term_adv", "term_diff", "term_hyper", "residual",
+    )
+    chunks = {key: [] for key in keys}
+    network.eval()
+    for start in range(0, len(grid_points), batch_size):
+        points = torch.as_tensor(
+            grid_points[start:start + batch_size], device=device
+        ).requires_grad_(True)
+        terms = ks_terms(network, points, alpha=alpha, beta=beta, gamma=gamma)
+        for key in keys:
+            chunks[key].append(terms[key].detach().cpu().numpy().reshape(-1))
+    fields = {
+        key: np.concatenate(values).reshape(nt, nx) for key, values in chunks.items()
+    }
+
+    output_dir = Path(output_dir)
+    np.savez_compressed(output_dir / "ks_derivative_grid.npz", x=x, t=t, **fields)
+    derivative_fields = [
+        ("u", fields["u"]),
+        ("u_t", fields["u_t"]),
+        ("u_x", fields["u_x"]),
+        ("u_xx", fields["u_xx"]),
+        ("u_xxx", fields["u_xxx"]),
+        ("u_xxxx", fields["u_xxxx"]),
+    ]
+    _plot_grid_fields(
+        output_dir / "ks_derivatives.png", x, t, derivative_fields,
+        "KS derivatives from the trained exact-MLP network",
+    )
+    _plot_grid_fields(
+        output_dir / "ks_log_abs_derivatives.png", x, t, derivative_fields,
+        "KS log10(1 + absolute derivative)", log_absolute=True,
+    )
+    equation_fields = [
+        ("u_t", fields["term_t"]),
+        ("alpha * u * u_x", fields["term_adv"]),
+        ("beta * u_xx", fields["term_diff"]),
+        ("gamma * u_xxxx", fields["term_hyper"]),
+        ("KS residual", fields["residual"]),
+    ]
+    _plot_grid_fields(
+        output_dir / "ks_pde_terms.png", x, t, equation_fields,
+        "KS equation terms and residual",
+    )
+    _plot_grid_fields(
+        output_dir / "ks_log_abs_pde_terms.png", x, t, equation_fields,
+        "KS log10(1 + absolute equation term)", log_absolute=True,
+    )
+
+    summary = {"nx": nx, "nt": nt, "num_points": nx * nt}
+    for key in keys:
+        values = fields[key].astype(np.float64)
+        summary[f"rms_{key}"] = float(np.sqrt(np.mean(values**2)))
+        summary[f"max_abs_{key}"] = float(np.max(np.abs(values)))
+    return summary
+
+
+def evaluate_pinn_loss(network, bounds, args, device):
+    """Estimate the PDE and analytic initial-condition MSEs."""
+
+    rng = np.random.default_rng(args.seed + 1)
+    numpy_dtype = NUMPY_DTYPES[args.precision]
+    lower = np.asarray(bounds[0], dtype=numpy_dtype)
+    upper = np.asarray(bounds[1], dtype=numpy_dtype)
+    residual_square_sum = 0.0
+    residual_count = 0
+    network.eval()
+    for start in range(0, args.pinn_points, args.pinn_batch_size):
+        count = min(args.pinn_batch_size, args.pinn_points - start)
+        sample = rng.uniform(lower, upper, size=(count, 2)).astype(numpy_dtype)
+        points = torch.as_tensor(sample, device=device).requires_grad_(True)
+        residual = ks_residual(
+            network, points, alpha=args.alpha, beta=args.beta, gamma=args.gamma
+        )
+        residual_square_sum += float(torch.sum(residual.detach().double().square()).cpu())
+        residual_count += residual.numel()
+
+    x = rng.uniform(lower[0], upper[0], size=(args.pinn_ic_points, 1)).astype(numpy_dtype)
+    t = np.full_like(x, lower[1])
+    ic_points = torch.as_tensor(np.hstack((x, t)), device=device)
+    exact_ic = torch.as_tensor(np.cos(x) * (1.0 + np.sin(x)), device=device)
+    with torch.no_grad():
+        ic_error = (network(ic_points) - exact_ic).double()
+        ic_mse = float(torch.mean(ic_error.square()).cpu())
+    pde_mse = residual_square_sum / residual_count
+    return {
+        "pde_mse": pde_mse,
+        "ic_mse": ic_mse,
+        "pinn_loss_unweighted": pde_mse + ic_mse,
+        "pinn_loss_weighted": pde_mse + args.ic_loss_weight * ic_mse,
+        "ic_loss_weight": args.ic_loss_weight,
+        "num_domain_points": args.pinn_points,
+        "num_initial_points": args.pinn_ic_points,
+    }
 
 
 def parse_bool(value):
@@ -458,6 +905,25 @@ def build_training_optimizer(student, args):
             betas=(args.madam_beta1, args.madam_beta2),
             scale_log2=args.madam_scale_log2,
             correct_bias=args.madam_bias_correction,
+        )
+        return build_data_optimizer(student, args)
+
+    if args.optimizer == "muown":
+        dde.optimizers.set_MUOWN_options(
+            momentum=args.muown_momentum,
+            betas=(args.muown_beta1, args.muown_beta2),
+            adam_eps=args.muown_adam_epsilon,
+            fp32_matmul_precision=args.muown_fp32_matmul_precision,
+            coefficient_type=args.muown_coefficient_type,
+            ns_steps=args.muown_ns_steps,
+            scale_mode=args.muown_scale_mode,
+            extra_scale_factor=args.muown_extra_scale_factor,
+            muown_weight_decay=args.muown_weight_decay,
+            auxiliary_optimizer=args.matrix_fallback,
+            auxiliary_lr=args.muown_auxiliary_lr,
+            auxiliary_betas=(args.muown_auxiliary_beta1, args.muown_auxiliary_beta2),
+            auxiliary_eps=args.muown_auxiliary_epsilon,
+            auxiliary_weight_decay=args.muown_auxiliary_weight_decay,
         )
         return build_data_optimizer(student, args)
 
@@ -938,19 +1404,19 @@ def parse_args(argv=None):
     parser.add_argument("--rwf-mu", type=float, default=1.0)
     parser.add_argument("--rwf-sigma", type=float, default=0.1)
     parser.add_argument("--precision", choices=["float32", "float64"], default="float64")
-    parser.add_argument("--iterations", type=int, default=10000)
+    parser.add_argument("--iterations", type=int, default=30000)
     parser.add_argument("--batch-size", type=int, default=1024)
     parser.add_argument(
         "--optimizer",
         choices=[
             "adam", "rmsprop", "soap", "kl-shampoo", "kl-soap", "muon", "mop",
             "mousse", "psgdpro", "pcgpro", "polargrad", "rekls-v3",
-            "kl-m-soap", "madam",
+            "kl-m-soap", "madam", "muown",
         ],
         default="kl-m-soap",
     )
     parser.add_argument("--lr", type=float, default=5e-4)
-    parser.add_argument("--lr-min", type=float, default=5e-6)
+    parser.add_argument("--lr-min", type=float, default=5e-4)
     parser.add_argument("--weight-decay", type=float, default=0.0)
     parser.add_argument(
         "--matrix-fallback",
@@ -1006,6 +1472,31 @@ def parse_args(argv=None):
     parser.add_argument("--madam-beta2", type=float, default=0.999)
     parser.add_argument("--madam-scale-log2", type=float, default=16.0)
     parser.add_argument("--madam-bias-correction", type=parse_bool, default=True)
+    parser.add_argument("--muown-momentum", type=float, default=0.999)
+    parser.add_argument("--muown-beta1", type=float, default=0.99)
+    parser.add_argument("--muown-beta2", type=float, default=0.999)
+    parser.add_argument("--muown-adam-epsilon", type=float, default=1e-8)
+    parser.add_argument(
+        "--muown-fp32-matmul-precision",
+        choices=["medium", "high", "highest"], default="medium",
+    )
+    parser.add_argument(
+        "--muown-coefficient-type",
+        choices=["simple", "quintic", "polar_express", "cans", "aol", "deepseekv4", "cubic5"],
+        default="quintic",
+    )
+    parser.add_argument("--muown-ns-steps", type=int, default=5)
+    parser.add_argument(
+        "--muown-scale-mode",
+        choices=["shape_scaling", "spectral", "unit_rms_norm"], default="spectral",
+    )
+    parser.add_argument("--muown-extra-scale-factor", type=float, default=1.0)
+    parser.add_argument("--muown-weight-decay", type=float, default=0.0)
+    parser.add_argument("--muown-auxiliary-lr", type=float, default=None)
+    parser.add_argument("--muown-auxiliary-beta1", type=float, default=0.9)
+    parser.add_argument("--muown-auxiliary-beta2", type=float, default=0.95)
+    parser.add_argument("--muown-auxiliary-epsilon", type=float, default=1e-8)
+    parser.add_argument("--muown-auxiliary-weight-decay", type=float, default=0.0)
     parser.add_argument("--mousse-momentum", type=float, default=0.95)
     parser.add_argument("--mousse-lion-beta1", type=float, default=0.9)
     parser.add_argument("--mousse-lion-beta2", type=float, default=0.95)

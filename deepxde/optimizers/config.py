@@ -14,6 +14,8 @@ __all__ = [
     "set_MADAM_options",
     "MUON_options",
     "set_MUON_options",
+    "MUOWN_options",
+    "set_MUOWN_options",
     "MOP_options",
     "set_MOP_options",
     "POLARGRAD_options",
@@ -41,6 +43,7 @@ REKLSV3_options = {}
 KLMSOAP_options = {}
 MADAM_options = {}
 MUON_options = {}
+MUOWN_options = {}
 MOP_options = {}
 POLARGRAD_options = {}
 MOUSSE_options = {}
@@ -495,6 +498,71 @@ def set_MUON_options(
     MUON_options["auxiliary_weight_decay"] = resolved_weight_decay
 
 
+def set_MUOWN_options(
+    momentum=0.95,
+    betas=(0.9, 0.95),
+    adam_eps=1e-8,
+    fp32_matmul_precision="medium",
+    coefficient_type="quintic",
+    ns_steps=5,
+    scale_mode="spectral",
+    extra_scale_factor=1.0,
+    muown_weight_decay=0.0,
+    auxiliary_optimizer="adam",
+    auxiliary_lr=None,
+    auxiliary_betas=(0.9, 0.95),
+    auxiliary_eps=1e-8,
+    auxiliary_weight_decay=0.0,
+):
+    """Sets NVIDIA MuOwn options and its Adam/SOAP fallback."""
+    coefficient_types = {
+        "simple", "quintic", "polar_express", "cans", "aol",
+        "deepseekv4", "cubic5",
+    }
+    if not 0 <= momentum < 1:
+        raise ValueError("MuOwn momentum must be in [0, 1)")
+    if len(betas) != 2 or any(not 0 <= beta < 1 for beta in betas):
+        raise ValueError("MuOwn magnitude Adam betas must be in [0, 1)")
+    if adam_eps <= 0 or auxiliary_eps <= 0:
+        raise ValueError("MuOwn epsilon values must be positive")
+    if fp32_matmul_precision not in {"medium", "high", "highest"}:
+        raise ValueError("MuOwn fp32_matmul_precision is invalid")
+    if coefficient_type not in coefficient_types:
+        raise ValueError("MuOwn coefficient_type is invalid")
+    if ns_steps < 1 or (coefficient_type == "cubic5" and ns_steps != 5):
+        raise ValueError("MuOwn ns_steps must be positive; cubic5 requires 5")
+    if scale_mode not in {"shape_scaling", "spectral", "unit_rms_norm"}:
+        raise ValueError("MuOwn scale_mode is invalid")
+    if extra_scale_factor < 0:
+        raise ValueError("MuOwn extra_scale_factor must be nonnegative")
+    if muown_weight_decay < 0 or auxiliary_weight_decay < 0:
+        raise ValueError("MuOwn weight decay values must be nonnegative")
+    if auxiliary_optimizer not in {"adam", "soap"}:
+        raise ValueError("MuOwn auxiliary_optimizer must be 'adam' or 'soap'")
+    if auxiliary_lr is not None and auxiliary_lr < 0:
+        raise ValueError("MuOwn auxiliary learning rate must be nonnegative")
+    if len(auxiliary_betas) != 2 or any(
+        not 0 <= beta < 1 for beta in auxiliary_betas
+    ):
+        raise ValueError("MuOwn auxiliary betas must be in [0, 1)")
+    MUOWN_options.update(
+        momentum=momentum,
+        betas=betas,
+        adam_eps=adam_eps,
+        fp32_matmul_precision=fp32_matmul_precision,
+        coefficient_type=coefficient_type,
+        ns_steps=ns_steps,
+        scale_mode=scale_mode,
+        extra_scale_factor=extra_scale_factor,
+        muown_weight_decay=muown_weight_decay,
+        auxiliary_optimizer=auxiliary_optimizer,
+        auxiliary_lr=auxiliary_lr,
+        auxiliary_betas=auxiliary_betas,
+        auxiliary_eps=auxiliary_eps,
+        auxiliary_weight_decay=auxiliary_weight_decay,
+    )
+
+
 def set_MOP_options(
     momentum=0.95,
     nesterov=False,
@@ -848,6 +916,7 @@ set_REKLSV3_options()
 set_KLMSOAP_options()
 set_MADAM_options()
 set_MUON_options()
+set_MUOWN_options()
 set_MOP_options()
 set_POLARGRAD_options()
 set_MOUSSE_options()
