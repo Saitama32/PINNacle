@@ -57,6 +57,21 @@ TORCH_DTYPES = {
 DERIVATIVE_KEYS = ("u_t", "u_x", "u_xx", "u_xxxx")
 
 
+def parse_bool(value):
+    """Parse an explicit true/false command-line value."""
+
+    if isinstance(value, bool):
+        return value
+    normalized = value.strip().lower()
+    if normalized in {"true", "1", "yes", "y", "on"}:
+        return True
+    if normalized in {"false", "0", "no", "n", "off"}:
+        return False
+    raise argparse.ArgumentTypeError(
+        f"Expected a boolean value (true/false), got {value!r}"
+    )
+
+
 class CubicReLUCoefficientMLP(torch.nn.Module):
     """One-hidden-layer MLP representing a vector-valued cubic spline exactly."""
 
@@ -244,6 +259,36 @@ def loss_weights(args):
     }
 
 
+def matrix_auxiliary_group(
+    args, params, use_flag, lr, adam_betas, adam_eps, weight_decay
+):
+    """Build the shared Adam/SOAP fallback group for matrix optimizers."""
+
+    group = {
+        "params": params,
+        use_flag: False,
+        "auxiliary_optimizer": args.matrix_fallback,
+        "lr": lr,
+        "weight_decay": weight_decay,
+    }
+    if args.matrix_fallback == "soap":
+        group.update(
+            betas=(args.soap_beta1, args.soap_beta2),
+            shampoo_beta=(
+                args.soap_beta2
+                if args.soap_shampoo_beta is None
+                else args.soap_shampoo_beta
+            ),
+            eps=args.soap_epsilon,
+            precondition_frequency=args.soap_precondition_frequency,
+            max_precondition_dim=args.soap_max_precondition_dim,
+            bias_correction=args.soap_bias_correction,
+        )
+    else:
+        group.update(betas=adam_betas, eps=adam_eps)
+    return group
+
+
 def build_training_optimizer(student, args):
     """Build an optimizer with dense/RWF-aware routing for matrix optimizers."""
 
@@ -278,17 +323,18 @@ def build_training_optimizer(student, args):
             )
         if auxiliary:
             groups.append(
-                {
-                    "params": auxiliary,
-                    "use_polargrad": False,
-                    "lr": args.polargrad_adam_lr,
-                    "betas": (
+                matrix_auxiliary_group(
+                    args,
+                    auxiliary,
+                    "use_polargrad",
+                    args.polargrad_adam_lr,
+                    (
                         args.polargrad_adam_beta1,
                         args.polargrad_adam_beta2,
                     ),
-                    "eps": args.polargrad_adam_epsilon,
-                    "weight_decay": args.polargrad_adam_weight_decay,
-                }
+                    args.polargrad_adam_epsilon,
+                    args.polargrad_adam_weight_decay,
+                )
             )
         return PolarGradWithAuxAdam(groups)
 
@@ -374,6 +420,22 @@ def build_training_optimizer(student, args):
         )
         return build_data_optimizer(student, args)
 
+    if args.optimizer == "rekls-v3":
+        dde.optimizers.set_REKLSV3_options(
+            betas=(args.rekls_beta1, args.rekls_beta2),
+            shampoo_beta=args.rekls_shampoo_beta,
+            epsilon=args.rekls_epsilon,
+            rekls_weight_decay=args.rekls_weight_decay,
+            auxiliary_lr=args.rekls_auxiliary_lr,
+            auxiliary_betas=(
+                args.rekls_auxiliary_beta1,
+                args.rekls_auxiliary_beta2,
+            ),
+            auxiliary_epsilon=args.rekls_auxiliary_epsilon,
+            auxiliary_weight_decay=args.rekls_auxiliary_weight_decay,
+        )
+        return build_data_optimizer(student, args)
+
     if args.optimizer not in {"muon", "mop"}:
         return build_data_optimizer(student, args)
 
@@ -411,25 +473,27 @@ def build_training_optimizer(student, args):
         )
     if auxiliary and args.optimizer == "muon":
         groups.append(
-            {
-                "params": auxiliary,
-                "use_muon": False,
-                "lr": args.muon_adam_lr,
-                "betas": (args.muon_adam_beta1, args.muon_adam_beta2),
-                "eps": args.muon_adam_epsilon,
-                "weight_decay": args.muon_adam_weight_decay,
-            }
+            matrix_auxiliary_group(
+                args,
+                auxiliary,
+                "use_muon",
+                args.muon_adam_lr,
+                (args.muon_adam_beta1, args.muon_adam_beta2),
+                args.muon_adam_epsilon,
+                args.muon_adam_weight_decay,
+            )
         )
     if auxiliary and args.optimizer == "mop":
         groups.append(
-            {
-                "params": auxiliary,
-                "use_mop": False,
-                "lr": args.mop_adam_lr,
-                "betas": (args.mop_adam_beta1, args.mop_adam_beta2),
-                "eps": args.mop_adam_epsilon,
-                "weight_decay": args.mop_adam_weight_decay,
-            }
+            matrix_auxiliary_group(
+                args,
+                auxiliary,
+                "use_mop",
+                args.mop_adam_lr,
+                (args.mop_adam_beta1, args.mop_adam_beta2),
+                args.mop_adam_epsilon,
+                args.mop_adam_weight_decay,
+            )
         )
     return MuonWithAuxAdam(groups) if args.optimizer == "muon" else MOPWithAuxAdam(groups)
 
@@ -842,26 +906,32 @@ def parse_args(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--data", default=str(PROJECT_ROOT / "ref" / "Kuramoto_Sivashinsky.dat"))
     parser.add_argument("--out", default=str(PROJECT_ROOT / "runs_data_ks_exact_mlp"))
-    parser.add_argument("--hidden-layers", default="100*5")
+    parser.add_argument("--hidden-layers", default="200*5")
     parser.add_argument(
-        "--network", "--network-type", choices=["mlp", "rwf"], default="mlp"
+        "--network", "--network-type", choices=["mlp", "rwf"], default="rwf"
     )
     parser.add_argument("--rwf-mu", type=float, default=1.0)
     parser.add_argument("--rwf-sigma", type=float, default=0.1)
     parser.add_argument("--precision", choices=["float32", "float64"], default="float64")
     parser.add_argument("--iterations", type=int, default=30000)
-    parser.add_argument("--batch-size", type=int, default=256)
+    parser.add_argument("--batch-size", type=int, default=1024)
     parser.add_argument(
         "--optimizer",
         choices=[
             "adam", "rmsprop", "soap", "kl-shampoo", "kl-soap", "muon", "mop",
-            "mousse", "psgdpro", "pcgpro", "polargrad",
+            "mousse", "psgdpro", "pcgpro", "polargrad", "rekls-v3",
         ],
-        default="polargrad",
+        default="rekls-v3",
     )
     parser.add_argument("--lr", type=float, default=5e-4)
-    parser.add_argument("--lr-min", type=float, default=5e-4)
+    parser.add_argument("--lr-min", type=float, default=5e-6)
     parser.add_argument("--weight-decay", type=float, default=0.0)
+    parser.add_argument(
+        "--matrix-fallback",
+        choices=["adam", "soap"],
+        default="soap",
+        help="Fallback for non-matrix parameters of Muon, MOP, and PolarGrad.",
+    )
     parser.add_argument("--adam-epsilon", type=float, default=None)
     parser.add_argument("--soap-beta1", type=float, default=0.99)
     parser.add_argument("--soap-beta2", type=float, default=0.999)
@@ -869,62 +939,37 @@ def parse_args(argv=None):
     parser.add_argument("--soap-epsilon", type=float, default=None)
     parser.add_argument("--soap-precondition-frequency", type=int, default=1)
     parser.add_argument("--soap-max-precondition-dim", type=int, default=4096)
-    soap_bias_group = parser.add_mutually_exclusive_group()
-    soap_bias_group.add_argument(
-        "--soap-bias-correction", dest="soap_bias_correction", action="store_true"
-    )
-    soap_bias_group.add_argument(
-        "--no-soap-bias-correction", dest="soap_bias_correction", action="store_false"
-    )
-    parser.set_defaults(soap_bias_correction=True)
-    parser.add_argument("--kl-beta1", type=float, default=0.9)
-    parser.add_argument("--kl-beta2", type=float, default=0.98)
+    parser.add_argument("--soap-bias-correction", type=parse_bool, default=True)
+    parser.add_argument("--kl-beta1", type=float, default=0.99)
+    parser.add_argument("--kl-beta2", type=float, default=0.999)
     parser.add_argument("--kl-shampoo-beta", type=float, default=None)
     parser.add_argument("--kl-epsilon", type=float, default=None)
     parser.add_argument("--kl-precondition-frequency", type=int, default=1)
-    kl_normalize_group = parser.add_mutually_exclusive_group()
-    kl_normalize_group.add_argument(
-        "--kl-normalize-grads", dest="kl_normalize_grads", action="store_true"
-    )
-    kl_normalize_group.add_argument(
-        "--no-kl-normalize-grads", dest="kl_normalize_grads", action="store_false"
-    )
-    parser.set_defaults(kl_normalize_grads=False)
+    parser.add_argument("--kl-normalize-grads", type=parse_bool, default=False)
     parser.add_argument("--kl-init-factor", type=float, default=0.1)
-    kl_damping_group = parser.add_mutually_exclusive_group()
-    kl_damping_group.add_argument(
-        "--kl-damping", dest="kl_damping", action="store_true"
-    )
-    kl_damping_group.add_argument(
-        "--no-kl-damping", dest="kl_damping", action="store_false"
-    )
-    parser.set_defaults(kl_damping=False)
-    kl_clamping_group = parser.add_mutually_exclusive_group()
-    kl_clamping_group.add_argument(
-        "--kl-clamping", dest="kl_clamping", action="store_true"
-    )
-    kl_clamping_group.add_argument(
-        "--no-kl-clamping", dest="kl_clamping", action="store_false"
-    )
-    parser.set_defaults(kl_clamping=True)
+    parser.add_argument("--kl-damping", type=parse_bool, default=False)
+    parser.add_argument("--kl-clamping", type=parse_bool, default=True)
     parser.add_argument("--kl-max-clamp-value", type=int, default=4000)
     parser.add_argument(
         "--kl-cast-dtype",
         choices=["float32", "float64", "float16", "bfloat16"],
-        default="bfloat16",
+        default="float64",
     )
+    parser.add_argument("--rekls-beta1", type=float, default=0.99)
+    parser.add_argument("--rekls-beta2", type=float, default=0.999)
+    parser.add_argument("--rekls-shampoo-beta", type=float, default=0.999)
+    parser.add_argument("--rekls-epsilon", type=float, default=1e-8)
+    parser.add_argument("--rekls-weight-decay", type=float, default=0.01)
+    parser.add_argument("--rekls-auxiliary-lr", type=float, default=None)
+    parser.add_argument("--rekls-auxiliary-beta1", type=float, default=0.99)
+    parser.add_argument("--rekls-auxiliary-beta2", type=float, default=0.999)
+    parser.add_argument("--rekls-auxiliary-epsilon", type=float, default=1e-8)
+    parser.add_argument("--rekls-auxiliary-weight-decay", type=float, default=0.0)
     parser.add_argument("--mousse-momentum", type=float, default=0.95)
     parser.add_argument("--mousse-lion-beta1", type=float, default=0.9)
     parser.add_argument("--mousse-lion-beta2", type=float, default=0.95)
     parser.add_argument("--mousse-epsilon", type=float, default=1e-8)
-    mousse_nesterov_group = parser.add_mutually_exclusive_group()
-    mousse_nesterov_group.add_argument(
-        "--mousse-nesterov", dest="mousse_nesterov", action="store_true"
-    )
-    mousse_nesterov_group.add_argument(
-        "--no-mousse-nesterov", dest="mousse_nesterov", action="store_false"
-    )
-    parser.set_defaults(mousse_nesterov=False)
+    parser.add_argument("--mousse-nesterov", type=parse_bool, default=False)
     parser.add_argument(
         "--mousse-adjust-lr",
         choices=["spectral_norm", "rms_norm", "none"],
@@ -934,22 +979,8 @@ def parse_args(argv=None):
     parser.add_argument("--mousse-shampoo-beta", type=float, default=0.95)
     parser.add_argument("--mousse-shampoo-update-frequency", type=int, default=10)
     parser.add_argument("--mousse-shampoo-alpha", type=float, default=0.125)
-    mousse_lr_correction_group = parser.add_mutually_exclusive_group()
-    mousse_lr_correction_group.add_argument(
-        "--mousse-lr-correction", dest="mousse_lr_correction", action="store_true"
-    )
-    mousse_lr_correction_group.add_argument(
-        "--no-mousse-lr-correction", dest="mousse_lr_correction", action="store_false"
-    )
-    parser.set_defaults(mousse_lr_correction=True)
-    mousse_apply_norm_group = parser.add_mutually_exclusive_group()
-    mousse_apply_norm_group.add_argument(
-        "--mousse-apply-norm", dest="mousse_apply_norm", action="store_true"
-    )
-    mousse_apply_norm_group.add_argument(
-        "--no-mousse-apply-norm", dest="mousse_apply_norm", action="store_false"
-    )
-    parser.set_defaults(mousse_apply_norm=True)
+    parser.add_argument("--mousse-lr-correction", type=parse_bool, default=True)
+    parser.add_argument("--mousse-apply-norm", type=parse_bool, default=True)
     parser.add_argument("--mousse-use-l-or-r", type=int, choices=[0, 1, 2], default=0)
     parser.add_argument("--mousse-weight-decay", type=float, default=0.01)
     parser.add_argument("--mousse-lion-weight-decay", type=float, default=0.0)
@@ -963,7 +994,7 @@ def parse_args(argv=None):
     )
     parser.add_argument(
         "--psgdpro-preconditioner-lr", "--pcgpro-preconditioner-lr",
-        dest="psgdpro_preconditioner_lr", type=float, default=0.1,
+        dest="psgdpro_preconditioner_lr", type=float, default=0.03,
     )
     parser.add_argument(
         "--psgdpro-preconditioner-init-scale", "--pcgpro-preconditioner-init-scale",
@@ -975,11 +1006,11 @@ def parse_args(argv=None):
     )
     parser.add_argument(
         "--psgdpro-min-preconditioner-lr", "--pcgpro-min-preconditioner-lr",
-        dest="psgdpro_min_preconditioner_lr", type=float, default=0.01,
+        dest="psgdpro_min_preconditioner_lr", type=float, default=0.003,
     )
     parser.add_argument(
         "--psgdpro-warmup-steps", "--pcgpro-warmup-steps",
-        dest="psgdpro_warmup_steps", type=int, default=10000,
+        dest="psgdpro_warmup_steps", type=int, default=2000,
     )
     parser.add_argument(
         "--psgdpro-max-update-rms", "--pcgpro-max-update-rms",
@@ -993,7 +1024,7 @@ def parse_args(argv=None):
     )
     parser.add_argument(
         "--psgdpro-weight-decay", "--pcgpro-weight-decay",
-        dest="psgdpro_weight_decay", type=float, default=0.01,
+        dest="psgdpro_weight_decay", type=float, default=0.0,
     )
     parser.add_argument(
         "--psgdpro-auxiliary-beta1", "--pcgpro-auxiliary-beta1",
@@ -1012,14 +1043,7 @@ def parse_args(argv=None):
         dest="psgdpro_auxiliary_weight_decay", type=float, default=0.0,
     )
     parser.add_argument("--muon-momentum", type=float, default=0.95)
-    muon_nesterov_group = parser.add_mutually_exclusive_group()
-    muon_nesterov_group.add_argument(
-        "--muon-nesterov", dest="muon_nesterov", action="store_true"
-    )
-    muon_nesterov_group.add_argument(
-        "--no-muon-nesterov", dest="muon_nesterov", action="store_false"
-    )
-    parser.set_defaults(muon_nesterov=True)
+    parser.add_argument("--muon-nesterov", type=parse_bool, default=False)
     parser.add_argument("--muon-ns-steps", type=int, default=5)
     parser.add_argument("--muon-adam-lr", type=float, default=3e-4)
     parser.add_argument("--muon-adam-beta1", type=float, default=0.9)
@@ -1028,14 +1052,7 @@ def parse_args(argv=None):
     parser.add_argument("--muon-weight-decay", type=float, default=0.0)
     parser.add_argument("--muon-adam-weight-decay", type=float, default=0.0)
     parser.add_argument("--mop-momentum", type=float, default=0.95)
-    mop_nesterov_group = parser.add_mutually_exclusive_group()
-    mop_nesterov_group.add_argument(
-        "--mop-nesterov", dest="mop_nesterov", action="store_true"
-    )
-    mop_nesterov_group.add_argument(
-        "--no-mop-nesterov", dest="mop_nesterov", action="store_false"
-    )
-    parser.set_defaults(mop_nesterov=False)
+    parser.add_argument("--mop-nesterov", type=parse_bool, default=False)
     parser.add_argument(
         "--mop-scale-mode",
         choices=["nuclear_norm", "shape_scaling", "spectral", "unit_rms_norm"],
@@ -1049,18 +1066,7 @@ def parse_args(argv=None):
     parser.add_argument("--mop-weight-decay", type=float, default=0.01)
     parser.add_argument("--mop-adam-weight-decay", type=float, default=0.0)
     parser.add_argument("--polargrad-momentum", type=float, default=0.95)
-    polargrad_order_group = parser.add_mutually_exclusive_group()
-    polargrad_order_group.add_argument(
-        "--polargrad-polar-first",
-        dest="polargrad_polar_first",
-        action="store_true",
-    )
-    polargrad_order_group.add_argument(
-        "--no-polargrad-polar-first",
-        dest="polargrad_polar_first",
-        action="store_false",
-    )
-    parser.set_defaults(polargrad_polar_first=False)
+    parser.add_argument("--polargrad-polar-first", type=parse_bool, default=False)
     parser.add_argument(
         "--polargrad-method",
         choices=["qdwh", "zolo-pd", "ns", "precond_ns", "polar_express"],
