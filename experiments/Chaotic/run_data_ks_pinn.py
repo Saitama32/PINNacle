@@ -800,7 +800,7 @@ def build_parser():
     parser.add_argument("--n-iter-pinn", type=int, default=1000)
     parser.add_argument(
         "--pinn-optimizer",
-        choices=["adam", "rmsprop", "muon", "soap", "lbfgs"],
+        choices=["adam", "rmsprop", "madam", "muon", "soap", "kl-m-soap", "lbfgs"],
         default="soap",
     )
     parser.add_argument("--pinn-lr", type=float, default=1e-5)
@@ -883,6 +883,21 @@ def build_parser():
     parser.add_argument("--soap-precondition-frequency", type=int, default=10)
     parser.add_argument("--soap-max-precondition-dim", type=int, default=4096)
     parser.add_argument("--soap-bias-correction", action="store_true", default=True)
+    parser.add_argument("--kl-m-soap-beta1", type=float, default=0.9)
+    parser.add_argument("--kl-m-soap-beta2", type=float, default=0.95)
+    parser.add_argument("--kl-m-soap-shampoo-beta", type=float, default=0.95)
+    parser.add_argument("--kl-m-soap-epsilon", type=float, default=1e-8)
+    parser.add_argument("--kl-m-soap-weight-decay", type=float, default=0.01)
+    parser.add_argument("--kl-m-soap-scale-log2", type=float, default=16.0)
+    parser.add_argument("--kl-m-soap-auxiliary-lr", type=float, default=None)
+    parser.add_argument("--kl-m-soap-auxiliary-beta1", type=float, default=0.9)
+    parser.add_argument("--kl-m-soap-auxiliary-beta2", type=float, default=0.95)
+    parser.add_argument("--kl-m-soap-auxiliary-scale-log2", type=float, default=16.0)
+    parser.add_argument("--kl-m-soap-auxiliary-weight-decay", type=float, default=0.0)
+    parser.add_argument("--madam-beta1", type=float, default=0.9)
+    parser.add_argument("--madam-beta2", type=float, default=0.999)
+    parser.add_argument("--madam-scale-log2", type=float, default=16.0)
+    parser.add_argument("--madam-bias-correction", action="store_true", default=True)
     parser.add_argument("--muon-momentum", type=float, default=0.95)
     parser.add_argument("--muon-nesterov", action="store_true", default=True)
     parser.add_argument("--muon-ns-steps", type=int, default=5)

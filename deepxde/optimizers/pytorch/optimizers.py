@@ -11,6 +11,8 @@ from .mousse import MousseWithAuxLion
 from .psgd_pro import PSGDPro
 from .klopt import KLOptWithAuxAdam
 from .rekls_v3 import ReklsV3WithAuxAdam
+from .kl_m_soap import KlMSoapWithAuxMAdam
+from .madam import MAdam
 from .pcgrad import PCGrad
 from .pso import PSO
 from .soap import SOAP
@@ -27,6 +29,8 @@ from ..config import (
     PSGDPRO_options,
     KLOPT_options,
     REKLSV3_options,
+    KLMSOAP_options,
+    MADAM_options,
     PCGRAD_options,
     PSO_options,
     SSBROYDEN_options,
@@ -37,6 +41,8 @@ from ..config import (
 
 _KLOPT_NAMES = {"klopt", "kl-shampoo", "klshampoo", "kl-soap", "klsoap"}
 _REKLSV3_NAMES = {"rekls", "reklsv3", "rekls-v3", "rekls_v3"}
+_KLMSOAP_NAMES = {"kl-m-soap", "kl_m_soap", "klmsoap", "kl-msoap"}
+_MADAM_NAMES = {"madam", "m-adam", "m_adam"}
 _PSGDPRO_NAMES = {"psgdpro", "psgd-pro", "psgd_pro", "pcggradpro"}
 _POLARGRAD_NAMES = {"polargrad", "polar-grad", "polar_grad"}
 
@@ -152,6 +158,75 @@ def _make_reklsv3_optimizer(params, learning_rate, weight_decay=0):
         eps=REKLSV3_options["epsilon"],
         auxiliary_betas=REKLSV3_options["auxiliary_betas"],
         auxiliary_eps=REKLSV3_options["auxiliary_epsilon"],
+    )
+
+
+def _make_kl_m_soap_optimizer(params, learning_rate, weight_decay=0):
+    if learning_rate is None:
+        raise ValueError("No learning rate for KL-M-SOAP.")
+    flat_params = []
+    for item in params:
+        if isinstance(item, dict):
+            flat_params.extend(item["params"])
+        else:
+            flat_params.append(item)
+    params = [parameter for parameter in flat_params if parameter.requires_grad]
+    matrix_params = [parameter for parameter in params if parameter.ndim == 2]
+    matrix_ids = {id(parameter) for parameter in matrix_params}
+    auxiliary_params = [
+        parameter for parameter in params if id(parameter) not in matrix_ids
+    ]
+    groups = []
+    if matrix_params:
+        groups.append(
+            {
+                "params": matrix_params,
+                "use_kl_m_soap": True,
+                "lr": learning_rate,
+                "weight_decay": (
+                    weight_decay
+                    if weight_decay != 0
+                    else KLMSOAP_options["kl_m_soap_weight_decay"]
+                ),
+            }
+        )
+    if auxiliary_params:
+        groups.append(
+            {
+                "params": auxiliary_params,
+                "use_kl_m_soap": False,
+                "lr": (
+                    learning_rate
+                    if KLMSOAP_options["auxiliary_lr"] is None
+                    else KLMSOAP_options["auxiliary_lr"]
+                ),
+                "weight_decay": KLMSOAP_options["auxiliary_weight_decay"],
+            }
+        )
+    if not groups:
+        raise ValueError("KL-M-SOAP has no trainable parameters.")
+    return KlMSoapWithAuxMAdam(
+        groups,
+        lr=learning_rate,
+        betas=KLMSOAP_options["betas"],
+        shampoo_beta=KLMSOAP_options["shampoo_beta"],
+        eps=KLMSOAP_options["epsilon"],
+        scale_log2=KLMSOAP_options["scale_log2"],
+        auxiliary_betas=KLMSOAP_options["auxiliary_betas"],
+        auxiliary_scale_log2=KLMSOAP_options["auxiliary_scale_log2"],
+    )
+
+
+def _make_madam_optimizer(params, learning_rate, weight_decay=0):
+    if learning_rate is None:
+        raise ValueError("No learning rate for MAdam.")
+    return MAdam(
+        params,
+        lr=learning_rate,
+        betas=MADAM_options["betas"],
+        weight_decay=weight_decay,
+        scale_log2=MADAM_options["scale_log2"],
+        correct_bias=MADAM_options["correct_bias"],
     )
 
 
@@ -548,6 +623,14 @@ def _make_base_optimizer(params, optimizer, learning_rate=None, decay=None, weig
             params, learning_rate, weight_decay=weight_decay
         )
 
+    if isinstance(optimizer, str) and optimizer.lower() in _KLMSOAP_NAMES:
+        return _make_kl_m_soap_optimizer(
+            params, learning_rate, weight_decay=weight_decay
+        )
+
+    if isinstance(optimizer, str) and optimizer.lower() in _MADAM_NAMES:
+        return _make_madam_optimizer(params, learning_rate, weight_decay=weight_decay)
+
     if optimizer in ["muon", "Muon"]:
         return _make_muon_optimizer(params, learning_rate, weight_decay=weight_decay, model=model)
 
@@ -571,7 +654,8 @@ def _make_base_optimizer(params, optimizer, learning_rate=None, decay=None, weig
 
     raise NotImplementedError(
         f"Causal base optimizer {optimizer} is not supported. "
-        "Use one of: adam, soap, klopt, kl-shampoo, kl-soap, rekls-v3, muon, MOP, "
+        "Use one of: adam, madam, soap, klopt, kl-shampoo, kl-soap, kl-m-soap, "
+        "rekls-v3, muon, MOP, "
         "mousse, psgdpro, polargrad, "
         "L-BFGS, L-BFGS-B, PSO."
     )
@@ -679,6 +763,18 @@ def get(params, optimizer, learning_rate=None, decay=None, weight_decay=0, model
             )
         elif isinstance(optimizer, str) and optimizer.lower() in _REKLSV3_NAMES:
             optim = _make_reklsv3_optimizer(
+                params,
+                learning_rate,
+                weight_decay=weight_decay,
+            )
+        elif isinstance(optimizer, str) and optimizer.lower() in _KLMSOAP_NAMES:
+            optim = _make_kl_m_soap_optimizer(
+                params,
+                learning_rate,
+                weight_decay=weight_decay,
+            )
+        elif isinstance(optimizer, str) and optimizer.lower() in _MADAM_NAMES:
+            optim = _make_madam_optimizer(
                 params,
                 learning_rate,
                 weight_decay=weight_decay,

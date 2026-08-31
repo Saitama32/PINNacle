@@ -154,6 +154,24 @@ def build_optimizer(network: torch.nn.Module, args) -> torch.optim.Optimizer:
             max_precondition_dim=args.soap_max_precondition_dim,
             bias_correction=args.soap_bias_correction,
         )
+    elif args.optimizer == "kl-m-soap":
+        dde.optimizers.set_KLMSOAP_options(
+            betas=(args.kl_m_soap_beta1, args.kl_m_soap_beta2),
+            shampoo_beta=args.kl_m_soap_shampoo_beta,
+            epsilon=args.kl_m_soap_epsilon,
+            kl_m_soap_weight_decay=args.kl_m_soap_weight_decay,
+            scale_log2=args.kl_m_soap_scale_log2,
+            auxiliary_lr=args.kl_m_soap_auxiliary_lr,
+            auxiliary_betas=(args.kl_m_soap_auxiliary_beta1, args.kl_m_soap_auxiliary_beta2),
+            auxiliary_scale_log2=args.kl_m_soap_auxiliary_scale_log2,
+            auxiliary_weight_decay=args.kl_m_soap_auxiliary_weight_decay,
+        )
+    elif args.optimizer == "madam":
+        dde.optimizers.set_MADAM_options(
+            betas=(args.madam_beta1, args.madam_beta2),
+            scale_log2=args.madam_scale_log2,
+            correct_bias=args.madam_bias_correction,
+        )
     elif args.optimizer == "muon":
         dde.optimizers.set_MUON_options(
             momentum=args.muon_momentum,
@@ -1054,7 +1072,9 @@ def parse_args(argv: Optional[list[str]] = None):
     parser.add_argument("--batch-size", type=int, default=4096)
     parser.add_argument("--eval-batch-size", type=int, default=16384)
     parser.add_argument(
-        "--optimizer", choices=["adam", "rmsprop", "muon", "soap"], default="soap"
+        "--optimizer",
+        choices=["adam", "rmsprop", "madam", "muon", "soap", "kl-m-soap"],
+        default="soap",
     )
     parser.add_argument(
         "--precision", choices=["float16", "float32", "float64"], default="float32"
@@ -1084,6 +1104,28 @@ def parse_args(argv: Optional[list[str]] = None):
         "--no-soap-bias-correction", dest="soap_bias_correction", action="store_false"
     )
     parser.set_defaults(soap_bias_correction=True)
+    parser.add_argument("--kl-m-soap-beta1", type=float, default=0.9)
+    parser.add_argument("--kl-m-soap-beta2", type=float, default=0.95)
+    parser.add_argument("--kl-m-soap-shampoo-beta", type=float, default=0.95)
+    parser.add_argument("--kl-m-soap-epsilon", type=float, default=1e-8)
+    parser.add_argument("--kl-m-soap-weight-decay", type=float, default=0.01)
+    parser.add_argument("--kl-m-soap-scale-log2", type=float, default=16.0)
+    parser.add_argument("--kl-m-soap-auxiliary-lr", type=float, default=None)
+    parser.add_argument("--kl-m-soap-auxiliary-beta1", type=float, default=0.9)
+    parser.add_argument("--kl-m-soap-auxiliary-beta2", type=float, default=0.95)
+    parser.add_argument("--kl-m-soap-auxiliary-scale-log2", type=float, default=16.0)
+    parser.add_argument("--kl-m-soap-auxiliary-weight-decay", type=float, default=0.0)
+    parser.add_argument("--madam-beta1", type=float, default=0.9)
+    parser.add_argument("--madam-beta2", type=float, default=0.999)
+    parser.add_argument("--madam-scale-log2", type=float, default=16.0)
+    madam_bias_group = parser.add_mutually_exclusive_group()
+    madam_bias_group.add_argument(
+        "--madam-bias-correction", dest="madam_bias_correction", action="store_true"
+    )
+    madam_bias_group.add_argument(
+        "--no-madam-bias-correction", dest="madam_bias_correction", action="store_false"
+    )
+    parser.set_defaults(madam_bias_correction=True)
     parser.add_argument("--muon-momentum", type=float, default=0.95)
     muon_nesterov_group = parser.add_mutually_exclusive_group()
     muon_nesterov_group.add_argument(

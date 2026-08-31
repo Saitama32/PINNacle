@@ -247,6 +247,24 @@ def _base_optimizer(network, args):
             auxiliary_epsilon=args.rekls_auxiliary_epsilon,
             auxiliary_weight_decay=args.rekls_auxiliary_weight_decay,
         )
+    elif optimizer_name == "kl-m-soap":
+        dde.optimizers.set_KLMSOAP_options(
+            betas=(args.kl_m_soap_beta1, args.kl_m_soap_beta2),
+            shampoo_beta=args.kl_m_soap_shampoo_beta,
+            epsilon=args.kl_m_soap_epsilon,
+            kl_m_soap_weight_decay=args.kl_m_soap_weight_decay,
+            scale_log2=args.kl_m_soap_scale_log2,
+            auxiliary_lr=args.kl_m_soap_auxiliary_lr,
+            auxiliary_betas=(args.kl_m_soap_auxiliary_beta1, args.kl_m_soap_auxiliary_beta2),
+            auxiliary_scale_log2=args.kl_m_soap_auxiliary_scale_log2,
+            auxiliary_weight_decay=args.kl_m_soap_auxiliary_weight_decay,
+        )
+    elif optimizer_name == "madam":
+        dde.optimizers.set_MADAM_options(
+            betas=(args.madam_beta1, args.madam_beta2),
+            scale_log2=args.madam_scale_log2,
+            correct_bias=args.madam_bias_correction,
+        )
     elif optimizer_name in {"psgdpro", "pcgpro"}:
         dde.optimizers.set_PSGDPRO_options(
             momentum=args.psgdpro_momentum,
@@ -861,7 +879,7 @@ def parse_args(argv=None):
     parser.add_argument(
         "--optimizer",
         choices=[
-            "adam", "rmsprop", "soap", "kl-shampoo", "kl-soap", "muon",
+            "adam", "rmsprop", "madam", "soap", "kl-shampoo", "kl-soap", "kl-m-soap", "muon",
             "mop", "mousse", "psgdpro", "pcgpro", "polargrad", "rekls-v3",
         ],
         default="rekls-v3",
@@ -918,6 +936,21 @@ def parse_args(argv=None):
     parser.add_argument("--rekls-auxiliary-beta2", type=float, default=0.999)
     parser.add_argument("--rekls-auxiliary-epsilon", type=float, default=1e-8)
     parser.add_argument("--rekls-auxiliary-weight-decay", type=float, default=0.0)
+    parser.add_argument("--kl-m-soap-beta1", type=float, default=0.99)
+    parser.add_argument("--kl-m-soap-beta2", type=float, default=0.999)
+    parser.add_argument("--kl-m-soap-shampoo-beta", type=float, default=0.999)
+    parser.add_argument("--kl-m-soap-epsilon", type=float, default=1e-8)
+    parser.add_argument("--kl-m-soap-weight-decay", type=float, default=0.01)
+    parser.add_argument("--kl-m-soap-scale-log2", type=float, default=16.0)
+    parser.add_argument("--kl-m-soap-auxiliary-lr", type=float, default=None)
+    parser.add_argument("--kl-m-soap-auxiliary-beta1", type=float, default=0.99)
+    parser.add_argument("--kl-m-soap-auxiliary-beta2", type=float, default=0.999)
+    parser.add_argument("--kl-m-soap-auxiliary-scale-log2", type=float, default=16.0)
+    parser.add_argument("--kl-m-soap-auxiliary-weight-decay", type=float, default=0.0)
+    parser.add_argument("--madam-beta1", type=float, default=0.99)
+    parser.add_argument("--madam-beta2", type=float, default=0.999)
+    parser.add_argument("--madam-scale-log2", type=float, default=16.0)
+    parser.add_argument("--madam-bias-correction", type=parse_bool, default=True)
 
     parser.add_argument("--mousse-momentum", type=float, default=0.95)
     parser.add_argument("--mousse-lion-beta1", type=float, default=0.9)

@@ -8,6 +8,10 @@ __all__ = [
     "set_KLOPT_options",
     "REKLSV3_options",
     "set_REKLSV3_options",
+    "KLMSOAP_options",
+    "set_KLMSOAP_options",
+    "MADAM_options",
+    "set_MADAM_options",
     "MUON_options",
     "set_MUON_options",
     "MOP_options",
@@ -34,6 +38,8 @@ ZOCGE_options = {}
 SOAP_options = {}
 KLOPT_options = {}
 REKLSV3_options = {}
+KLMSOAP_options = {}
+MADAM_options = {}
 MUON_options = {}
 MOP_options = {}
 POLARGRAD_options = {}
@@ -358,6 +364,70 @@ def set_REKLSV3_options(
         auxiliary_betas=auxiliary_betas,
         auxiliary_epsilon=auxiliary_epsilon,
         auxiliary_weight_decay=auxiliary_weight_decay,
+    )
+
+
+def set_KLMSOAP_options(
+    betas=(0.9, 0.95),
+    shampoo_beta=0.95,
+    epsilon=1e-8,
+    kl_m_soap_weight_decay=0.01,
+    scale_log2=16.0,
+    auxiliary_lr=None,
+    auxiliary_betas=None,
+    auxiliary_scale_log2=None,
+    auxiliary_weight_decay=0.0,
+):
+    """Sets NVIDIA KL-M-SOAP and auxiliary MAdam hyperparameters."""
+    if len(betas) != 2 or any(not 0 <= beta < 1 for beta in betas):
+        raise ValueError("KL-M-SOAP betas must be in [0, 1)")
+    if not 0 <= shampoo_beta < 1:
+        raise ValueError("KL-M-SOAP shampoo_beta must be in [0, 1)")
+    if epsilon <= 0:
+        raise ValueError("KL-M-SOAP epsilon must be positive")
+    if kl_m_soap_weight_decay < 0 or auxiliary_weight_decay < 0:
+        raise ValueError("KL-M-SOAP weight decay values must be nonnegative")
+    if auxiliary_lr is not None and auxiliary_lr < 0:
+        raise ValueError("KL-M-SOAP auxiliary learning rate must be nonnegative")
+    if scale_log2 // 2 != scale_log2 / 2:
+        raise ValueError("KL-M-SOAP scale_log2 must be an even integer")
+    if auxiliary_betas is None:
+        auxiliary_betas = betas
+    if auxiliary_scale_log2 is None:
+        auxiliary_scale_log2 = scale_log2
+    if len(auxiliary_betas) != 2 or any(
+        not 0 <= beta < 1 for beta in auxiliary_betas
+    ):
+        raise ValueError("KL-M-SOAP auxiliary betas must be in [0, 1)")
+    if auxiliary_scale_log2 // 2 != auxiliary_scale_log2 / 2:
+        raise ValueError("auxiliary_scale_log2 must be an even integer")
+    KLMSOAP_options.update(
+        betas=betas,
+        shampoo_beta=shampoo_beta,
+        epsilon=epsilon,
+        kl_m_soap_weight_decay=kl_m_soap_weight_decay,
+        scale_log2=scale_log2,
+        auxiliary_lr=auxiliary_lr,
+        auxiliary_betas=auxiliary_betas,
+        auxiliary_scale_log2=auxiliary_scale_log2,
+        auxiliary_weight_decay=auxiliary_weight_decay,
+    )
+
+
+def set_MADAM_options(
+    betas=(0.9, 0.999),
+    scale_log2=16.0,
+    correct_bias=True,
+):
+    """Sets standalone NVIDIA magnitude-aware Adam hyperparameters."""
+    if len(betas) != 2 or any(not 0 <= beta < 1 for beta in betas):
+        raise ValueError("MAdam betas must be in [0, 1)")
+    if scale_log2 // 2 != scale_log2 / 2:
+        raise ValueError("MAdam scale_log2 must be an even integer")
+    MADAM_options.update(
+        betas=betas,
+        scale_log2=scale_log2,
+        correct_bias=correct_bias,
     )
 
 
@@ -775,6 +845,8 @@ set_PSO_options()
 set_SOAP_options()
 set_KLOPT_options()
 set_REKLSV3_options()
+set_KLMSOAP_options()
+set_MADAM_options()
 set_MUON_options()
 set_MOP_options()
 set_POLARGRAD_options()
