@@ -7,7 +7,7 @@ project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..
 sys.path.append(project_root)
 from comet_config import start_comet_experiment
 experiment = start_comet_experiment(
-    project_name="rlpinn_wave2d_heterogeneous_stong_weak_chain_tol",
+    project_name="rlpinn_wave2d_heterogeneous_stong_weak_chain_expand_set_tol",
 )
 
 
