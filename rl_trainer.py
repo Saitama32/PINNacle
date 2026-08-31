@@ -38,21 +38,15 @@ os.makedirs(output_dir, exist_ok=True)
 
 
 def _build_action_space(optimizers, physics_forms=None):
-    """Build either the legacy optimizer space or a physics-form action space."""
+    """Build either the legacy optimizer space or optimizer/form pairs."""
 
-    action_space = copy.deepcopy(optimizers)
     if physics_forms is None:
-        return action_space
-    if len(action_space) != 1:
-        raise ValueError(
-            "Physics-form action mode requires exactly one fixed optimizer."
-        )
+        return copy.deepcopy(optimizers)
     if not isinstance(physics_forms, dict) or not physics_forms:
         raise ValueError("physics_forms must be a non-empty dictionary.")
 
-    fixed_optimizer_params = next(iter(action_space.values()))
-    fixed_optimizer_params.pop("epochs", None)
     action_space = {}
+    normalized_forms = {}
     for form_name, form_config in physics_forms.items():
         normalized_name = str(form_name).strip().lower()
         if normalized_name not in {"weak", "strong"}:
@@ -62,18 +56,57 @@ def _build_action_space(optimizers, physics_forms=None):
         if not isinstance(form_config, dict):
             raise ValueError(f"physics_forms[{form_name!r}] must be a dictionary.")
         epochs = form_config.get("epochs")
-        if not isinstance(epochs, (list, tuple)) or not epochs:
+        normalized_config = copy.deepcopy(form_config)
+        if epochs is not None:
+            if not isinstance(epochs, (list, tuple)) or not epochs:
+                raise ValueError(
+                    f"physics_forms[{form_name!r}]['epochs'] must be a non-empty sequence."
+                )
+            normalized_epochs = [int(epoch_count) for epoch_count in epochs]
+            if any(epoch_count <= 0 for epoch_count in normalized_epochs):
+                raise ValueError("Physics-form epoch counts must be positive.")
+            normalized_config["epochs"] = normalized_epochs
+        normalized_forms[normalized_name] = normalized_config
+
+    for optimizer_name, optimizer_config in optimizers.items():
+        if "/" in str(optimizer_name):
             raise ValueError(
-                f"physics_forms[{form_name!r}]['epochs'] must be a non-empty sequence."
+                f"Optimizer name {optimizer_name!r} cannot contain '/'."
             )
-        normalized_epochs = [int(epoch_count) for epoch_count in epochs]
-        if any(epoch_count <= 0 for epoch_count in normalized_epochs):
-            raise ValueError("Physics-form epoch counts must be positive.")
-        params = copy.deepcopy(fixed_optimizer_params)
-        params.update(copy.deepcopy(form_config))
-        params["epochs"] = normalized_epochs
-        action_space[normalized_name] = params
+        optimizer_params = copy.deepcopy(optimizer_config)
+        optimizer_epochs = optimizer_params.pop("epochs", None)
+        for form_name, form_config in normalized_forms.items():
+            params = copy.deepcopy(optimizer_params)
+            params.update(copy.deepcopy(form_config))
+            if "epochs" not in params and optimizer_epochs is not None:
+                params["epochs"] = [int(epoch_count) for epoch_count in optimizer_epochs]
+            if "epochs" not in params:
+                raise ValueError(
+                    f"Action class {optimizer_name}/{form_name} does not define epochs. "
+                    "Put epochs in the optimizer config or in the physics form config."
+                )
+            action_space[f"{optimizer_name}/{form_name}"] = params
     return action_space
+
+
+def _resolve_action_class(action: Dict[str, Any]) -> Dict[str, Any]:
+    """Convert a selected optimizer/form action class into trainable fields."""
+
+    action_type = action["type"]
+    if "/" not in action_type:
+        return action
+
+    optimizer_name, physics_form = action_type.rsplit("/", 1)
+    normalized_form = physics_form.strip().lower()
+    if normalized_form not in {"weak", "strong"}:
+        return action
+
+    return {
+        **action,
+        "action_class": action_type,
+        "type": optimizer_name,
+        "physics_form": normalized_form,
+    }
 
 
 def _set_model_physics_form(model, physics_form):
@@ -427,9 +460,6 @@ def run_deepxde_rl_training(
     """
 
     action_space_dict = _build_action_space(optimizers_dict, physics_forms)
-    fixed_optimizer_name = (
-        next(iter(optimizers_dict)) if physics_forms is not None else None
-    )
 
     # callbacks базовые (Tester/Loss/Plot и т.п.)
     base_callbacks = train_args.get("callbacks", [])
@@ -564,16 +594,7 @@ def run_deepxde_rl_training(
                 raw_params['epochs'] = action_raw[1]
             action_raw = (action_raw[0], raw_params)
 
-            # In the ablation mode the main head selects weak/strong. The
-            # optimizer is fixed, while the selected form's parameter head
-            # supplies epochs, lr, and any other Adam parameters.
-            if fixed_optimizer_name is not None:
-                selected_form = action["type"]
-                action = {
-                    **action,
-                    "type": fixed_optimizer_name,
-                    "physics_form": selected_form,
-                }
+            action = _resolve_action_class(action)
 
             # Repeating the same optimizer with another physics form is a
             # meaningful switch, so the repeat penalty uses the joint action.
