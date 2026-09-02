@@ -17,6 +17,8 @@ from .config import (
     set_KLOPT_options,
     REKLSV3_options,
     set_REKLSV3_options,
+    ERROR_WHITENING_GN_options,
+    set_ERROR_WHITENING_GN_options,
     KLMSOAP_options,
     set_KLMSOAP_options,
     MADAM_options,

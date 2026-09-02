@@ -8,6 +8,8 @@ __all__ = [
     "set_KLOPT_options",
     "REKLSV3_options",
     "set_REKLSV3_options",
+    "ERROR_WHITENING_GN_options",
+    "set_ERROR_WHITENING_GN_options",
     "KLMSOAP_options",
     "set_KLMSOAP_options",
     "MADAM_options",
@@ -30,6 +32,8 @@ __all__ = [
     "set_hvd_opt_options",
 ]
 
+import math
+
 from ..backend import backend_name
 # from ..config import hvd
 
@@ -40,6 +44,7 @@ ZOCGE_options = {}
 SOAP_options = {}
 KLOPT_options = {}
 REKLSV3_options = {}
+ERROR_WHITENING_GN_options = {}
 KLMSOAP_options = {}
 MADAM_options = {}
 MUON_options = {}
@@ -384,6 +389,34 @@ def set_REKLSV3_options(
         auxiliary_epsilon=auxiliary_epsilon,
         auxiliary_scale_log2=auxiliary_scale_log2,
         auxiliary_weight_decay=auxiliary_weight_decay,
+    )
+
+
+def set_ERROR_WHITENING_GN_options(
+    rank=100,
+    oversketch=10,
+    tolerance=1e-14,
+    damping=1e-8,
+    line_search=True,
+    seed=0,
+):
+    """Set explicit-Jacobian low-rank ErrorWhiteningGN options."""
+
+    if rank <= 0:
+        raise ValueError("ErrorWhiteningGN rank must be positive")
+    if oversketch < 0:
+        raise ValueError("ErrorWhiteningGN oversketch must be nonnegative")
+    if tolerance < 0 or not math.isfinite(tolerance):
+        raise ValueError("ErrorWhiteningGN tolerance must be finite and nonnegative")
+    if damping < 0 or not math.isfinite(damping):
+        raise ValueError("ErrorWhiteningGN damping must be finite and nonnegative")
+    ERROR_WHITENING_GN_options.update(
+        rank=int(rank),
+        oversketch=int(oversketch),
+        tolerance=float(tolerance),
+        damping=float(damping),
+        line_search=bool(line_search),
+        seed=int(seed),
     )
 
 
@@ -930,6 +963,7 @@ set_PSO_options()
 set_SOAP_options()
 set_KLOPT_options()
 set_REKLSV3_options()
+set_ERROR_WHITENING_GN_options()
 set_KLMSOAP_options()
 set_MADAM_options()
 set_MUON_options()

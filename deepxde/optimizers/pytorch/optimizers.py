@@ -12,6 +12,7 @@ from .mousse import MousseWithAuxLion
 from .psgd_pro import PSGDPro
 from .klopt import KLOptWithAuxAdam
 from .rekls_v3 import ReklsV3WithAuxAdam
+from .error_whitening_gn import ErrorWhiteningGN
 from .kl_m_soap import KlMSoapWithAuxMAdam
 from .madam import MAdam
 from .pcgrad import PCGrad
@@ -31,6 +32,7 @@ from ..config import (
     PSGDPRO_options,
     KLOPT_options,
     REKLSV3_options,
+    ERROR_WHITENING_GN_options,
     KLMSOAP_options,
     MADAM_options,
     PCGRAD_options,
@@ -43,6 +45,11 @@ from ..config import (
 
 _KLOPT_NAMES = {"klopt", "kl-shampoo", "klshampoo", "kl-soap", "klsoap"}
 _REKLSV3_NAMES = {"rekls", "reklsv3", "rekls-v3", "rekls_v3"}
+_ERROR_WHITENING_GN_NAMES = {
+    "error_whitening_gn",
+    "error-whitening-gn",
+    "errorwhiteninggn",
+}
 _KLMSOAP_NAMES = {"kl-m-soap", "kl_m_soap", "klmsoap", "kl-msoap"}
 _MADAM_NAMES = {"madam", "m-adam", "m_adam"}
 _MUOWN_NAMES = {"muown", "mu-own", "mu_own"}
@@ -164,6 +171,29 @@ def _make_reklsv3_optimizer(params, learning_rate, weight_decay=0):
         auxiliary_betas=REKLSV3_options["auxiliary_betas"],
         auxiliary_eps=REKLSV3_options["auxiliary_epsilon"],
         auxiliary_scale_log2=REKLSV3_options["auxiliary_scale_log2"],
+    )
+
+
+def _make_error_whitening_gn_optimizer(params, weight_decay=0):
+    if weight_decay:
+        raise ValueError("ErrorWhiteningGN does not support weight decay")
+    flat_params = []
+    for item in params:
+        if isinstance(item, dict):
+            flat_params.extend(item["params"])
+        else:
+            flat_params.append(item)
+    params = [parameter for parameter in flat_params if parameter.requires_grad]
+    if not params:
+        raise ValueError("ErrorWhiteningGN has no trainable parameters")
+    return ErrorWhiteningGN(
+        params,
+        rank=ERROR_WHITENING_GN_options["rank"],
+        oversketch=ERROR_WHITENING_GN_options["oversketch"],
+        tol=ERROR_WHITENING_GN_options["tolerance"],
+        damping=ERROR_WHITENING_GN_options["damping"],
+        line_search=ERROR_WHITENING_GN_options["line_search"],
+        seed=ERROR_WHITENING_GN_options["seed"],
     )
 
 
@@ -835,6 +865,13 @@ def get(params, optimizer, learning_rate=None, decay=None, weight_decay=0, model
                 params,
                 learning_rate,
                 weight_decay=weight_decay,
+            )
+        elif (
+            isinstance(optimizer, str)
+            and optimizer.lower() in _ERROR_WHITENING_GN_NAMES
+        ):
+            optim = _make_error_whitening_gn_optimizer(
+                params, weight_decay=weight_decay
             )
         elif isinstance(optimizer, str) and optimizer.lower() in _KLMSOAP_NAMES:
             optim = _make_kl_m_soap_optimizer(
