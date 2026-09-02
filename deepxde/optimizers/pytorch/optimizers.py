@@ -159,8 +159,11 @@ def _make_reklsv3_optimizer(params, learning_rate, weight_decay=0):
         betas=REKLSV3_options["betas"],
         shampoo_beta=REKLSV3_options["shampoo_beta"],
         eps=REKLSV3_options["epsilon"],
+        base_optimizer=REKLSV3_options["base_optimizer"],
+        scale_log2=REKLSV3_options["scale_log2"],
         auxiliary_betas=REKLSV3_options["auxiliary_betas"],
         auxiliary_eps=REKLSV3_options["auxiliary_epsilon"],
+        auxiliary_scale_log2=REKLSV3_options["auxiliary_scale_log2"],
     )
 
 

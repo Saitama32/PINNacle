@@ -873,12 +873,15 @@ def build_training_optimizer(student, args):
             shampoo_beta=args.rekls_shampoo_beta,
             epsilon=args.rekls_epsilon,
             rekls_weight_decay=args.rekls_weight_decay,
+            base_optimizer=args.rekls_base_optimizer,
+            scale_log2=args.rekls_scale_log2,
             auxiliary_lr=args.rekls_auxiliary_lr,
             auxiliary_betas=(
                 args.rekls_auxiliary_beta1,
                 args.rekls_auxiliary_beta2,
             ),
             auxiliary_epsilon=args.rekls_auxiliary_epsilon,
+            auxiliary_scale_log2=args.rekls_auxiliary_scale_log2,
             auxiliary_weight_decay=args.rekls_auxiliary_weight_decay,
         )
         return build_data_optimizer(student, args)
@@ -1194,6 +1197,13 @@ def run(args):
         raise ValueError("kl-init-factor must be positive and finite")
     if args.kl_max_clamp_value <= 0:
         raise ValueError("kl-max-clamp-value must be positive")
+    if args.rekls_scale_log2 // 2 != args.rekls_scale_log2 / 2:
+        raise ValueError("rekls-scale-log2 must be an even integer")
+    if (
+        args.rekls_auxiliary_scale_log2 // 2
+        != args.rekls_auxiliary_scale_log2 / 2
+    ):
+        raise ValueError("rekls-auxiliary-scale-log2 must be an even integer")
     if not 0.0 <= args.mousse_momentum < 1.0:
         raise ValueError("Mousse momentum must be in [0, 1)")
     if not 0.0 <= args.mousse_lion_beta1 < 1.0 or not 0.0 <= args.mousse_lion_beta2 < 1.0:
@@ -1413,7 +1423,7 @@ def parse_args(argv=None):
             "mousse", "psgdpro", "pcgpro", "polargrad", "rekls-v3",
             "kl-m-soap", "madam", "muown",
         ],
-        default="kl-m-soap",
+        default="kl-shampoo",
     )
     parser.add_argument("--lr", type=float, default=5e-4)
     parser.add_argument("--lr-min", type=float, default=5e-4)
@@ -1434,7 +1444,7 @@ def parse_args(argv=None):
     parser.add_argument("--soap-bias-correction", type=parse_bool, default=True)
     parser.add_argument("--kl-beta1", type=float, default=0.99)
     parser.add_argument("--kl-beta2", type=float, default=0.999)
-    parser.add_argument("--kl-shampoo-beta", type=float, default=None)
+    parser.add_argument("--kl-shampoo-beta", type=float, default=0.999)
     parser.add_argument("--kl-epsilon", type=float, default=None)
     parser.add_argument("--kl-precondition-frequency", type=int, default=1)
     parser.add_argument("--kl-normalize-grads", type=parse_bool, default=False)
@@ -1452,10 +1462,15 @@ def parse_args(argv=None):
     parser.add_argument("--rekls-shampoo-beta", type=float, default=0.999)
     parser.add_argument("--rekls-epsilon", type=float, default=1e-8)
     parser.add_argument("--rekls-weight-decay", type=float, default=0.01)
+    parser.add_argument(
+        "--rekls-base-optimizer", choices=["adam", "madam"], default="adam"
+    )
+    parser.add_argument("--rekls-scale-log2", type=float, default=16.0)
     parser.add_argument("--rekls-auxiliary-lr", type=float, default=None)
     parser.add_argument("--rekls-auxiliary-beta1", type=float, default=0.99)
     parser.add_argument("--rekls-auxiliary-beta2", type=float, default=0.999)
     parser.add_argument("--rekls-auxiliary-epsilon", type=float, default=1e-8)
+    parser.add_argument("--rekls-auxiliary-scale-log2", type=float, default=16.0)
     parser.add_argument("--rekls-auxiliary-weight-decay", type=float, default=0.0)
     parser.add_argument("--kl-m-soap-beta1", type=float, default=0.99)
     parser.add_argument("--kl-m-soap-beta2", type=float, default=0.999)

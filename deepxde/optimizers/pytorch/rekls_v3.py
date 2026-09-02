@@ -5,12 +5,14 @@
 
 The matrix update is ported from NVIDIA NeMo Emerging-Optimizers' ``ReklsV3``.
 REKLS is restricted to 2D tensors upstream; this DeepXDE integration applies
-an auxiliary AdamW update to biases, scalars, and other unsupported tensors.
+the selected scalar optimizer to biases, scalars, and unsupported tensors too.
 """
 
 from contextlib import contextmanager
 
 import torch
+
+from .madam import madam_update
 
 
 @contextmanager
@@ -96,7 +98,7 @@ def _calculate_adam_update(gradient, exp_avg, exp_avg_sq, betas, epsilon, step):
 
 
 class ReklsV3WithAuxAdam(torch.optim.Optimizer):
-    """NVIDIA REKLS V3 for matrices and AdamW for auxiliary parameters."""
+    """NVIDIA REKLS V3 with selectable Adam or MAdam scalar updates."""
 
     def __init__(
         self,
@@ -106,8 +108,11 @@ class ReklsV3WithAuxAdam(torch.optim.Optimizer):
         shampoo_beta=0.95,
         eps=1e-8,
         weight_decay=0.01,
+        base_optimizer="adam",
+        scale_log2=16.0,
         auxiliary_betas=None,
         auxiliary_eps=1e-8,
+        auxiliary_scale_log2=None,
     ):
         if lr < 0:
             raise ValueError(f"Invalid learning rate: {lr}")
@@ -119,8 +124,21 @@ class ReklsV3WithAuxAdam(torch.optim.Optimizer):
             raise ValueError("REKLS V3 epsilon values must be positive")
         if weight_decay < 0:
             raise ValueError("REKLS V3 weight decay must be nonnegative")
+        if not isinstance(base_optimizer, str):
+            raise ValueError("REKLS V3 base_optimizer must be 'adam' or 'madam'")
+        base_optimizer = base_optimizer.lower()
+        if base_optimizer not in {"adam", "madam"}:
+            raise ValueError("REKLS V3 base_optimizer must be 'adam' or 'madam'")
+        if scale_log2 // 2 != scale_log2 / 2:
+            raise ValueError("REKLS V3 scale_log2 must be an even integer")
         if auxiliary_betas is None:
             auxiliary_betas = betas
+        if auxiliary_scale_log2 is None:
+            auxiliary_scale_log2 = scale_log2
+        if auxiliary_scale_log2 // 2 != auxiliary_scale_log2 / 2:
+            raise ValueError(
+                "REKLS V3 auxiliary_scale_log2 must be an even integer"
+            )
 
         defaults = dict(
             lr=lr,
@@ -128,9 +146,12 @@ class ReklsV3WithAuxAdam(torch.optim.Optimizer):
             shampoo_beta=shampoo_beta,
             eps=eps,
             weight_decay=weight_decay,
+            base_optimizer=base_optimizer,
+            scale_log2=scale_log2,
             use_rekls=True,
             auxiliary_betas=auxiliary_betas,
             auxiliary_eps=auxiliary_eps,
+            auxiliary_scale_log2=auxiliary_scale_log2,
         )
         super().__init__(params, defaults)
         for group in self.param_groups:
@@ -161,7 +182,7 @@ class ReklsV3WithAuxAdam(torch.optim.Optimizer):
                 if group["use_rekls"]:
                     self._rekls_step(parameter, group)
                 else:
-                    self._adamw_step(parameter, group)
+                    self._auxiliary_step(parameter, group)
         return loss
 
     def _rekls_step(self, parameter, group):
@@ -201,22 +222,43 @@ class ReklsV3WithAuxAdam(torch.optim.Optimizer):
 
         with _fp32_matmul_precision("highest"):
             projected_gradient = _project_in(gradient, state)
-            scalar_update = _calculate_adam_update(
-                projected_gradient,
-                state["exp_avg"],
-                state["exp_avg_sq"],
-                group["betas"],
-                group["eps"],
-                step,
+            scalar_update = self._scalar_update(
+                projected_gradient, state, group, step, auxiliary=False
             )
             update = _project_out(scalar_update, state)
         parameter.add_(update.to(parameter.dtype), alpha=-group["lr"])
         state["step"] += 1
 
-    def _adamw_step(self, parameter, group):
+    @staticmethod
+    def _scalar_update(gradient, state, group, step, auxiliary):
+        betas = group["auxiliary_betas"] if auxiliary else group["betas"]
+        if group["base_optimizer"] == "madam":
+            scale_log2 = (
+                group["auxiliary_scale_log2"] if auxiliary else group["scale_log2"]
+            )
+            return madam_update(
+                gradient,
+                state["exp_avg"],
+                state["exp_avg_sq"],
+                betas=betas,
+                step=step,
+                scale_log2=scale_log2,
+                correct_bias=True,
+            )
+        epsilon = group["auxiliary_eps"] if auxiliary else group["eps"]
+        return _calculate_adam_update(
+            gradient,
+            state["exp_avg"],
+            state["exp_avg_sq"],
+            betas,
+            epsilon,
+            step,
+        )
+
+    def _auxiliary_step(self, parameter, group):
         gradient = parameter.grad.float()
         if gradient.is_sparse:
-            raise RuntimeError("REKLS V3 auxiliary AdamW does not support sparse gradients")
+            raise RuntimeError("REKLS V3 auxiliary optimizer does not support sparse gradients")
         state = self.state[parameter]
         if len(state) == 0:
             state["step"] = 0
@@ -227,17 +269,13 @@ class ReklsV3WithAuxAdam(torch.optim.Optimizer):
             parameter.add_(
                 parameter, alpha=-group["lr"] * group["weight_decay"]
             )
-        update = _calculate_adam_update(
-            gradient,
-            state["exp_avg"],
-            state["exp_avg_sq"],
-            group["auxiliary_betas"],
-            group["auxiliary_eps"],
-            state["step"],
+        update = self._scalar_update(
+            gradient, state, group, state["step"], auxiliary=True
         )
         parameter.add_(update.to(parameter.dtype), alpha=-group["lr"])
 
 
 ReklsV3 = ReklsV3WithAuxAdam
+ReklsV3WithAuxOptimizer = ReklsV3WithAuxAdam
 
-__all__ = ["ReklsV3", "ReklsV3WithAuxAdam"]
+__all__ = ["ReklsV3", "ReklsV3WithAuxAdam", "ReklsV3WithAuxOptimizer"]

@@ -331,16 +331,19 @@ def set_REKLSV3_options(
     shampoo_beta=0.95,
     epsilon=1e-8,
     rekls_weight_decay=0.01,
+    base_optimizer="adam",
+    scale_log2=16.0,
     auxiliary_lr=None,
     auxiliary_betas=None,
     auxiliary_epsilon=1e-8,
+    auxiliary_scale_log2=None,
     auxiliary_weight_decay=0.0,
 ):
-    """Sets hyperparameters for NVIDIA REKLS V3 with auxiliary AdamW.
+    """Sets hyperparameters for REKLS V3 with Adam or magnitude-aware Adam.
 
     REKLS V3 is applied to every trainable 2D tensor. Biases, scalars, and
-    other tensor ranks use auxiliary AdamW so the optimizer can be selected
-    through the regular DeepXDE ``Model.compile`` interface.
+    other tensor ranks use the same selected base optimizer through an
+    auxiliary path. ``scale_log2`` values are used only with MAdam.
     """
     if len(betas) != 2 or any(not 0 <= beta < 1 for beta in betas):
         raise ValueError("REKLS V3 betas must be in [0, 1)")
@@ -350,6 +353,13 @@ def set_REKLSV3_options(
         raise ValueError("REKLS V3 epsilon values must be positive")
     if rekls_weight_decay < 0 or auxiliary_weight_decay < 0:
         raise ValueError("REKLS V3 weight decay values must be nonnegative")
+    if not isinstance(base_optimizer, str) or base_optimizer.lower() not in {
+        "adam",
+        "madam",
+    }:
+        raise ValueError("REKLS V3 base_optimizer must be 'adam' or 'madam'")
+    if scale_log2 // 2 != scale_log2 / 2:
+        raise ValueError("REKLS V3 scale_log2 must be an even integer")
     if auxiliary_lr is not None and auxiliary_lr < 0:
         raise ValueError("REKLS V3 auxiliary learning rate must be nonnegative")
     if auxiliary_betas is None:
@@ -358,14 +368,21 @@ def set_REKLSV3_options(
         not 0 <= beta < 1 for beta in auxiliary_betas
     ):
         raise ValueError("REKLS V3 auxiliary betas must be in [0, 1)")
+    if auxiliary_scale_log2 is None:
+        auxiliary_scale_log2 = scale_log2
+    if auxiliary_scale_log2 // 2 != auxiliary_scale_log2 / 2:
+        raise ValueError("REKLS V3 auxiliary_scale_log2 must be an even integer")
     REKLSV3_options.update(
         betas=betas,
         shampoo_beta=shampoo_beta,
         epsilon=epsilon,
         rekls_weight_decay=rekls_weight_decay,
+        base_optimizer=base_optimizer.lower(),
+        scale_log2=scale_log2,
         auxiliary_lr=auxiliary_lr,
         auxiliary_betas=auxiliary_betas,
         auxiliary_epsilon=auxiliary_epsilon,
+        auxiliary_scale_log2=auxiliary_scale_log2,
         auxiliary_weight_decay=auxiliary_weight_decay,
     )
 
