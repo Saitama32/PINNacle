@@ -194,6 +194,7 @@ def _make_error_whitening_gn_optimizer(params, weight_decay=0):
         damping=ERROR_WHITENING_GN_options["damping"],
         line_search=ERROR_WHITENING_GN_options["line_search"],
         seed=ERROR_WHITENING_GN_options["seed"],
+        operator_batch_size=ERROR_WHITENING_GN_options["operator_batch_size"],
     )
 
 

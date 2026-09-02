@@ -1,4 +1,4 @@
-"""Explicit-Jacobian, low-rank Gauss--Newton error-whitening optimizer."""
+"""Matrix-free, low-rank Gauss--Newton error-whitening optimizer."""
 
 from __future__ import annotations
 
@@ -27,8 +27,9 @@ class ErrorWhiteningGN(torch.optim.Optimizer):
     """Jacobian-only randomized low-rank Gauss--Newton.
 
     ``step`` requires a closure returning the weighted residual vector ``r``
-    for a loss ``0.5 * ||r||^2``. The implementation explicitly forms the
-    residual Jacobian in float64, but never forms the full ``J.T @ J`` matrix.
+    for a loss ``0.5 * ||r||^2``. Randomized sketching uses matrix-free
+    ``J.T @ (J @ directions)`` products; neither ``J`` nor ``J.T @ J`` is
+    materialized.
     """
 
     _DEFAULT_LINE_SEARCH_STEPS = (
@@ -50,6 +51,7 @@ class ErrorWhiteningGN(torch.optim.Optimizer):
         damping=1e-8,
         line_search=True,
         seed=0,
+        operator_batch_size=8,
         line_search_steps=None,
     ):
         if rank <= 0:
@@ -60,6 +62,8 @@ class ErrorWhiteningGN(torch.optim.Optimizer):
             raise ValueError("ErrorWhiteningGN tolerance must be finite and nonnegative")
         if damping < 0 or not math.isfinite(damping):
             raise ValueError("ErrorWhiteningGN damping must be finite and nonnegative")
+        if operator_batch_size <= 0:
+            raise ValueError("ErrorWhiteningGN operator_batch_size must be positive")
         if line_search_steps is None:
             line_search_steps = self._DEFAULT_LINE_SEARCH_STEPS
         line_search_steps = tuple(float(step) for step in line_search_steps)
@@ -79,6 +83,7 @@ class ErrorWhiteningGN(torch.optim.Optimizer):
         self.damping = float(damping)
         self.line_search = bool(line_search)
         self.seed = int(seed)
+        self.operator_batch_size = int(operator_batch_size)
         self.line_search_steps = line_search_steps
         self._step_count = 0
         self.last_diagnostics = {}
@@ -117,69 +122,119 @@ class ErrorWhiteningGN(torch.optim.Optimizer):
                 offset += count
 
     @staticmethod
-    def _explicit_jacobian(residuals, parameters):
-        parameter_count = sum(parameter.numel() for parameter in parameters)
-        jacobian = torch.empty(
-            residuals.numel(),
-            parameter_count,
-            dtype=torch.float64,
-            device=residuals.device,
-        )
-        for row_index, residual in enumerate(residuals):
-            if residual.requires_grad:
-                gradients = torch.autograd.grad(
-                    residual,
-                    parameters,
-                    retain_graph=row_index + 1 < residuals.numel(),
-                    allow_unused=True,
+    def _flatten_gradients(gradients, parameters, batch_size=None):
+        columns = []
+        for gradient, parameter in zip(gradients, parameters):
+            if gradient is None:
+                shape = (parameter.numel(),) if batch_size is None else (
+                    batch_size,
+                    parameter.numel(),
                 )
+                columns.append(
+                    torch.zeros(shape, dtype=torch.float64, device=parameter.device)
+                )
+            elif batch_size is None:
+                columns.append(gradient.reshape(-1).double())
             else:
-                gradients = (None,) * len(parameters)
-            columns = []
-            for parameter, gradient in zip(parameters, gradients):
-                if gradient is None:
-                    columns.append(
-                        torch.zeros(parameter.numel(), dtype=torch.float64, device=residuals.device)
-                    )
-                else:
-                    columns.append(gradient.detach().reshape(-1).double())
-            jacobian[row_index].copy_(torch.cat(columns))
-        return jacobian
+                columns.append(gradient.reshape(batch_size, -1).double())
+        return torch.cat(columns, dim=0 if batch_size is None else 1)
+
+    def _gauss_newton_block(self, residuals, parameters, directions):
+        """Return ``J.T @ (J @ directions)`` without constructing ``J``."""
+
+        block_size = directions.shape[1]
+        cotangent = torch.zeros_like(residuals, requires_grad=True)
+        jt_cotangent = torch.autograd.grad(
+            residuals,
+            parameters,
+            grad_outputs=cotangent,
+            create_graph=True,
+            retain_graph=True,
+            allow_unused=True,
+        )
+        flat_jt_cotangent = self._flatten_gradients(jt_cotangent, parameters)
+        directional_pairings = directions.mT @ flat_jt_cotangent
+        identity = torch.eye(
+            block_size, dtype=directions.dtype, device=directions.device
+        )
+        # Reverse-over-reverse computes all JVPs in this probe block. The
+        # leading dimension is interpreted as the vmap batch by autograd.
+        jvp_rows = torch.autograd.grad(
+            directional_pairings,
+            cotangent,
+            grad_outputs=identity,
+            is_grads_batched=True,
+            retain_graph=True,
+        )[0]
+        vjp_gradients = torch.autograd.grad(
+            residuals,
+            parameters,
+            grad_outputs=jvp_rows.detach(),
+            is_grads_batched=True,
+            retain_graph=True,
+            allow_unused=True,
+        )
+        return self._flatten_gradients(
+            vjp_gradients, parameters, batch_size=block_size
+        ).mT
+
+    def _gauss_newton_matmul(self, residuals, parameters, directions):
+        blocks = []
+        for start in range(0, directions.shape[1], self.operator_batch_size):
+            stop = min(start + self.operator_batch_size, directions.shape[1])
+            blocks.append(
+                self._gauss_newton_block(
+                    residuals, parameters, directions[:, start:stop]
+                )
+            )
+        return torch.cat(blocks, dim=1)
 
     @staticmethod
     def _loss_from_closure(closure):
+        closure = getattr(closure, "line_search_closure", closure)
         with torch.enable_grad():
             residuals = _as_residual_vector(closure())
         return 0.5 * torch.dot(residuals.detach().double(), residuals.detach().double())
 
-    def _randomized_eigensystem(self, jacobian):
-        parameter_count = jacobian.shape[1]
+    def _randomized_eigensystem(self, residuals, parameters, parameter_count):
         sketch_size = min(parameter_count, self.rank + self.oversketch)
-        generator = torch.Generator(device=jacobian.device)
+        generator = torch.Generator(device=residuals.device)
         generator.manual_seed(self.seed + self._step_count)
         omega = torch.randn(
             parameter_count,
             sketch_size,
             dtype=torch.float64,
-            device=jacobian.device,
+            device=residuals.device,
             generator=generator,
         )
-        # G @ Omega = J.T @ (J @ Omega), without materializing G.
-        sketch = jacobian.mT @ (jacobian @ omega)
-        basis = torch.linalg.qr(sketch, mode="reduced").Q
-        projected_jacobian = jacobian @ basis
-        small_matrix = projected_jacobian.mT @ projected_jacobian
+        sketch = self._gauss_newton_matmul(
+            residuals, parameters, omega
+        )
+        # One-pass generalized Nyström approximation for the PSD GN matrix:
+        # G ~= (Y (Omega.T Y)^-1/2) (Y (Omega.T Y)^-1/2).T.
+        small_matrix = omega.mT @ sketch
         small_matrix = 0.5 * (small_matrix + small_matrix.mT)
-        eigenvalues, eigenvectors = torch.linalg.eigh(small_matrix)
-        order = torch.argsort(eigenvalues, descending=True)
-        eigenvalues = eigenvalues[order]
-        eigenvectors = eigenvectors[:, order]
+        gram_values, gram_vectors = torch.linalg.eigh(small_matrix)
+        gram_scale = gram_values.abs().max().clamp_min(1.0)
+        gram_tolerance = torch.finfo(gram_values.dtype).eps * sketch_size * gram_scale
+        gram_keep = torch.isfinite(gram_values) & (gram_values > gram_tolerance)
+        if not torch.any(gram_keep):
+            return gram_values.new_empty(0), sketch.new_empty(parameter_count, 0)
+        inverse_root = (
+            gram_vectors[:, gram_keep]
+            * gram_values[gram_keep].rsqrt().unsqueeze(0)
+        ) @ gram_vectors[:, gram_keep].mT
+        nystrom_factor = sketch @ inverse_root
+        eigenvectors, singular_values, _ = torch.linalg.svd(
+            nystrom_factor, full_matrices=False
+        )
+        eigenvalues = singular_values.square()
         keep = torch.isfinite(eigenvalues) & (eigenvalues > self.tol)
         retained_indices = torch.nonzero(keep, as_tuple=False).flatten()[: self.rank]
         if retained_indices.numel() == 0:
-            return eigenvalues.new_empty(0), basis.new_empty(parameter_count, 0)
+            return eigenvalues.new_empty(0), sketch.new_empty(parameter_count, 0)
         retained_values = eigenvalues[retained_indices]
-        retained_vectors = basis @ eigenvectors[:, retained_indices]
+        retained_vectors = eigenvectors[:, retained_indices]
         return retained_values, retained_vectors
 
     @torch.no_grad()
@@ -207,9 +262,17 @@ class ErrorWhiteningGN(torch.optim.Optimizer):
 
         detached_residuals = residuals.detach().double()
         loss_before = 0.5 * torch.dot(detached_residuals, detached_residuals)
-        jacobian = self._explicit_jacobian(residuals, parameters)
-        gradient = jacobian.mT @ detached_residuals
-        eigenvalues, eigenvectors = self._randomized_eigensystem(jacobian)
+        gradient_parts = torch.autograd.grad(
+            residuals,
+            parameters,
+            grad_outputs=detached_residuals.to(residuals.dtype),
+            retain_graph=True,
+            allow_unused=True,
+        )
+        gradient = self._flatten_gradients(gradient_parts, parameters)
+        eigenvalues, eigenvectors = self._randomized_eigensystem(
+            residuals, parameters, gradient.numel()
+        )
 
         if eigenvalues.numel() == 0:
             direction = torch.zeros_like(gradient)
@@ -252,6 +315,8 @@ class ErrorWhiteningGN(torch.optim.Optimizer):
             "explained_gradient_fraction": float(explained_fraction.cpu()),
             "residual_count": int(residuals.numel()),
             "parameter_count": int(gradient.numel()),
+            "operator_batch_size": self.operator_batch_size,
+            "gn_operator_passes": 1,
         }
         self.last_diagnostics = diagnostics
         self.diagnostics_history.append(diagnostics.copy())

@@ -726,11 +726,13 @@ def error_whitening_residual_closure(
         flattened = error.reshape(-1) / scale
         residual_parts.append(flattened * math.sqrt(weight / flattened.numel()))
 
-    def closure():
+    def evaluate(create_graph_for_backward):
         batch_points = point_tensor[indices].detach().clone().requires_grad_(True)
         if active_derivatives or pde_weight > 0.0:
             predicted = ks_terms(
-                student, batch_points, create_graph_for_backward=True
+                student,
+                batch_points,
+                create_graph_for_backward=create_graph_for_backward,
             )
         else:
             predicted = {"u": student(batch_points)}
@@ -756,6 +758,13 @@ def error_whitening_residual_closure(
             raise ValueError("ErrorWhiteningGN has no active residual terms")
         return torch.cat(residual_parts)
 
+    def closure():
+        return evaluate(create_graph_for_backward=True)
+
+    def line_search_closure():
+        return evaluate(create_graph_for_backward=False)
+
+    closure.line_search_closure = line_search_closure
     return closure
 
 
@@ -800,6 +809,7 @@ def build_training_optimizer(student, args):
             damping=args.gn_damping,
             line_search=args.gn_line_search,
             seed=args.seed,
+            operator_batch_size=args.gn_operator_batch_size,
         )
         return build_data_optimizer(student, args)
 
@@ -1159,8 +1169,8 @@ def train_student(args, student, points, targets, scales, device, run_dir, metad
         optimizer.zero_grad(set_to_none=True)
         gn_diagnostics = None
         if isinstance(optimizer, ErrorWhiteningGN):
-            # Release the diagnostic graph before constructing the explicit
-            # residual Jacobian; the closure rebuilds this fixed mini-batch.
+            # Release the diagnostic graph before the matrix-free JVP/VJP
+            # sketch; the closure rebuilds this fixed mini-batch.
             total = total.detach()
             data_mse = data_mse.detach()
             data_l2re = data_l2re.detach()
@@ -1315,6 +1325,8 @@ def run(args):
         raise ValueError("kl-max-clamp-value must be positive")
     if args.gn_rank <= 0 or args.gn_oversketch < 0:
         raise ValueError("gn-rank must be positive and gn-oversketch non-negative")
+    if args.gn_operator_batch_size <= 0:
+        raise ValueError("gn-operator-batch-size must be positive")
     if args.gn_tol < 0.0 or not math.isfinite(args.gn_tol):
         raise ValueError("gn-tol must be finite and non-negative")
     if args.gn_damping < 0.0 or not math.isfinite(args.gn_damping):
@@ -1543,7 +1555,7 @@ def parse_args(argv=None):
     parser.add_argument("--rwf-sigma", type=float, default=0.1)
     parser.add_argument("--precision", choices=["float32", "float64"], default="float64")
     parser.add_argument("--iterations", type=int, default=30000)
-    parser.add_argument("--batch-size", type=int, default=32)
+    parser.add_argument("--batch-size", type=int, default=256)
     parser.add_argument(
         "--optimizer",
         choices=[
@@ -1559,8 +1571,9 @@ def parse_args(argv=None):
     parser.add_argument("--gn-rank", type=int, default=100)
     parser.add_argument("--gn-oversketch", type=int, default=10)
     parser.add_argument("--gn-tol", type=float, default=1e-14)
-    parser.add_argument("--gn-damping", type=float, default=1e-8)
+    parser.add_argument("--gn-damping", type=float, default=0.0)
     parser.add_argument("--gn-line-search", type=parse_bool, default=True)
+    parser.add_argument("--gn-operator-batch-size", type=int, default=8)
     parser.add_argument(
         "--matrix-fallback",
         choices=["adam", "soap"],

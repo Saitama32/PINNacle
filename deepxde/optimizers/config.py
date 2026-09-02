@@ -399,8 +399,9 @@ def set_ERROR_WHITENING_GN_options(
     damping=1e-8,
     line_search=True,
     seed=0,
+    operator_batch_size=8,
 ):
-    """Set explicit-Jacobian low-rank ErrorWhiteningGN options."""
+    """Set matrix-free low-rank ErrorWhiteningGN options."""
 
     if rank <= 0:
         raise ValueError("ErrorWhiteningGN rank must be positive")
@@ -410,6 +411,8 @@ def set_ERROR_WHITENING_GN_options(
         raise ValueError("ErrorWhiteningGN tolerance must be finite and nonnegative")
     if damping < 0 or not math.isfinite(damping):
         raise ValueError("ErrorWhiteningGN damping must be finite and nonnegative")
+    if operator_batch_size <= 0:
+        raise ValueError("ErrorWhiteningGN operator_batch_size must be positive")
     ERROR_WHITENING_GN_options.update(
         rank=int(rank),
         oversketch=int(oversketch),
@@ -417,6 +420,7 @@ def set_ERROR_WHITENING_GN_options(
         damping=float(damping),
         line_search=bool(line_search),
         seed=int(seed),
+        operator_batch_size=int(operator_batch_size),
     )
 
 
