@@ -1,10 +1,9 @@
-"""Train a KS MLP with matrix-free JFNK and a KL-SOAP preconditioner.
+"""Train an exact-data KS MLP with optional spectral PDE preconditioning.
 
-The teacher is the Fourier-in-space/cubic-spline-in-time representation of the
-rectangular reference data.  A dense or RWF MLP (the student) is trained with
-a normalized Sobolev residual on ``u``, ``u_t``, ``u_x``, ``u_xx`` and
-``u_xxxx``.  The optimizer solves damped Gauss--Newton systems by matrix-free
-PCG; KL-SOAP supplies frozen Kronecker factors but never takes an outer step.
+This is a standalone variant of ``run_data_ks_exact_mlp.py``.  The network,
+optimizer routing, supervised Sobolev terms, diagnostics, and sampling are kept
+local to this file.  Only the strong-form PDE objective can be replaced by a
+static inverse-symbol weighting on complete periodic spatial slices.
 """
 
 from __future__ import annotations
@@ -30,7 +29,6 @@ if str(PROJECT_ROOT) not in sys.path:
 import deepxde as dde
 import numpy as np
 import torch
-from deepxde.optimizers.pytorch.klopt import KLOpt
 from deepxde.optimizers.pytorch.mousse import MousseWithAuxLion
 from deepxde.optimizers.pytorch.muon import MuonWithAuxAdam
 from deepxde.optimizers.pytorch.mop import MOPWithAuxAdam
@@ -361,6 +359,84 @@ def ks_residual(network, points, alpha=KS_ALPHA, beta=KS_BETA, gamma=KS_GAMMA):
     return ks_terms(network, points, alpha=alpha, beta=beta, gamma=gamma)["residual"]
 
 
+def spectral_linear_weights(
+    nx: int,
+    dx: float,
+    beta: float,
+    gamma: float,
+    mu: float,
+    alpha: float,
+    *,
+    dtype: torch.dtype,
+    device: torch.device,
+) -> torch.Tensor:
+    """Return normalized, constant KS linear-symbol weights for all FFT modes."""
+
+    if nx < 2:
+        raise ValueError("The spectral PDE grid needs at least two spatial points")
+    if not math.isfinite(dx) or dx <= 0.0:
+        raise ValueError("The spectral PDE grid spacing must be positive and finite")
+    if not math.isfinite(mu) or mu <= 0.0:
+        raise ValueError("spectral-precond-mu must be positive and finite")
+    if not math.isfinite(alpha) or alpha < 0.0:
+        raise ValueError("spectral-precond-alpha must be non-negative and finite")
+
+    # torch.fft.fftfreq returns cycles/unit; KS derivatives use angular modes.
+    modes = 2.0 * math.pi * torch.fft.fftfreq(nx, d=dx, device=device)
+    modes = modes.to(dtype=dtype)
+    symbol = -beta * modes.square() + gamma * modes.pow(4)
+    weights = (mu + symbol.square()).pow(-alpha)
+    weights[0] = 1.0
+    weights = weights / torch.sqrt(torch.mean(weights.square()))
+    return weights.detach()
+
+
+def fourier_pde_losses(
+    residual: torch.Tensor, weights: torch.Tensor
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Return raw and weighted MSEs using an orthonormal spatial FFT.
+
+    ``residual`` has shape ``(n_t, n_x)``.  No transform is ever applied along
+    its time-slice axis.  With ``norm='ortho'``, Parseval makes the unweighted
+    Fourier MSE equal to ``mean(residual**2)`` without another scale factor.
+    """
+
+    if residual.ndim != 2:
+        raise ValueError("The KS residual must have shape (n_t, n_x)")
+    if weights.ndim != 1 or weights.shape[0] != residual.shape[1]:
+        raise ValueError("Spectral weights must have shape (n_x,)")
+    coefficients = torch.fft.fft(residual, dim=1, norm="ortho")
+    raw_pde_mse = torch.mean(residual.square())
+    preconditioned_pde_loss = torch.mean(
+        torch.abs(coefficients * weights.unsqueeze(0)).square()
+    )
+    return raw_pde_mse, preconditioned_pde_loss
+
+
+def _periodic_pde_grid(points, targets, dtype, device):
+    """Recover the reference grid, excluding a duplicated periodic endpoint."""
+
+    x, t, target_u, duplicate = rectangular_field(points, targets["u"])
+    if len(x) < 2 or len(t) < 1:
+        raise ValueError("Spectral PDE loss requires at least 2 x points and 1 t point")
+    spacing = np.diff(x)
+    if not np.allclose(spacing, spacing[0], rtol=1e-8, atol=1e-12):
+        raise ValueError("Spectral PDE loss requires a uniform periodic x grid")
+    x_tensor = torch.as_tensor(x, dtype=dtype, device=device)
+    t_tensor = torch.as_tensor(t, dtype=dtype, device=device)
+    target_u_tensor = torch.as_tensor(target_u, dtype=dtype, device=device)
+    return x_tensor, t_tensor, target_u_tensor, float(spacing[0]), duplicate
+
+
+def _pde_slice_points(x_grid, sampled_times):
+    """Flatten a time-major (t, x) grid into network input points."""
+
+    nt = sampled_times.numel()
+    nx = x_grid.numel()
+    return torch.stack(
+        (x_grid.repeat(nt), sampled_times.repeat_interleave(nx)), dim=1
+    )
+
 def _plot_grid_fields(path, x, t, fields, title: str, log_absolute: bool = False):
     import matplotlib.pyplot as plt
 
@@ -520,478 +596,6 @@ def parse_bool(value):
     raise argparse.ArgumentTypeError(
         f"Expected a boolean value (true/false), got {value!r}"
     )
-
-
-class _Float64KLOptStatistics(KLOpt):
-    """KLOpt statistics with float64 eigensolvers for the JFNK preconditioner."""
-
-    def get_orthogonal_matrix(self, matrices):
-        bases = []
-        inverse_sqrts = []
-        for matrix in matrices:
-            if len(matrix) == 0:
-                bases.append([])
-                continue
-            _, basis = torch.linalg.eigh(
-                matrix
-                + 1e-30
-                * torch.eye(matrix.shape[0], device=matrix.device, dtype=matrix.dtype)
-            )
-            basis = torch.flip(basis, [1])
-            inverse_sqrts.append(
-                torch.full(
-                    (basis.shape[0],),
-                    self.init_factor**-0.5,
-                    device=basis.device,
-                    dtype=basis.dtype,
-                )
-            )
-            bases.append(basis)
-        return bases, inverse_sqrts
-
-    @staticmethod
-    def get_orthogonal_matrix_QR(state):
-        return [
-            torch.linalg.qr(matrix @ basis).Q
-            for matrix, basis in zip(state["GG"], state["Q"])
-        ]
-
-
-class JFNKKLSoap(torch.optim.Optimizer):
-    """Matrix-free damped Gauss--Newton with frozen KL-SOAP PCG geometry."""
-
-    _LINE_SEARCH_STEPS = (1.0, 0.5, 0.25, 0.125, 0.0625)
-
-    def __init__(
-        self,
-        params,
-        damping=1e-4,
-        cg_max_iter=20,
-        cg_tol=1e-4,
-        preconditioner="klsoap",
-        diagnostic_every=50,
-        full_step_patience=3,
-        kl_betas=(0.9, 0.95),
-        kl_shampoo_beta=0.95,
-        kl_epsilon=1e-8,
-        kl_precondition_frequency=1,
-        kl_init_factor=0.1,
-        kl_using_clamping=True,
-        kl_max_clamp_value=4000,
-    ):
-        parameters = [parameter for parameter in params if parameter.requires_grad]
-        if not parameters:
-            raise ValueError("JFNKKLSoap has no trainable parameters")
-        if any(parameter.dtype != torch.float64 for parameter in parameters):
-            raise ValueError("JFNKKLSoap requires float64 model parameters")
-        if damping <= 0.0 or not math.isfinite(damping):
-            raise ValueError("jfnk damping must be positive and finite")
-        if cg_max_iter <= 0 or not 0.0 < cg_tol < 1.0:
-            raise ValueError("invalid JFNK PCG iteration count or tolerance")
-        if preconditioner not in {"none", "klsoap"}:
-            raise ValueError("JFNK preconditioner must be 'none' or 'klsoap'")
-        if diagnostic_every < 0 or full_step_patience <= 0:
-            raise ValueError("invalid JFNK diagnostic frequency or full-step patience")
-
-        super().__init__(parameters, {"lr": 1.0})
-        self.parameters_flat_order = parameters
-        self.damping = float(damping)
-        self.cg_max_iter = int(cg_max_iter)
-        self.cg_tol = float(cg_tol)
-        self.preconditioner_name = preconditioner
-        self.diagnostic_every = int(diagnostic_every)
-        self.full_step_patience = int(full_step_patience)
-        self.kl_epsilon = float(kl_epsilon)
-        self._outer_step = 0
-        self._consecutive_full_steps = 0
-        self.last_diagnostics = {}
-        self.diagnostics_history = []
-        self.last_failure_reason = ""
-
-        self._offsets = {}
-        offset = 0
-        matrix_parameters = []
-        for parameter in parameters:
-            stop = offset + parameter.numel()
-            self._offsets[id(parameter)] = (offset, stop)
-            if parameter.ndim == 2 and min(parameter.shape) > 1:
-                matrix_parameters.append(parameter)
-            offset = stop
-        self.parameter_count = offset
-        self.matrix_parameters = matrix_parameters
-        self.kl_statistics = None
-        if preconditioner == "klsoap" and matrix_parameters:
-            self.kl_statistics = _Float64KLOptStatistics(
-                matrix_parameters,
-                lr=0.0,
-                betas=kl_betas,
-                shampoo_beta=kl_shampoo_beta,
-                eps=kl_epsilon,
-                weight_decay=0.0,
-                precondition_frequency=kl_precondition_frequency,
-                using_klsoap=True,
-                normalize_grads=False,
-                init_factor=kl_init_factor,
-                using_damping=False,
-                using_clamping=kl_using_clamping,
-                max_clamp_value=kl_max_clamp_value,
-                cast_dtype=torch.float64,
-            )
-
-    @staticmethod
-    def _residual_vector(value):
-        if isinstance(value, (tuple, list)):
-            value = value[0]
-        if not torch.is_tensor(value) or value.ndim == 0 or value.numel() == 0:
-            raise ValueError("JFNKKLSoap closure must return a nonempty residual vector")
-        return value.reshape(-1)
-
-    def _flatten(self, values, zero_for_none=False):
-        flat = []
-        for value, parameter in zip(values, self.parameters_flat_order):
-            if value is None:
-                if not zero_for_none:
-                    raise RuntimeError("unexpected unused JFNK parameter")
-                flat.append(torch.zeros_like(parameter).reshape(-1))
-            else:
-                flat.append(value.reshape(-1).double())
-        return torch.cat(flat)
-
-    def _flat_parameters(self):
-        return torch.cat(
-            [parameter.detach().reshape(-1) for parameter in self.parameters_flat_order]
-        )
-
-    def _set_flat_parameters(self, flat_values):
-        with torch.no_grad():
-            for parameter in self.parameters_flat_order:
-                start, stop = self._offsets[id(parameter)]
-                parameter.copy_(flat_values[start:stop].reshape_as(parameter))
-
-    def _build_normal_operator(self, residuals, damping):
-        cotangent = torch.zeros_like(residuals, requires_grad=True)
-        jt_cotangent = torch.autograd.grad(
-            residuals,
-            self.parameters_flat_order,
-            grad_outputs=cotangent,
-            create_graph=True,
-            retain_graph=True,
-            allow_unused=True,
-        )
-        flat_jt_cotangent = self._flatten(jt_cotangent, zero_for_none=True)
-
-        def operator(vector):
-            jvp = torch.autograd.grad(
-                torch.dot(flat_jt_cotangent, vector),
-                cotangent,
-                retain_graph=True,
-            )[0]
-            vjp = torch.autograd.grad(
-                residuals,
-                self.parameters_flat_order,
-                grad_outputs=jvp.detach(),
-                retain_graph=True,
-                allow_unused=True,
-            )
-            return self._flatten(vjp, zero_for_none=True) + damping * vector
-
-        return operator
-
-    @torch.no_grad()
-    def _update_kl_statistics(self, gradient):
-        if self.kl_statistics is None:
-            return
-        group = self.kl_statistics.param_groups[0]
-        for parameter in self.matrix_parameters:
-            start, stop = self._offsets[id(parameter)]
-            matrix_gradient = gradient[start:stop].reshape_as(parameter)
-            state = self.kl_statistics.state[parameter]
-            if "step" not in state:
-                state["step"] = 0
-                state["exp_avg"] = torch.zeros_like(matrix_gradient)
-                state["exp_avg_sq"] = torch.zeros_like(matrix_gradient)
-                self.kl_statistics.init_preconditioner(
-                    matrix_gradient,
-                    state,
-                    precondition_frequency=group["precondition_frequency"],
-                    shampoo_beta=(
-                        group["shampoo_beta"]
-                        if group["shampoo_beta"] >= 0
-                        else group["betas"][1]
-                    ),
-                )
-                self.kl_statistics.update_preconditioner(matrix_gradient, state)
-                continue
-            state["step"] += 1
-            self.kl_statistics.klsoap_update(
-                state,
-                matrix_gradient,
-                group["betas"][0],
-                group["betas"][1],
-                group["eps"],
-            )
-            self.kl_statistics.update_preconditioner(matrix_gradient, state)
-
-    @torch.no_grad()
-    def _apply_preconditioner(self, vector, damping, enabled=True):
-        if not enabled or self.kl_statistics is None:
-            return vector.clone()
-        output = vector.clone()
-        for parameter in self.matrix_parameters:
-            start, stop = self._offsets[id(parameter)]
-            state = self.kl_statistics.state[parameter]
-            if state.get("Q") is None:
-                continue
-            matrix = vector[start:stop].reshape_as(parameter)
-            projected = self.kl_statistics.project(matrix, state)
-            left_scale = state["eigen_sqrt_inv"][0].square().reciprocal()
-            right_scale = state["eigen_sqrt_inv"][1].square().reciprocal()
-            denominator = (
-                left_scale.view(-1, 1) * right_scale.view(1, -1) + damping
-            ).clamp_min(self.kl_epsilon)
-            preconditioned = self.kl_statistics.project_back(
-                projected / denominator, state
-            )
-            output[start:stop] = preconditioned.reshape(-1)
-        return output
-
-    def _pcg(self, operator, rhs, damping, use_preconditioner):
-        solution = torch.zeros_like(rhs)
-        residual = rhs.clone()
-        rhs_norm = torch.linalg.vector_norm(rhs)
-        initial_norm = torch.linalg.vector_norm(residual)
-        if not torch.isfinite(rhs_norm) or rhs_norm == 0:
-            zero_rhs = bool((rhs_norm == 0).item())
-            invalid_rhs = bool((~torch.isfinite(rhs_norm)).item())
-            return solution, 0, zero_rhs, invalid_rhs, initial_norm, initial_norm
-        z = self._apply_preconditioner(residual, damping, use_preconditioner)
-        rz = torch.dot(residual, z)
-        if not torch.isfinite(rz) or rz <= 0:
-            return solution, 0, False, True, initial_norm, initial_norm
-        direction = z.clone()
-        converged = False
-        breakdown = False
-        final_norm = initial_norm
-        iterations = 0
-        for iteration in range(1, self.cg_max_iter + 1):
-            action = operator(direction)
-            curvature = torch.dot(direction, action)
-            if not torch.isfinite(action).all() or not torch.isfinite(curvature) or curvature <= 0:
-                breakdown = True
-                break
-            alpha = rz / curvature
-            if not torch.isfinite(alpha):
-                breakdown = True
-                break
-            solution = solution + alpha * direction
-            residual = residual - alpha * action
-            final_norm = torch.linalg.vector_norm(residual)
-            iterations = iteration
-            if not torch.isfinite(final_norm):
-                breakdown = True
-                break
-            if final_norm / rhs_norm < self.cg_tol:
-                converged = True
-                break
-            z = self._apply_preconditioner(residual, damping, use_preconditioner)
-            new_rz = torch.dot(residual, z)
-            if not torch.isfinite(new_rz) or new_rz <= 0 or not torch.isfinite(z).all():
-                breakdown = True
-                break
-            beta = new_rz / rz
-            if not torch.isfinite(beta):
-                breakdown = True
-                break
-            direction = z + beta * direction
-            rz = new_rz
-        return solution, iterations, converged, breakdown, initial_norm, final_norm
-
-    @staticmethod
-    def _closure_loss(closure):
-        evaluation = getattr(closure, "line_search_closure", closure)
-        with torch.enable_grad():
-            residuals = JFNKKLSoap._residual_vector(evaluation())
-        detached = residuals.detach()
-        return 0.5 * torch.dot(detached, detached)
-
-    def _record_nonfinite_failure(self, loss_before, gradient, reason):
-        """Reject a non-finite outer step before it can poison KL statistics."""
-
-        damping_used = self.damping
-        self.damping *= 10.0
-        self._consecutive_full_steps = 0
-        self.last_failure_reason = reason
-        grad_norm = (
-            torch.linalg.vector_norm(gradient).item() if gradient is not None else math.nan
-        )
-        diagnostics = {
-            "loss_before": float(loss_before.detach().cpu()),
-            "loss_after": float(loss_before.detach().cpu()),
-            "accepted_alpha": 0.0,
-            "damping": float(damping_used),
-            "damping_next": float(self.damping),
-            "grad_norm": float(grad_norm),
-            "gn_step_norm": 0.0,
-            "accepted_step_norm": 0.0,
-            "relative_step_norm": 0.0,
-            "cg_iterations": 0,
-            "cg_initial_residual": math.nan,
-            "cg_final_residual": math.nan,
-            "cg_relative_residual": math.nan,
-            "cg_converged": False,
-            "cg_breakdown": True,
-            "rhs_norm": math.nan,
-            "preconditioned_rhs_norm": math.nan,
-            "cg_iters_no_prec": -1,
-            "cg_rel_no_prec": math.nan,
-            "cg_iters_prec": -1,
-            "cg_rel_prec": math.nan,
-            "cg_iters_klsoap_prec": -1,
-            "using_klsoap_preconditioner": bool(
-                self.preconditioner_name == "klsoap"
-            ),
-            "failure_code": 1,
-        }
-        self.last_diagnostics = diagnostics
-        self.diagnostics_history.append(diagnostics.copy())
-        self._outer_step += 1
-        return diagnostics
-
-    def step(self, closure=None):
-        if closure is None:
-            raise ValueError("JFNKKLSoap.step requires a residual closure")
-        with torch.enable_grad():
-            residuals = self._residual_vector(closure())
-        detached_residuals = residuals.detach()
-        loss_before = 0.5 * torch.dot(detached_residuals, detached_residuals)
-        if not torch.isfinite(detached_residuals).all():
-            return self._record_nonfinite_failure(
-                loss_before, None, "nonfinite_residual"
-            )
-        gradient_parts = torch.autograd.grad(
-            residuals,
-            self.parameters_flat_order,
-            grad_outputs=detached_residuals,
-            retain_graph=True,
-            allow_unused=True,
-        )
-        gradient = self._flatten(gradient_parts, zero_for_none=True)
-        if not torch.isfinite(gradient).all():
-            return self._record_nonfinite_failure(
-                loss_before, gradient, "nonfinite_gradient"
-            )
-        rhs = -gradient
-        damping_used = self.damping
-        self._update_kl_statistics(gradient)
-        apply_klsoap = self.preconditioner_name == "klsoap"
-        preconditioned_rhs = self._apply_preconditioner(
-            rhs, damping_used, apply_klsoap
-        )
-        operator = self._build_normal_operator(residuals, damping_used)
-        (
-            step_direction,
-            cg_iterations,
-            cg_converged,
-            cg_breakdown,
-            cg_initial_residual,
-            cg_final_residual,
-        ) = self._pcg(operator, rhs, damping_used, apply_klsoap)
-
-        no_prec_iterations = -1
-        no_prec_relative_residual = math.nan
-        if (
-            self.diagnostic_every > 0
-            and (self._outer_step + 1) % self.diagnostic_every == 0
-        ):
-            (
-                _,
-                no_prec_iterations,
-                _,
-                _,
-                _,
-                no_prec_final_residual,
-            ) = self._pcg(
-                operator, rhs, damping_used, False
-            )
-            no_prec_relative_residual = float(
-                (no_prec_final_residual / torch.linalg.vector_norm(rhs).clamp_min(1e-30))
-                .detach()
-                .cpu()
-            )
-
-        base_parameters = self._flat_parameters()
-        accepted_alpha = 0.0
-        loss_after = loss_before
-        self.last_failure_reason = ""
-        if cg_breakdown or not torch.isfinite(step_direction).all():
-            self.last_failure_reason = "pcg_breakdown"
-        else:
-            for alpha in self._LINE_SEARCH_STEPS:
-                self._set_flat_parameters(base_parameters + alpha * step_direction)
-                candidate_loss = self._closure_loss(closure)
-                if torch.isfinite(candidate_loss) and candidate_loss < loss_before:
-                    accepted_alpha = alpha
-                    loss_after = candidate_loss
-                    break
-            if accepted_alpha == 0.0:
-                self._set_flat_parameters(base_parameters)
-                self.last_failure_reason = "line_search_rejected"
-
-        if accepted_alpha == 0.0:
-            self.damping *= 10.0
-            self._consecutive_full_steps = 0
-        elif accepted_alpha == 1.0:
-            self._consecutive_full_steps += 1
-            if self._consecutive_full_steps >= self.full_step_patience:
-                self.damping *= 0.5
-                self._consecutive_full_steps = 0
-        else:
-            self._consecutive_full_steps = 0
-
-        rhs_norm = torch.linalg.vector_norm(rhs)
-        step_norm = torch.linalg.vector_norm(step_direction)
-        accepted_step_norm = accepted_alpha * step_norm
-        parameter_norm = torch.linalg.vector_norm(base_parameters)
-        diagnostics = {
-            "loss_before": float(loss_before.cpu()),
-            "loss_after": float(loss_after.cpu()),
-            "accepted_alpha": float(accepted_alpha),
-            "damping": float(damping_used),
-            "damping_next": float(self.damping),
-            "grad_norm": float(torch.linalg.vector_norm(gradient).cpu()),
-            "gn_step_norm": float(step_norm.cpu()),
-            "accepted_step_norm": float(accepted_step_norm.cpu()),
-            "relative_step_norm": float(
-                (step_norm / parameter_norm.clamp_min(1e-30)).cpu()
-            ),
-            "cg_iterations": int(cg_iterations),
-            "cg_initial_residual": float(cg_initial_residual.cpu()),
-            "cg_final_residual": float(cg_final_residual.cpu()),
-            "cg_relative_residual": float(
-                (cg_final_residual / rhs_norm.clamp_min(1e-30)).cpu()
-            ),
-            "cg_converged": bool(cg_converged),
-            "cg_breakdown": bool(cg_breakdown),
-            "rhs_norm": float(rhs_norm.cpu()),
-            "preconditioned_rhs_norm": float(
-                torch.linalg.vector_norm(preconditioned_rhs).cpu()
-            ),
-            "cg_iters_no_prec": int(no_prec_iterations),
-            "cg_rel_no_prec": float(no_prec_relative_residual),
-            "cg_iters_prec": int(cg_iterations) if apply_klsoap else -1,
-            "cg_rel_prec": (
-                float((cg_final_residual / rhs_norm.clamp_min(1e-30)).cpu())
-                if apply_klsoap
-                else math.nan
-            ),
-            "cg_iters_klsoap_prec": int(cg_iterations) if apply_klsoap else -1,
-            "using_klsoap_preconditioner": bool(apply_klsoap),
-            "failure_code": int(bool(self.last_failure_reason)),
-        }
-        self.last_diagnostics = diagnostics
-        self.diagnostics_history.append(diagnostics.copy())
-        self._outer_step += 1
-        return diagnostics
 
 
 class CubicReLUCoefficientMLP(torch.nn.Module):
@@ -1181,57 +785,6 @@ def loss_weights(args):
     }
 
 
-def build_jfnk_residual_closure(
-    student,
-    point_tensor,
-    indices,
-    target_tensors,
-    scales,
-    weights,
-    active_derivatives,
-    derivative_factor,
-    pde_weight,
-):
-    """Build a fixed-minibatch, square-root-weighted residual callback."""
-
-    def residual_vector(create_graph_for_backward):
-        batch_points = point_tensor[indices].detach().clone().requires_grad_(True)
-        predicted = ks_terms(
-            student,
-            batch_points,
-            create_graph_for_backward=create_graph_for_backward,
-        )
-        blocks = []
-        count = batch_points.shape[0]
-        if weights["u"] > 0.0:
-            scale = math.sqrt(weights["u"] / count) / scales["u"]
-            blocks.append((predicted["u"] - target_tensors["u"][indices]).reshape(-1) * scale)
-        for key in active_derivatives:
-            effective_weight = derivative_factor * weights[key]
-            if effective_weight > 0.0:
-                scale = math.sqrt(effective_weight / count) / scales[key]
-                blocks.append(
-                    (predicted[key] - target_tensors[key][indices]).reshape(-1) * scale
-                )
-        if pde_weight > 0.0:
-            blocks.append(
-                predicted["residual"].reshape(-1)
-                * math.sqrt(pde_weight / predicted["residual"].numel())
-            )
-        if not blocks:
-            raise RuntimeError("The JFNK residual vector has no active components")
-        return torch.cat(blocks)
-
-    def closure():
-        return residual_vector(create_graph_for_backward=True)
-
-    def line_search_closure():
-        return residual_vector(create_graph_for_backward=False)
-
-    closure.line_search_closure = line_search_closure
-    return closure
-
-
 def matrix_auxiliary_group(
     args, params, use_flag, lr, adam_betas, adam_eps, weight_decay
 ):
@@ -1264,29 +817,6 @@ def matrix_auxiliary_group(
 
 def build_training_optimizer(student, args):
     """Build an optimizer with dense/RWF-aware routing for matrix optimizers."""
-
-    if args.optimizer == "jfnk_klsoap":
-        shampoo_beta = (
-            args.kl_beta2
-            if args.kl_shampoo_beta is None
-            else args.kl_shampoo_beta
-        )
-        return JFNKKLSoap(
-            student.parameters(),
-            damping=args.jfnk_damping,
-            cg_max_iter=args.jfnk_cg_max_iter,
-            cg_tol=args.jfnk_cg_tol,
-            preconditioner=args.jfnk_preconditioner,
-            diagnostic_every=args.jfnk_diagnostic_every,
-            full_step_patience=args.jfnk_full_step_patience,
-            kl_betas=(args.kl_beta1, args.kl_beta2),
-            kl_shampoo_beta=shampoo_beta,
-            kl_epsilon=1e-8 if args.kl_epsilon is None else args.kl_epsilon,
-            kl_precondition_frequency=args.kl_precondition_frequency,
-            kl_init_factor=args.kl_init_factor,
-            kl_using_clamping=args.kl_clamping,
-            kl_max_clamp_value=args.kl_max_clamp_value,
-        )
 
     hidden_matrices = [
         layer.V if hasattr(layer, "V") else layer.weight
@@ -1575,13 +1105,17 @@ def derivative_metrics(network, points, targets, scales, batch_size, device):
 
 
 def train_student(args, student, points, targets, scales, device, run_dir, metadata):
+    """Baseline training loop with only its PDE objective replaced."""
+
     dtype = TORCH_DTYPES[args.precision]
     point_tensor = torch.as_tensor(points, dtype=dtype, device=device)
     target_tensors = {
         key: torch.as_tensor(value, dtype=dtype, device=device)
         for key, value in targets.items()
     }
-    initial_mask = np.isclose(points[:, 1], np.min(points[:, 1]), rtol=0.0, atol=1e-12)
+    initial_mask = np.isclose(
+        points[:, 1], np.min(points[:, 1]), rtol=0.0, atol=1e-12
+    )
     if not np.any(initial_mask):
         raise ValueError("The reference data contain no initial-time points")
     initial_indices = torch.as_tensor(
@@ -1589,33 +1123,68 @@ def train_student(args, student, points, targets, scales, device, run_dir, metad
     )
     initial_points = point_tensor[initial_indices]
     initial_targets = target_tensors["u"][initial_indices]
-    weights = loss_weights(args)
-    active_derivatives = [key for key in DERIVATIVE_KEYS if weights[key] > 0.0]
-    if weights["u"] <= 0.0 and not active_derivatives and args.pde_weight <= 0.0:
-        raise ValueError("At least one data, derivative, or PDE weight must be positive")
+
+    weights_by_term = loss_weights(args)
+    active_derivatives = [
+        key for key in DERIVATIVE_KEYS if weights_by_term[key] > 0.0
+    ]
+    if (
+        weights_by_term["u"] <= 0.0
+        and not active_derivatives
+        and args.pde_weight <= 0.0
+        and args.spectral_data_weight <= 0.0
+    ):
+        raise ValueError(
+            "At least one data, derivative, PDE, or spectral-data weight must be positive"
+        )
+
+    x_grid, t_grid, target_u_grid, dx, duplicate = _periodic_pde_grid(
+        points, targets, dtype, device
+    )
+    nx = x_grid.numel()
+    # Match the baseline batch point budget as closely as complete x-slices allow.
+    pde_time_slices = max(1, int(round(args.batch_size / nx)))
+    if args.pde_preconditioner == "spectral_linear":
+        spectral_weights = spectral_linear_weights(
+            nx,
+            dx,
+            KS_BETA,
+            KS_GAMMA,
+            args.spectral_precond_mu,
+            args.spectral_precond_alpha,
+            dtype=dtype,
+            device=device,
+        )
+    else:
+        spectral_weights = torch.ones(nx, dtype=dtype, device=device)
 
     optimizer = build_training_optimizer(student, args)
     scheduler = (
         torch.optim.lr_scheduler.CosineAnnealingLR(
             optimizer, T_max=max(args.iterations, 1), eta_min=args.lr_min
         )
-        if args.lr_min < args.lr and not isinstance(optimizer, JFNKKLSoap) else None
+        if args.lr_min < args.lr
+        else None
     )
-    generator = torch.Generator(device=device).manual_seed(args.seed)
+    # Separate generators preserve the baseline supervised sampling sequence.
+    data_generator = torch.Generator(device=device).manual_seed(args.seed)
+    pde_generator = torch.Generator(device=device).manual_seed(args.seed + 1)
     history = []
+
     for iteration in range(1, args.iterations + 1):
         student.train()
         if args.batch_size >= len(point_tensor):
             indices = torch.arange(len(point_tensor), device=device)
         else:
             indices = torch.randint(
-                len(point_tensor), (args.batch_size,), generator=generator, device=device
+                len(point_tensor),
+                (args.batch_size,),
+                generator=data_generator,
+                device=device,
             )
         batch_points = point_tensor[indices].detach().clone().requires_grad_(True)
         predicted = ks_terms(
-            student,
-            batch_points,
-            create_graph_for_backward=not isinstance(optimizer, JFNKKLSoap),
+            student, batch_points, create_graph_for_backward=True
         )
         data_target = target_tensors["u"][indices]
         data_error = predicted["u"] - data_target
@@ -1629,175 +1198,167 @@ def train_student(args, student, points, targets, scales, device, run_dir, metad
             error = predicted[key] - target_tensors[key][indices]
             component_losses[key] = torch.mean(error.square()) / (scales[key] ** 2)
 
-        if args.derivative_warmup <= 0:
-            derivative_factor = 1.0
-        else:
-            derivative_factor = min(1.0, iteration / args.derivative_warmup)
-        total = weights["u"] * component_losses["u"]
-        for key in active_derivatives:
-            total = total + derivative_factor * weights[key] * component_losses[key]
-        # Keep this diagnostic/optional term in physical units, matching
-        # evaluate_pinn_loss.  Its default weight is zero: this script's main
-        # objective is supervised value-and-derivative matching.
-        pde_loss = torch.mean(predicted["residual"].square())
-        total = total + args.pde_weight * pde_loss
-
-        jfnk_diagnostics = None
-        jfnk_logged_values = None
-        if isinstance(optimizer, JFNKKLSoap):
-            jfnk_logged_values = {
-                "loss_total": float(total.detach().cpu()),
-                "loss_data": float(data_mse.detach().cpu()),
-                "l2re": float(data_l2re.detach().cpu()),
-                **{
-                    f"loss_{key}_normalized": float(value.detach().cpu())
-                    for key, value in component_losses.items()
-                },
-                "pde_mse_diagnostic": float(pde_loss.detach().cpu()),
-                "pde_weighted_contribution": float(
-                    (args.pde_weight * pde_loss).detach().cpu()
-                ),
-            }
-            del predicted, component_losses, total, pde_loss
-            del data_error, data_mse, data_l2re, data_target, batch_points
-            # The scalar quantities above are diagnostics only.  GN geometry is
-            # built directly from this fixed-minibatch residual vector.
-            residual_closure = build_jfnk_residual_closure(
-                student,
-                point_tensor,
-                indices,
-                target_tensors,
-                scales,
-                weights,
-                active_derivatives,
-                derivative_factor,
-                args.pde_weight,
-            )
-            jfnk_diagnostics = optimizer.step(residual_closure)
-            grad_norm = jfnk_diagnostics["grad_norm"]
-        else:
-            optimizer.zero_grad(set_to_none=True)
-            total.backward()
-            grad_norm = torch.nn.utils.clip_grad_norm_(student.parameters(), args.grad_clip)
-            optimizer.step()
-        if scheduler is not None:
-            scheduler.step()
-
-        comparison_diagnostic = (
-            jfnk_diagnostics is not None
-            and jfnk_diagnostics["using_klsoap_preconditioner"]
-            and jfnk_diagnostics["cg_iters_no_prec"] >= 0
+        derivative_factor = (
+            1.0
+            if args.derivative_warmup <= 0
+            else min(1.0, iteration / args.derivative_warmup)
         )
-        if (
+        total = weights_by_term["u"] * component_losses["u"]
+        for key in active_derivatives:
+            total = total + (
+                derivative_factor * weights_by_term[key] * component_losses[key]
+            )
+
+        should_log = (
             iteration == 1
             or iteration % args.log_every == 0
             or iteration == args.iterations
-            or comparison_diagnostic
-        ):
+        )
+        # Structured u and PDE terms share the same sampled periodic x-slices.
+        # When only spectral u is active, no input derivatives are constructed.
+        need_pde_grid = args.pde_weight > 0.0 or should_log
+        need_spectral_data_grid = args.spectral_data_weight > 0.0 or should_log
+        if need_pde_grid or need_spectral_data_grid:
+            time_indices = torch.randint(
+                len(t_grid),
+                (pde_time_slices,),
+                generator=pde_generator,
+                device=device,
+            )
+            grid_points = _pde_slice_points(x_grid, t_grid[time_indices])
+            if need_pde_grid:
+                grid_points = grid_points.detach().clone().requires_grad_(True)
+                grid_terms = ks_terms(
+                    student,
+                    grid_points,
+                    create_graph_for_backward=args.pde_weight > 0.0,
+                )
+                grid_u = grid_terms["u"].reshape(pde_time_slices, nx)
+                residual = grid_terms["residual"].reshape(pde_time_slices, nx)
+                raw_pde_mse, preconditioned_pde_loss = fourier_pde_losses(
+                    residual, spectral_weights
+                )
+                selected_pde_loss = (
+                    raw_pde_mse
+                    if args.pde_preconditioner == "none"
+                    else preconditioned_pde_loss
+                )
+                if args.pde_weight > 0.0:
+                    total = total + args.pde_weight * selected_pde_loss
+            else:
+                grid_u = student(grid_points).reshape(pde_time_slices, nx)
+
+            if need_spectral_data_grid:
+                grid_u_error = grid_u - target_u_grid[time_indices]
+                raw_grid_data_mse, preconditioned_grid_data_mse = fourier_pde_losses(
+                    grid_u_error, spectral_weights
+                )
+                spectral_data_loss_normalized = (
+                    preconditioned_grid_data_mse / (scales["u"] ** 2)
+                )
+                if args.spectral_data_weight > 0.0:
+                    total = total + (
+                        args.spectral_data_weight * spectral_data_loss_normalized
+                    )
+
+        optimizer.zero_grad(set_to_none=True)
+        total.backward()
+        grad_norm = torch.nn.utils.clip_grad_norm_(student.parameters(), args.grad_clip)
+        optimizer.step()
+        if scheduler is not None:
+            scheduler.step()
+
+        if should_log:
             with torch.no_grad():
                 ic_mse = torch.mean((student(initial_points) - initial_targets).square())
-            logged = jfnk_logged_values or {
+                ratio = preconditioned_pde_loss / torch.clamp(
+                    raw_pde_mse, min=torch.finfo(raw_pde_mse.dtype).tiny
+                )
+                spectral_data_ratio = preconditioned_grid_data_mse / torch.clamp(
+                    raw_grid_data_mse,
+                    min=torch.finfo(raw_grid_data_mse.dtype).tiny,
+                )
+            row = {
+                "iteration": iteration,
                 "loss_total": float(total.detach().cpu()),
                 "loss_data": float(data_mse.detach().cpu()),
                 "l2re": float(data_l2re.detach().cpu()),
-                **{
-                    f"loss_{key}_normalized": float(value.detach().cpu())
-                    for key, value in component_losses.items()
-                },
-                "pde_mse_diagnostic": float(pde_loss.detach().cpu()),
-                "pde_weighted_contribution": float(
-                    (args.pde_weight * pde_loss).detach().cpu()
-                ),
-            }
-            row = {
-                "iteration": iteration,
-                "loss_total": logged["loss_total"],
-                "loss_data": logged["loss_data"],
-                "l2re": logged["l2re"],
-                "loss_data_normalized": logged["loss_u_normalized"],
-                "loss_ut_normalized": logged["loss_u_t_normalized"],
-                "loss_ux_normalized": logged["loss_u_x_normalized"],
-                "loss_uxx_normalized": logged["loss_u_xx_normalized"],
-                "loss_uxxxx_normalized": logged["loss_u_xxxx_normalized"],
+                "loss_data_normalized": float(component_losses["u"].detach().cpu()),
+                "loss_ut_normalized": float(component_losses["u_t"].detach().cpu()),
+                "loss_ux_normalized": float(component_losses["u_x"].detach().cpu()),
+                "loss_uxx_normalized": float(component_losses["u_xx"].detach().cpu()),
+                "loss_uxxxx_normalized": float(component_losses["u_xxxx"].detach().cpu()),
                 "ic_loss": float(ic_mse.detach().cpu()),
-                "pde_mse_diagnostic": logged["pde_mse_diagnostic"],
-                "pde_weighted_contribution": logged["pde_weighted_contribution"],
+                "raw_pde_mse": float(raw_pde_mse.detach().cpu()),
+                # Preserve the baseline history name for existing analysis code.
+                "pde_mse_diagnostic": float(raw_pde_mse.detach().cpu()),
+                "preconditioned_pde_loss": float(preconditioned_pde_loss.detach().cpu()),
+                "preconditioned_to_raw_ratio": float(ratio.detach().cpu()),
+                "raw_grid_data_mse": float(raw_grid_data_mse.detach().cpu()),
+                "preconditioned_grid_data_mse": float(
+                    preconditioned_grid_data_mse.detach().cpu()
+                ),
+                "preconditioned_to_raw_data_ratio": float(
+                    spectral_data_ratio.detach().cpu()
+                ),
+                "spectral_data_loss_normalized": float(
+                    spectral_data_loss_normalized.detach().cpu()
+                ),
+                "spectral_data_weighted_contribution": float(
+                    (
+                        args.spectral_data_weight * spectral_data_loss_normalized
+                    ).detach().cpu()
+                ),
+                "spectral_w_min": float(spectral_weights.min().cpu()),
+                "spectral_w_max": float(spectral_weights.max().cpu()),
+                "spectral_w_mean": float(spectral_weights.mean().cpu()),
+                "pde_weighted_contribution": float(
+                    (args.pde_weight * selected_pde_loss).detach().cpu()
+                ),
                 "derivative_factor": derivative_factor,
                 "grad_norm": float(torch.as_tensor(grad_norm).detach().cpu()),
                 "lr": optimizer.param_groups[0]["lr"],
             }
-            if jfnk_diagnostics is not None:
-                row.update(jfnk_diagnostics)
             history.append(row)
-            message = (
+            print(
                 f"step={iteration:7d} loss_total={row['loss_total']:.6e} "
                 f"loss_data={row['loss_data']:.3e} l2re={row['l2re']:.3e} "
+                f"loss_data_norm={row['loss_data_normalized']:.3e} "
                 f"loss_ut_norm={row['loss_ut_normalized']:.3e} "
                 f"loss_ux_norm={row['loss_ux_normalized']:.3e} "
                 f"loss_uxx_norm={row['loss_uxx_normalized']:.3e} "
                 f"loss_uxxxx_norm={row['loss_uxxxx_normalized']:.3e} "
                 f"ic_loss={row['ic_loss']:.3e} "
-                f"derivative_factor={row['derivative_factor']:.3f}"
+                f"derivative_factor={row['derivative_factor']:.3f} "
+                f"raw_pde_mse={row['raw_pde_mse']:.3e} "
+                f"preconditioned_pde_loss={row['preconditioned_pde_loss']:.3e} "
+                f"pde_contribution={row['pde_weighted_contribution']:.3e} "
+                f"prec/raw={row['preconditioned_to_raw_ratio']:.3e} "
+                f"raw_grid_data_mse={row['raw_grid_data_mse']:.3e} "
+                f"preconditioned_grid_data_mse="
+                f"{row['preconditioned_grid_data_mse']:.3e} "
+                f"spectral_data_contribution="
+                f"{row['spectral_data_weighted_contribution']:.3e} "
+                f"w[min,max,mean]=[{row['spectral_w_min']:.3e},"
+                f"{row['spectral_w_max']:.3e},{row['spectral_w_mean']:.3e}]"
             )
-            if args.pde_weight == 0.0:
-                message += (
-                    f" diagnostic_pinn_pde_loss={row['pde_mse_diagnostic']:.3e}"
-                )
-            else:
-                message += (
-                    f" pinn_pde_loss={row['pde_mse_diagnostic']:.3e} "
-                    f"pde_contribution={row['pde_weighted_contribution']:.3e}"
-                )
-            if jfnk_diagnostics is not None:
-                message += (
-                    f" jfnk_loss={jfnk_diagnostics['loss_before']:.3e}->"
-                    f"{jfnk_diagnostics['loss_after']:.3e} "
-                    f"alpha={jfnk_diagnostics['accepted_alpha']:.4g} "
-                    f"damping={jfnk_diagnostics['damping']:.3e} "
-                )
-                if jfnk_diagnostics["using_klsoap_preconditioner"]:
-                    message += (
-                        f"cg_iters_prec={jfnk_diagnostics['cg_iters_prec']}/"
-                        f"{args.jfnk_cg_max_iter} "
-                        f"cg_rel_prec={jfnk_diagnostics['cg_rel_prec']:.3e} "
-                    )
-                else:
-                    message += (
-                        f"cg_iters={jfnk_diagnostics['cg_iterations']}/"
-                        f"{args.jfnk_cg_max_iter} "
-                        f"cg_rel={jfnk_diagnostics['cg_relative_residual']:.3e} "
-                    )
-                message += (
-                    f"converged={jfnk_diagnostics['cg_converged']} "
-                    f"preconditioner={args.jfnk_preconditioner}"
-                )
-                if comparison_diagnostic:
-                    message += (
-                        f" cg_iters_no_prec="
-                        f"{jfnk_diagnostics['cg_iters_no_prec']}/"
-                        f"{args.jfnk_cg_max_iter} "
-                        f"cg_rel_no_prec="
-                        f"{jfnk_diagnostics['cg_rel_no_prec']:.3e}"
-                    )
-                if optimizer.last_failure_reason:
-                    message += f" failure={optimizer.last_failure_reason}"
-            print(message)
 
+    metadata.update(
+        pde_preconditioner=args.pde_preconditioner,
+        spectral_precond_mu=args.spectral_precond_mu,
+        spectral_precond_alpha=args.spectral_precond_alpha,
+        spectral_data_weight=args.spectral_data_weight,
+        spectral_grid_nx=nx,
+        spectral_pde_time_slices=pde_time_slices,
+        duplicate_periodic_endpoint_removed=duplicate,
+        fft_normalization="ortho",
+    )
     save_student_checkpoint(run_dir / "weights_student.pt", student, metadata)
     if history:
         columns = list(history[0])
         np.savetxt(
             run_dir / "history.csv",
             np.asarray([[row[key] for key in columns] for row in history]),
-            delimiter=",", header=",".join(columns), comments="",
-        )
-    if isinstance(optimizer, JFNKKLSoap) and optimizer.diagnostics_history:
-        columns = list(optimizer.diagnostics_history[0])
-        np.savetxt(
-            run_dir / "jfnk_klsoap_history.csv",
-            np.asarray(
-                [[row[key] for key in columns] for row in optimizer.diagnostics_history]
-            ),
             delimiter=",",
             header=",".join(columns),
             comments="",
@@ -1815,28 +1376,37 @@ def run(args):
         1e-10 if args.mop_adam_epsilon is None else args.mop_adam_epsilon
     )
     args.kl_epsilon = 1e-8 if args.kl_epsilon is None else args.kl_epsilon
+    if args.spectral_precond_mu <= 0.0 or not math.isfinite(args.spectral_precond_mu):
+        raise ValueError("spectral-precond-mu must be positive and finite")
+    if args.spectral_precond_alpha < 0.0 or not math.isfinite(
+        args.spectral_precond_alpha
+    ):
+        raise ValueError("spectral-precond-alpha must be non-negative and finite")
+    if args.spectral_data_weight < 0.0 or not math.isfinite(args.spectral_data_weight):
+        raise ValueError("spectral-data-weight must be non-negative and finite")
+    if args.pde_weight == 0.0:
+        print(
+            "PDE preconditioner is diagnostic only because pde_weight=0; "
+            "it contributes no gradient to training."
+        )
     if args.iterations <= 0 or args.batch_size <= 0 or args.log_every <= 0:
         raise ValueError("iterations, batch-size, and log-every must be positive")
     if args.lr <= 0.0 or args.lr_min < 0.0 or args.lr_min > args.lr:
         raise ValueError("Require 0 <= lr-min <= lr and lr > 0")
     if args.grad_clip <= 0.0:
         raise ValueError("grad-clip must be positive")
-    if args.jfnk_damping <= 0.0 or not math.isfinite(args.jfnk_damping):
-        raise ValueError("jfnk-damping must be positive and finite")
-    if args.jfnk_cg_max_iter <= 0 or not 0.0 < args.jfnk_cg_tol < 1.0:
-        raise ValueError("JFNK requires positive cg-max-iter and 0 < cg-tol < 1")
-    if args.jfnk_diagnostic_every < 0 or args.jfnk_full_step_patience <= 0:
-        raise ValueError("Invalid JFNK diagnostic frequency or full-step patience")
-    if args.optimizer == "jfnk_klsoap":
-        if args.precision != "float64":
-            raise ValueError("jfnk_klsoap requires --precision float64")
-        if args.weight_decay != 0.0:
-            raise ValueError("jfnk_klsoap does not support weight decay")
     if args.derivative_warmup < 0:
         raise ValueError("derivative-warmup must be non-negative")
     if args.derivative_eval_points <= 0 or args.derivative_eval_batch_size <= 0:
         raise ValueError("derivative evaluation sizes must be positive")
-    if any(weight < 0.0 for weight in (*loss_weights(args).values(), args.pde_weight)):
+    if any(
+        weight < 0.0
+        for weight in (
+            *loss_weights(args).values(),
+            args.pde_weight,
+            args.spectral_data_weight,
+        )
+    ):
         raise ValueError("Loss weights must be non-negative")
     if args.weight_decay < 0.0:
         raise ValueError("weight-decay must be non-negative")
@@ -1953,7 +1523,11 @@ def run(args):
         "teacher_output_width": output_weights.shape[0],
         "duplicate_periodic_endpoint": duplicate,
         "target_scales": target_scales,
-        "loss_weights": {**loss_weights(args), "pde": args.pde_weight},
+        "loss_weights": {
+            **loss_weights(args),
+            "pde": args.pde_weight,
+            "spectral_data": args.spectral_data_weight,
+        },
         "student_metadata": student_metadata,
     }
     student_metadata.update(
@@ -2070,7 +1644,7 @@ def parse_args(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--data", default=str(PROJECT_ROOT / "ref" / "Kuramoto_Sivashinsky.dat"))
     parser.add_argument(
-        "--out", default=str(PROJECT_ROOT / "runs_data_ks_exact_mlp_jfnk_klsoap")
+        "--out", default=str(PROJECT_ROOT / "runs_data_ks_spectral_preconditioned")
     )
     parser.add_argument("--hidden-layers", default="100*5")
     parser.add_argument(
@@ -2079,16 +1653,16 @@ def parse_args(argv=None):
     parser.add_argument("--rwf-mu", type=float, default=1.0)
     parser.add_argument("--rwf-sigma", type=float, default=0.1)
     parser.add_argument("--precision", choices=["float32", "float64"], default="float64")
-    parser.add_argument("--iterations", type=int, default=5000)
+    parser.add_argument("--iterations", type=int, default=30000)
     parser.add_argument("--batch-size", type=int, default=1024)
     parser.add_argument(
         "--optimizer",
         choices=[
             "adam", "rmsprop", "soap", "kl-shampoo", "kl-soap", "muon", "mop",
             "mousse", "psgdpro", "pcgpro", "polargrad", "rekls-v3",
-            "kl-m-soap", "madam", "muown", "jfnk_klsoap",
+            "kl-m-soap", "madam", "muown",
         ],
-        default="jfnk_klsoap",
+        default="kl-soap",
     )
     parser.add_argument("--lr", type=float, default=5e-4)
     parser.add_argument("--lr-min", type=float, default=5e-4)
@@ -2107,9 +1681,9 @@ def parse_args(argv=None):
     parser.add_argument("--soap-precondition-frequency", type=int, default=1)
     parser.add_argument("--soap-max-precondition-dim", type=int, default=4096)
     parser.add_argument("--soap-bias-correction", type=parse_bool, default=True)
-    parser.add_argument("--kl-beta1", type=float, default=0.9)
-    parser.add_argument("--kl-beta2", type=float, default=0.95)
-    parser.add_argument("--kl-shampoo-beta", type=float, default=0.95)
+    parser.add_argument("--kl-beta1", type=float, default=0.99)
+    parser.add_argument("--kl-beta2", type=float, default=0.999)
+    parser.add_argument("--kl-shampoo-beta", type=float, default=0.999)
     parser.add_argument("--kl-epsilon", type=float, default=None)
     parser.add_argument("--kl-precondition-frequency", type=int, default=1)
     parser.add_argument("--kl-normalize-grads", type=parse_bool, default=False)
@@ -2122,14 +1696,6 @@ def parse_args(argv=None):
         choices=["float32", "float64", "float16", "bfloat16"],
         default="float64",
     )
-    parser.add_argument("--jfnk-damping", type=float, default=1e-8)
-    parser.add_argument("--jfnk-cg-max-iter", type=int, default=5)
-    parser.add_argument("--jfnk-cg-tol", type=float, default=1e-4)
-    parser.add_argument(
-        "--jfnk-preconditioner", choices=["none", "klsoap"], default="klsoap"
-    )
-    parser.add_argument("--jfnk-diagnostic-every", type=int, default=50)
-    parser.add_argument("--jfnk-full-step-patience", type=int, default=3)
     parser.add_argument("--rekls-beta1", type=float, default=0.99)
     parser.add_argument("--rekls-beta2", type=float, default=0.999)
     parser.add_argument("--rekls-shampoo-beta", type=float, default=0.999)
@@ -2305,12 +1871,28 @@ def parse_args(argv=None):
     parser.add_argument("--grad-clip", type=float, default=1.0)
     parser.add_argument("--log-every", type=int, default=100)
     parser.add_argument("--derivative-warmup", type=int, default=3000)
-    parser.add_argument("--data-weight", type=float, default=1.0)
-    parser.add_argument("--ut-weight", type=float, default=1.0)
-    parser.add_argument("--ux-weight", type=float, default=1.0)
-    parser.add_argument("--uxx-weight", type=float, default=1.0)
-    parser.add_argument("--uxxxx-weight", type=float, default=1.0)
-    parser.add_argument("--pde-weight", type=float, default=0.0)
+    parser.add_argument("--data-weight", type=float, default=0.0)
+    parser.add_argument("--ut-weight", type=float, default=0.0)
+    parser.add_argument("--ux-weight", type=float, default=0.0)
+    parser.add_argument("--uxx-weight", type=float, default=0.0)
+    parser.add_argument("--uxxxx-weight", type=float, default=0.0)
+    parser.add_argument("--pde-weight", type=float, default=1.0)
+    parser.add_argument(
+        "--pde-preconditioner",
+        choices=["none", "spectral_linear"],
+        default="spectral_linear",
+    )
+    parser.add_argument("--spectral-precond-mu", type=float, default=1e-4)
+    parser.add_argument("--spectral-precond-alpha", type=float, default=0.5)
+    parser.add_argument(
+        "--spectral-data-weight",
+        type=float,
+        default=1e-3,
+        help=(
+            "Weight of the additional normalized spectral u-data loss on full "
+            "periodic x-slices; use 0 to disable it."
+        ),
+    )
     parser.add_argument("--pinn-points", type=int, default=20000)
     parser.add_argument("--pinn-ic-points", type=int, default=2048)
     parser.add_argument("--pinn-batch-size", type=int, default=32)
