@@ -194,7 +194,7 @@ def main():
         "lr": 1e-3,
         "exp": experiment,
         "log_key": False,
-        "proj_name": "rlpinn-poisson2d-classic-tolerance",
+        "proj_name": "rlpinn-poisson2d-classic-loss-chain-tolerance",
         "recover_current_loss_from_solver_models": True,
         "recompute_chain_rewards": True,
         "offline_pretrain_steps": 500,
