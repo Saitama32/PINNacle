@@ -196,6 +196,7 @@ def main():
         "proj_name": "rlpinn-poissoninv-loss-chain-tolerance",
         "recover_current_loss_from_solver_models": True,
         "recompute_chain_rewards": True,
+        "max_exps_last": 20,
         "offline_pretrain_steps": 500,
         "offline_pretrain_iters": 5,
     }
