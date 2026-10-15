@@ -15,6 +15,8 @@ import torch
 import deepxde as dde
 from RL.rl_environment import EnvRLOptimizer
 from RL.rl_algorithms import DQNAgent
+from RL.rl_utils.per_buffer import PrioritizedReplayBuffer
+from RL.rl_utils.per_offline import recalc_all_priorities_batched
 from src.utils.callbacks import ModelSaverCallback  
 from deepxde.optimizers.config import set_LBFGS_options, set_MUON_options, set_PSO_options, LBFGS_options, PSO_options
 from deepxde.optimizers.pytorch.optimizers import get as get_pytorch_optimizer
@@ -23,6 +25,7 @@ from deepxde.optimizers.pytorch.soap import SOAP
 from deepxde.optimizers.pytorch.ssbroyden import SSBroyden
 from typing import Any, Dict
 from RL.rl_utils.load_buffer.load_exps_from_comet import collect_all_comet_transitions
+from RL.rl_utils.load_buffer.load_transitions_into_buffer_pickle import to_cpu
 
 # Enforce single-precision defaults before any model/layer creation.
 dde.config.set_default_float("float32")
@@ -76,6 +79,175 @@ def _serialize_solver_models(solver_models):
             },
         })
     return serialized_models
+
+
+def _update_adaptive_tolerance(archive_transitions, current_tolerance, config):
+    valid_losses = sorted(
+        float(transition["current_loss"])
+        for transition in archive_transitions
+        if np.isfinite(transition.get("current_loss", np.nan))
+        and float(transition["current_loss"]) >= 0.0
+    )
+
+    warmup_transitions = int(config.get("warmup_transitions", 64))
+    elite_fraction = float(config.get("elite_fraction", 0.10))
+    upward_factor = float(config.get("upward_factor", 1.30))
+    min_improvement = float(
+        config.get("downward_min_relative_improvement", 0.05)
+    )
+
+    if warmup_transitions < 1:
+        raise ValueError(
+            f"warmup_transitions must be at least 1, got {warmup_transitions}."
+        )
+    if not 0.0 < elite_fraction <= 1.0:
+        raise ValueError(f"elite_fraction must be in (0, 1], got {elite_fraction}.")
+    if upward_factor < 1.0:
+        raise ValueError(f"upward_factor must be at least 1, got {upward_factor}.")
+    if not 0.0 <= min_improvement < 1.0:
+        raise ValueError(
+            "downward_min_relative_improvement must be in [0, 1), "
+            f"got {min_improvement}."
+        )
+
+    stats = {
+        "valid_count": len(valid_losses),
+        "target_count": 0,
+        "good_count": 0,
+        "target_tolerance": None,
+        "previous_tolerance": current_tolerance,
+        "new_tolerance": current_tolerance,
+        "changed": False,
+        "reason": "warmup",
+    }
+    if len(valid_losses) < warmup_transitions:
+        return current_tolerance, stats
+
+    target_count = max(1, int(len(valid_losses) * elite_fraction))
+    target_count = min(target_count, len(valid_losses))
+    target_tolerance = valid_losses[target_count - 1]
+    stats["target_count"] = target_count
+    stats["target_tolerance"] = target_tolerance
+
+    if current_tolerance is None:
+        new_tolerance = target_tolerance
+        stats["reason"] = "initialized"
+    else:
+        current_tolerance = float(current_tolerance)
+        good_count = sum(loss <= current_tolerance for loss in valid_losses)
+        stats["good_count"] = good_count
+
+        if good_count < target_count and target_tolerance > current_tolerance:
+            if current_tolerance > 0.0:
+                new_tolerance = min(
+                    target_tolerance,
+                    upward_factor * current_tolerance,
+                )
+            else:
+                new_tolerance = target_tolerance
+            stats["reason"] = "elite_shortage"
+        elif target_tolerance <= current_tolerance * (1.0 - min_improvement):
+            new_tolerance = target_tolerance
+            stats["reason"] = "improved"
+        else:
+            new_tolerance = current_tolerance
+            stats["reason"] = "unchanged"
+
+    stats["new_tolerance"] = float(new_tolerance)
+    stats["good_count"] = sum(loss <= new_tolerance for loss in valid_losses)
+    stats["changed"] = (
+        current_tolerance is None
+        or float(new_tolerance) != float(current_tolerance)
+    )
+    return float(new_tolerance), stats
+
+
+def _relabel_archive_trajectory(env, trajectory, tolerance):
+    if not trajectory:
+        return []
+
+    chain_label = env.relabel_chain(
+        losses=[
+            float(transition["current_loss"])
+            for transition in trajectory
+        ],
+        tolerance=tolerance,
+    )
+    selected = trajectory[: chain_label["end_index"] + 1]
+    done = chain_label["done"]
+    relabeled = []
+    for index, (transition, reward) in enumerate(
+        zip(selected, chain_label["rewards"])
+    ):
+        transition_done = done if index == len(selected) - 1 else 0
+        reward = float(reward)
+        relabeled.append((
+            transition["state"],
+            transition["next_state"],
+            transition["action"],
+            reward,
+            transition_done,
+            reward,
+            transition["opt_model_i"],
+        ))
+    return relabeled
+
+
+def _select_recent_complete_chains(relabeled_trajectories, capacity):
+    selected_reversed = []
+    used = 0
+    for trajectory in reversed(relabeled_trajectories):
+        if len(trajectory) > capacity:
+            continue
+        if used + len(trajectory) > capacity:
+            break
+        selected_reversed.append(trajectory)
+        used += len(trajectory)
+    return list(reversed(selected_reversed))
+
+
+def _rebuild_adaptive_replay_buffer(
+    agent,
+    env,
+    archive_transitions,
+    tolerance,
+    priority_batch_size,
+):
+    old_buffer = agent.replay_buffer
+    archive_trajectories = []
+    trajectory = []
+    for transition in archive_transitions:
+        trajectory.append(transition)
+        if int(transition.get("done", 0)) != 0:
+            archive_trajectories.append(trajectory)
+            trajectory = []
+    if trajectory:
+        archive_trajectories.append(trajectory)
+
+    relabeled = [
+        _relabel_archive_trajectory(env, trajectory, tolerance)
+        for trajectory in archive_trajectories
+    ]
+    selected = _select_recent_complete_chains(relabeled, old_buffer.capacity)
+
+    new_buffer = PrioritizedReplayBuffer(
+        capacity=old_buffer.capacity,
+        alpha=old_buffer.alpha,
+        eps=old_buffer.eps,
+    )
+    new_buffer.success_threshold = old_buffer.success_threshold
+    for trajectory in selected:
+        for transition in trajectory:
+            new_buffer.push(*transition, priority=1.0)
+
+    agent.replay_buffer = new_buffer
+    if len(new_buffer) > 0:
+        recalc_all_priorities_batched(agent, batch_size=priority_batch_size)
+    return {
+        "archive_chains": len(archive_trajectories),
+        "selected_chains": len(selected),
+        "buffer_transitions": len(new_buffer),
+    }
 
 
 def _build_torch_optimizer(opt_name: str, params, action: Dict[str, Any], model=None):
@@ -315,6 +487,19 @@ def run_deepxde_rl_training(
     base_callbacks = train_args.get("callbacks", [])
     equation_params = train_args.get("equation_params", [])
     display_every = int(train_args.get("display_every", 100))
+    adaptive_tolerance_config = dict(
+        rl_agent_params.get("adaptive_tolerance", {}) or {}
+    )
+    adaptive_tolerance_enabled = bool(
+        adaptive_tolerance_config.get("enabled", False)
+    )
+    priority_recalc_batch_size = int(
+        adaptive_tolerance_config.get("priority_recalc_batch_size", 256)
+        if adaptive_tolerance_enabled
+        else rl_agent_params.get("recalc_batch_size", 32)
+    )
+    if adaptive_tolerance_enabled and priority_recalc_batch_size < 1:
+        raise ValueError("priority_recalc_batch_size must be at least 1.")
 
     # создаём env/agent (как раньше внутри model.py, только теперь снаружи)
     env = EnvRLOptimizer(optimizers=optimizers_dict,
@@ -324,7 +509,8 @@ def run_deepxde_rl_training(
                          AE_train_params=AE_train_params,
                          loss_surface_params=loss_surface_params,
                          n_save_models=rl_agent_params['n_save_models'],
-                         tolerance=rl_agent_params["tolerance"])
+                         tolerance=rl_agent_params["tolerance"],
+                         terminate_on_tolerance=not adaptive_tolerance_enabled)
     env.configure_chain_reward(
         alpha=rl_agent_params.get("chain_reward_alpha", 0.2),
         dense_clip=rl_agent_params.get("chain_reward_dense_clip", 5.0),
@@ -348,6 +534,18 @@ def run_deepxde_rl_training(
                         n_transitions_reinit = rl_agent_params["n_transitions_reinit"],
                         include_terminal_starts=rl_agent_params.get(
                             "include_terminal_starts", False
+                        ),
+                        warmup_updates=(
+                            0
+                            if adaptive_tolerance_enabled
+                            else int(rl_agent_params.get("warmup_updates", 30))
+                        ),
+                        recalc_batch_size=priority_recalc_batch_size,
+                        epsilon_start=rl_agent_params.get("epsilon_start"),
+                        epsilon_end=rl_agent_params.get("epsilon_end"),
+                        epsilon_decay_steps=rl_agent_params.get("epsilon_decay"),
+                        epsilon_random_steps=rl_agent_params.get(
+                            "epsilon_random_steps"
                         ),
                         exp = rl_agent_params["exp"],
                         model_snapshot_dir=f"{save_path}/rl_model_snapshots")
@@ -410,6 +608,8 @@ def run_deepxde_rl_training(
     #     rl_agent.model_params.load_state_dict(params_state)
 
     idx_traj = 0
+    archive_transitions = []
+    current_adaptive_tolerance = None
 
     for traj in range(train_args["n_trajectories"]):
         # реинициализация сети на новую траекторию
@@ -588,36 +788,37 @@ def run_deepxde_rl_training(
                 chain_reward = float(chain_reward)
                 chain_total_reward += chain_reward
 
-                rl_agent.push_memory((
-                    tr["state"],
-                    tr["next_state"],
-                    tr["action_raw"],
-                    chain_reward,
-                    tr["done"],
-                    chain_reward,
-                    tr["opt_model_i"],
-                ))
+                if not adaptive_tolerance_enabled:
+                    rl_agent.push_memory((
+                        tr["state"],
+                        tr["next_state"],
+                        tr["action_raw"],
+                        chain_reward,
+                        tr["done"],
+                        chain_reward,
+                        tr["opt_model_i"],
+                    ))
 
                 step_done = tr["agent_step"]
 
+                entry = {
+                    'state': tr["state"],
+                    'next_state': tr["next_state"],
+                    'solver_models': tr["solver_models"],
+                    'action': tr["action_raw"],
+                    'reward': tr["reward_scalar"],
+                    'current_loss': tr["current_loss"],
+                    'done': tr["done"],
+                    'reward_model_raw': chain_reward,
+                    'reward_model': chain_reward,
+                    'reward_scheme': "env_chain_reward",
+                    'old_reward_model': tr["old_reward_model"],
+                    'old_raw_reward': tr["old_raw_reward"],
+                    'opt_model_i': tr["opt_model_i"],
+                }
+
                 try:
                     file_path = os.path.join(output_dir, f'transitions_{step_done}.pt')
-
-                    entry = {
-                        'state': tr["state"],
-                        'next_state': tr["next_state"],
-                        'solver_models': tr["solver_models"],
-                        'action': tr["action_raw"],
-                        'reward': tr["reward_scalar"],
-                        'current_loss': tr["current_loss"],
-                        'done': tr["done"],
-                        'reward_model_raw': chain_reward,
-                        'reward_model': chain_reward,
-                        'reward_scheme': "env_chain_reward",
-                        'old_reward_model': tr["old_reward_model"],
-                        'old_raw_reward': tr["old_raw_reward"],
-                        'opt_model_i': tr["opt_model_i"],
-                    }
                     torch.save(entry, file_path)
 
                     rl_agent_params['exp'].log_asset(
@@ -629,6 +830,90 @@ def run_deepxde_rl_training(
 
                 except Exception as e:
                     print(e)
+
+                if adaptive_tolerance_enabled:
+                    archive_transitions.append(to_cpu({
+                        key: value
+                        for key, value in entry.items()
+                        if key != "solver_models"
+                    }))
+
+            if adaptive_tolerance_enabled:
+                archived_trajectory = archive_transitions[-len(trajectory_transitions):]
+                previous_tolerance = current_adaptive_tolerance
+                current_adaptive_tolerance, tolerance_stats = (
+                    _update_adaptive_tolerance(
+                        archive_transitions,
+                        current_adaptive_tolerance,
+                        adaptive_tolerance_config,
+                    )
+                )
+
+                rebuild_stats = None
+                rebuild_reason = None
+                if current_adaptive_tolerance is not None:
+                    env.tolerance = current_adaptive_tolerance
+                    if tolerance_stats["changed"]:
+                        rebuild_reason = tolerance_stats["reason"]
+                    else:
+                        relabeled_trajectory = _relabel_archive_trajectory(
+                            env,
+                            archived_trajectory,
+                            current_adaptive_tolerance,
+                        )
+                        if (
+                            len(rl_agent.replay_buffer)
+                            + len(relabeled_trajectory)
+                            > rl_agent.replay_buffer.capacity
+                        ):
+                            rebuild_reason = "capacity"
+                        else:
+                            for transition in relabeled_trajectory:
+                                rl_agent.replay_buffer.push(*transition, coeff=1.5)
+
+                    if rebuild_reason is not None:
+                        rebuild_stats = _rebuild_adaptive_replay_buffer(
+                            agent=rl_agent,
+                            env=env,
+                            archive_transitions=archive_transitions,
+                            tolerance=current_adaptive_tolerance,
+                            priority_batch_size=priority_recalc_batch_size,
+                        )
+
+                print(
+                    "\nAdaptive tolerance: "
+                    f"valid={tolerance_stats['valid_count']}, "
+                    f"target_good={tolerance_stats['target_count']}, "
+                    f"actual_good={tolerance_stats['good_count']}, "
+                    f"target={tolerance_stats['target_tolerance']}, "
+                    f"previous={previous_tolerance}, "
+                    f"current={current_adaptive_tolerance}, "
+                    f"reason={tolerance_stats['reason']}, "
+                    f"rebuild={rebuild_reason}\n"
+                )
+                if rebuild_stats is not None:
+                    print(f"Adaptive replay rebuild: {rebuild_stats}\n")
+
+                experiment = rl_agent_params.get("exp")
+                if experiment is not None:
+                    adaptive_metrics = {
+                        "adaptive_tolerance_valid_count": tolerance_stats["valid_count"],
+                        "adaptive_tolerance_target_count": tolerance_stats["target_count"],
+                        "adaptive_tolerance_good_count": tolerance_stats["good_count"],
+                        "adaptive_archive_trajectories": sum(
+                            int(transition.get("done", 0)) != 0
+                            for transition in archive_transitions
+                        ),
+                        "adaptive_archive_transitions": len(archive_transitions),
+                        "adaptive_replay_transitions": len(rl_agent.replay_buffer),
+                    }
+                    if current_adaptive_tolerance is not None:
+                        adaptive_metrics["adaptive_tolerance"] = current_adaptive_tolerance
+                    if tolerance_stats["target_tolerance"] is not None:
+                        adaptive_metrics["adaptive_target_tolerance"] = tolerance_stats[
+                            "target_tolerance"
+                        ]
+                    experiment.log_metrics(adaptive_metrics, step=rl_agent.steps_done)
 
             print(
                 f"\nPushed trajectory with env chain rewards. "
@@ -642,7 +927,9 @@ def run_deepxde_rl_training(
                 rl_agent.optim_(iters=rl_agent_params["agent_update_iters"])
 
 
-        if done == 1:
+        if adaptive_tolerance_enabled:
+            idx_traj += 1
+        elif done == 1:
             idx_traj += 1
 
 

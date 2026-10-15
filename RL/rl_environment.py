@@ -34,7 +34,8 @@ class EnvRLOptimizer(gym.Env):
                  AE_train_params: dict = None,
                  callbacks: Union[CallbackList, List, None] = None,
                  n_save_models: int = None,
-                 tolerance: float = 1e-2):
+                 tolerance: float = 1e-2,
+                 terminate_on_tolerance: bool = True):
         super(EnvRLOptimizer, self).__init__()
 
         self.optimizers = optimizers
@@ -49,6 +50,7 @@ class EnvRLOptimizer(gym.Env):
         self.state_type = self.loss_surface_params.get("state_type", "loss_surface")
         self.equation_params = equation_params
         self.callbacks = callbacks
+        self.n_save_models = n_save_models
 
         self.visualization_model = None
         if self.state_type != "raw_loss":
@@ -72,8 +74,8 @@ class EnvRLOptimizer(gym.Env):
             self.observation_space = self.visualization_model.latent_dim + 1
 
         self.tolerance = tolerance
+        self.terminate_on_tolerance = bool(terminate_on_tolerance)
         self.counter = 1
-        self.n_save_models = n_save_models
 
         # Reward shaping config.
         self.repeat_k = 3
@@ -156,6 +158,39 @@ class EnvRLOptimizer(gym.Env):
 
         rewards = terminal_rewards + alpha * dense_rewards
         return rewards.tolist()
+
+    def relabel_chain(self, losses, tolerance):
+        """Relabel a physical loss chain for the current success tolerance."""
+        losses = np.asarray(losses, dtype=np.float64)
+        if len(losses) == 0:
+            return {
+                "end_index": None,
+                "done": -1,
+                "rewards": [],
+            }
+
+        successful_steps = np.flatnonzero(
+            np.isfinite(losses) & (losses <= float(tolerance))
+        )
+        if len(successful_steps) > 0:
+            end_index = int(
+                successful_steps[np.argmin(losses[successful_steps])]
+            )
+            done = 1
+        else:
+            end_index = len(losses) - 1
+            done = -1
+
+        selected_losses = losses[: end_index + 1]
+        rewards = self.compute_chain_rewards(
+            losses=selected_losses,
+            done=done,
+        )
+        return {
+            "end_index": end_index,
+            "done": done,
+            "rewards": rewards,
+        }
 
     def compute_trajectory_rewards(self, transitions, losses):
         """
@@ -240,7 +275,7 @@ class EnvRLOptimizer(gym.Env):
                 self.reward_params["bconds"]["coeff"] * self.reward_params["bconds"]["error"]
             )
 
-        success = abs(reward_scalar) < self.tolerance
+        success = self.terminate_on_tolerance and abs(reward_scalar) < self.tolerance
 
         if success:
             done = 1

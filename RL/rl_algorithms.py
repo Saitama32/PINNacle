@@ -31,7 +31,9 @@ class DQNAgent:
                  epsilon_decay=0.995, epsilon_min=0.01, memory_size=50000, batch_size=128, n_transitions_reinit = 2000, per_alpha =  0.6, per_beta0 = 0.4, device='cpu', exp=None,
                  warmup_updates: int = 30, recalc_batch_size: int = 32, success_frac = 0.2,
                  include_terminal_starts: bool = False,
-                 model_snapshot_dir="rl_model_snapshots"):
+                 model_snapshot_dir="rl_model_snapshots",
+                 epsilon_start=None, epsilon_end=None,
+                 epsilon_decay_steps=None, epsilon_random_steps=None):
         self.n_observation = n_observation
         self.n_action = n_action
         self.gamma = gamma
@@ -43,6 +45,36 @@ class DQNAgent:
         self.n_transitions_reinit = n_transitions_reinit
         self.steps_done = 0
         self.epsilon_step_offset = 0
+        self.configured_epsilon_schedule = any(
+            value is not None
+            for value in (
+                epsilon_start,
+                epsilon_end,
+                epsilon_decay_steps,
+                epsilon_random_steps,
+            )
+        )
+        self.epsilon_start = float(
+            EPS_START if epsilon_start is None else epsilon_start
+        )
+        self.epsilon_end = float(
+            EPS_END if epsilon_end is None else epsilon_end
+        )
+        self.epsilon_decay_steps = float(
+            EPS_DECAY if epsilon_decay_steps is None else epsilon_decay_steps
+        )
+        self.epsilon_random_steps = int(
+            0 if epsilon_random_steps is None else epsilon_random_steps
+        )
+        if not 0.0 <= self.epsilon_end <= self.epsilon_start <= 1.0:
+            raise ValueError(
+                "epsilon values must satisfy "
+                "0 <= epsilon_end <= epsilon_start <= 1"
+            )
+        if self.epsilon_decay_steps <= 0.0:
+            raise ValueError("epsilon_decay must be greater than zero")
+        if self.epsilon_random_steps < 0:
+            raise ValueError("epsilon_random_steps cannot be negative")
         self.opt_count = 0
         self.opt_count_out = 0
         self.opt_count_for_reinit = 5
@@ -103,6 +135,11 @@ class DQNAgent:
         epsilon_and_warmap_params = {
             "slot_bootstrap_steps": self.slot_bootstrap_steps,
             "slot_bootstrap_eps": self.slot_bootstrap_eps,
+            "epsilon_schedule_from_config": self.configured_epsilon_schedule,
+            "epsilon_start": self.epsilon_start,
+            "epsilon_end": self.epsilon_end,
+            "epsilon_decay": self.epsilon_decay_steps,
+            "epsilon_random_steps": self.epsilon_random_steps,
             "warmup_updates": warmup_updates,
             "recalc_batch_size": recalc_batch_size,
             "EPS_START": EPS_START,
@@ -142,6 +179,14 @@ class DQNAgent:
 
     def get_epsilon_threshold(self):
         interaction_steps = max(0, self.steps_done - self.epsilon_step_offset)
+        if self.configured_epsilon_schedule:
+            if interaction_steps < self.epsilon_random_steps:
+                return self.epsilon_start
+            decay_steps = interaction_steps - self.epsilon_random_steps
+            return self.epsilon_end + (
+                self.epsilon_start - self.epsilon_end
+            ) * math.exp(-1.0 * decay_steps / self.epsilon_decay_steps)
+
         eps_threshold = EPS_END + (EPS_START - EPS_END) * math.exp(
             -1.0 * interaction_steps / EPS_DECAY
         )
