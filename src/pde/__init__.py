@@ -8,5 +8,6 @@ __all__ = [
     "inverse",
     "ns",
     "poisson",
+    "reaction",
     "wave",
 ]

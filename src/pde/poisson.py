@@ -36,6 +36,46 @@ class Poisson1D(baseclass.BasePDE):
         self.add_bcs([{'component': 0, 'function': (lambda x: 0), 'bc': (lambda x, on_boundary: on_boundary), 'type': 'dirichlet'}])
 
 
+class Poisson1DMultiscale(baseclass.BasePDE):
+    """One-dimensional two-frequency Poisson spectral-bias benchmark."""
+
+    def __init__(self, b=30):
+        super().__init__()
+        if b <= 0:
+            raise ValueError("b must be positive")
+
+        self.b = b
+        self.output_dim = 1
+        self.bbox = [0.0, 1.0]
+        self.geom = dde.geometry.Interval(*self.bbox)
+
+        def forcing(x):
+            return (
+                (2 * np.pi) ** 2 * torch.sin(2 * np.pi * x[:, 0:1])
+                + 0.1 * (b * np.pi) ** 2 * torch.sin(b * np.pi * x[:, 0:1])
+            )
+
+        def pde(x, u):
+            u_xx = dde.grad.hessian(u, x, i=0, j=0)
+            return -u_xx - forcing(x)
+
+        self.pde = pde
+        self.set_pdeloss(num=1)
+
+        def ref_sol(x):
+            x_coord = x[:, 0:1]
+            return np.sin(2 * np.pi * x_coord) + 0.1 * np.sin(b * np.pi * x_coord)
+
+        self.ref_sol = ref_sol
+        self.add_bcs([{
+            'component': 0,
+            'function': ref_sol,
+            'bc': lambda _, on_boundary: on_boundary,
+            'type': 'dirichlet',
+        }])
+        self.training_points()
+
+
 class Poisson2D_Classic(baseclass.BasePDE):
 
     def __init__(self, datapath="ref/poisson1_cg_data.dat", scale=1):

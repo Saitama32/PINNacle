@@ -121,7 +121,13 @@ class BasePDE():
             elif bc['type'] == 'neumann':
                 self.bcs.append(dde.NeumannBC(geom, bc['function'], bc['bc'], component=bc['component']))
             elif bc['type'] == 'periodic':
-                self.bcs.append(dde.PeriodicBC(geom, bc['component_x'], bc['bc'], component=bc['component']))
+                self.bcs.append(dde.PeriodicBC(
+                    geom,
+                    bc['component_x'],
+                    bc['bc'],
+                    derivative_order=bc.get('derivative_order', 0),
+                    component=bc['component'],
+                ))
             elif bc['type'] == 'pointset':
                 self.bcs.append(dde.PointSetBC(bc['points'], bc['values'], component=bc['component']))
             else:
