@@ -688,6 +688,16 @@ def run_deepxde_rl_training(
             if np.isfinite(train_loss):
                 print(f"Operator RMSE: {rmse}, Boundary RMSE: {b_rmse}")
                 print(f"Weighted train loss: {train_loss}")
+                if (
+                    adaptive_tolerance_enabled
+                    and current_adaptive_tolerance is not None
+                    and train_loss <= current_adaptive_tolerance
+                ):
+                    print(
+                        "Success by current tol: "
+                        f"loss={train_loss} <= "
+                        f"tolerance={current_adaptive_tolerance}"
+                    )
                 old_raw_reward = float(
                     (rmse if np.isfinite(rmse) else 0.0)
                     + (b_rmse if np.isfinite(b_rmse) else 0.0)
