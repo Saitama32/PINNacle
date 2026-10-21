@@ -1,11 +1,9 @@
 matplotlib
-# numpy
-#==1.20.0
 pandas
-# scipy
-scipy==1.13.1
+scipy
 scikit-learn
-numpy==1.26.4
+scikit-optimize
+numpy
 gym
 #==1.6.0
 # 1.15.2
@@ -16,4 +14,4 @@ typing
 SALib
 #git+https://github.com/uwjunqi/Pytorch-Tensor-Train-Network.git
 comet_ml
-python-dotenv
+kaggle
