@@ -231,9 +231,9 @@ def main():
         "recompute_chain_rewards": True,
         "adaptive_tolerance": {
             "enabled": True,
-            "warmup_transitions": 64,
+            "warmup_transitions": 120,
             "elite_fraction": 0.05,
-            "upward_factor": 1.30,
+            "upward_factor": 1.05,
             "downward_min_relative_improvement": 0.05,
             "priority_recalc_batch_size": 256,
         },
