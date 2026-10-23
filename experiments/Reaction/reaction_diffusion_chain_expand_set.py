@@ -8,9 +8,10 @@ project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..
 sys.path.append(project_root)
 
 from comet_config import start_comet_experiment
-
+nu = 0.01
+rho = 5.0
 experiment = start_comet_experiment(
-    project_name="rlpinn-reaction-diffusion-nu5-rho5-tolerance-expand-set",
+    project_name=f"rlpinn-reaction-diffusion-nu{nu}-rho{rho}-tolerance-expand-set",
 )
 
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
@@ -72,8 +73,8 @@ def main():
     parser.add_argument("--log-every", type=int, default=100)
     parser.add_argument("--plot-every", type=int, default=2000)
 
-    parser.add_argument("--nu", type=float, default=5.0)
-    parser.add_argument("--rho", type=float, default=5.0)
+    parser.add_argument("--nu", type=float, default=nu)
+    parser.add_argument("--rho", type=float, default=rho)
 
     parser.add_argument("--n-trajectories", type=int, default=1000)
     parser.add_argument("--n-steps-max", type=int, default=1000)
