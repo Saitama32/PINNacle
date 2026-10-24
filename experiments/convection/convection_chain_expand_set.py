@@ -201,7 +201,7 @@ def main():
         "img_dir": "",
         "dde_pde_model": get_model_rec,
     }
-
+    epsilon_random_steps = 120
     rl_agent_params = {
         "n_save_models": args.n_save_models,
         "n_trajectories": args.n_trajectories,
@@ -220,18 +220,18 @@ def main():
         "reward_operator_coeff": 1,
         "reward_boundary_coeff": 1,
         "agent_min_buffer": 32,
-        "agent_update_iters": 5,
+        "agent_update_iters": 3,
         "epsilon_start": 0.95,
         "epsilon_end": 0.15,
-        "epsilon_decay": 120,
-        "epsilon_random_steps": 64,
+        "epsilon_decay": 180,
+        "epsilon_random_steps": epsilon_random_steps,
         "offline_pretrain_steps": 500,
         "offline_pretrain_iters": 5,
         "include_terminal_starts": True,
         "recompute_chain_rewards": True,
         "adaptive_tolerance": {
             "enabled": True,
-            "warmup_transitions": 120,
+            "warmup_transitions": epsilon_random_steps,
             "elite_fraction": 0.05,
             "upward_factor": 1.05,
             "downward_min_relative_improvement": 0.05,
