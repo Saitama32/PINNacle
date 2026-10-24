@@ -20,6 +20,9 @@ class PrioritizedReplayBuffer:
         self.success_threshold = 0.0
         # Набор индексов переходов, которые являются успешными терминалами (done == 1)
         self.success_indexes = set()
+        # Endpoints of trajectories that made positive relative progress.
+        # The score is sampling metadata only; it is never folded into PER priority.
+        self.progress_endpoints = {}
 
     def _warn_renorm(self, where: str, reason: str):
         print(f"WARNING[PER:{where}] fallback renorm triggered: {reason}")
@@ -53,6 +56,7 @@ class PrioritizedReplayBuffer:
             self.prior.append(p)
         else:
             idx = self.pos
+            self.progress_endpoints.pop(idx, None)
             self.memory[idx] = tr
             self.prior[idx] = p
             self.pos = (self.pos + 1) % self.capacity
@@ -69,6 +73,64 @@ class PrioritizedReplayBuffer:
         else:
             # если в этом слоте раньше был успех, а теперь нет — убираем
             self.success_indexes.discard(idx)
+
+        return idx
+
+    def register_progress_endpoint(self, index, score):
+        index = int(index)
+        score = float(score)
+        if not 0 <= index < len(self.memory):
+            raise IndexError(f"progress endpoint index out of range: {index}")
+        if not math.isfinite(score) or score <= 0.0:
+            self.progress_endpoints.pop(index, None)
+            return
+        self.progress_endpoints[index] = score
+
+    def sample_progress_sequences(self, batch_size, L, rank_alpha=0.7, device='cpu'):
+        """Sample prefixes ending at progress endpoints using rank probabilities."""
+        if not self.progress_endpoints:
+            raise RuntimeError("Progress endpoint pool is empty")
+        if batch_size < 1:
+            raise ValueError("batch_size must be at least 1")
+        if L < 1:
+            raise ValueError("L must be at least 1")
+        if rank_alpha < 0.0:
+            raise ValueError("rank_alpha cannot be negative")
+
+        ranked = sorted(
+            self.progress_endpoints.items(),
+            key=lambda item: (-item[1], item[0]),
+        )
+        rank_weights = torch.arange(
+            1, len(ranked) + 1, dtype=torch.float64, device=device
+        ).pow(-float(rank_alpha))
+        probabilities = rank_weights / rank_weights.sum()
+        selected_positions = torch.multinomial(
+            probabilities, batch_size, replacement=True
+        ).tolist()
+
+        sequences = []
+        start_indexes = []
+        selected_scores = []
+        for position in selected_positions:
+            end_index, score = ranked[position]
+            sequence = self._build_sequence_ending_at(
+                end_index, L, random_start=False
+            )
+            # Progress replay deliberately permits a one-step sequence: an
+            # immediate best checkpoint is still useful training data.
+            start_position = random.randint(0, len(sequence) - 1)
+            sequence = sequence[start_position:]
+            start_index = end_index - (len(sequence) - 1)
+
+            sequences.append(sequence)
+            start_indexes.append(start_index)
+            selected_scores.append(score)
+
+        indexes = torch.tensor(start_indexes, dtype=torch.long, device=device)
+        weights = torch.ones(batch_size, dtype=torch.float, device=device)
+        scores = torch.tensor(selected_scores, dtype=torch.float, device=device)
+        return sequences, indexes, weights, scores
 
 
     def sample(self, batch_size, beta=0.4, device='cpu'):

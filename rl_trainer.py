@@ -334,6 +334,108 @@ def _extract_weighted_train_loss(model) -> float:
     return loss_value
 
 
+def _evaluate_weighted_train_loss(model) -> float:
+    """Evaluate the current network instead of reading stale train_state data."""
+    batch_size = getattr(model, "batch_size", None)
+    batch = model.data.train_next_batch(batch_size)
+    x_train, y_train = batch[:2]
+    aux_vars = batch[2] if len(batch) > 2 else None
+    _, losses = model._outputs_losses(True, x_train, y_train, aux_vars)
+    losses = np.asarray(losses, dtype=np.float64)
+    value = float(np.sum(losses))
+    if not np.isfinite(value) or value < 0.0:
+        return float("nan")
+    return value
+
+
+def _compute_progress_stats(initial_loss, losses, eps=1e-12):
+    initial_loss = float(initial_loss)
+    losses = np.asarray(losses, dtype=np.float64)
+    eps = float(eps)
+    all_losses = np.concatenate(([initial_loss], losses))
+    if eps <= 0.0:
+        raise ValueError("progress replay eps must be greater than zero")
+    if not np.all(np.isfinite(all_losses)) or np.any(all_losses < 0.0):
+        raise ValueError("progress replay requires finite non-negative losses")
+
+    best_step = int(np.argmin(all_losses))
+    best_loss = float(all_losses[best_step])
+    final_loss = float(losses[-1])
+    best_score = float(np.log((initial_loss + eps) / (best_loss + eps)))
+    final_score = float(np.log((initial_loss + eps) / (final_loss + eps)))
+    stability_gap = float(np.log((final_loss + eps) / (best_loss + eps)))
+    return {
+        "initial_loss": initial_loss,
+        "best_loss": best_loss,
+        "final_loss": final_loss,
+        "best_score": best_score,
+        "final_score": final_score,
+        "stability_gap": stability_gap,
+        "best_step": best_step,
+        "best_index": None if best_step == 0 else best_step - 1,
+    }
+
+
+def _progress_transition_tuple(transition):
+    reward = float(transition["reward_model"])
+    return (
+        transition["state"],
+        transition["next_state"],
+        transition["action"],
+        reward,
+        int(transition["done"]),
+        reward,
+        int(transition["opt_model_i"]),
+    )
+
+
+def _select_recent_progress_records(records, capacity):
+    selected_reversed = []
+    used = 0
+    for record in reversed(records):
+        size = len(record["transitions"])
+        if size > capacity:
+            continue
+        if used + size > capacity:
+            break
+        selected_reversed.append(record)
+        used += size
+    return list(reversed(selected_reversed))
+
+
+def _rebuild_progress_replay_buffer(agent, records, priority_batch_size):
+    old_buffer = agent.replay_buffer
+    selected = _select_recent_progress_records(records, old_buffer.capacity)
+    new_buffer = PrioritizedReplayBuffer(
+        capacity=old_buffer.capacity,
+        alpha=old_buffer.alpha,
+        eps=old_buffer.eps,
+    )
+    new_buffer.success_threshold = old_buffer.success_threshold
+
+    for record in selected:
+        indexes = [
+            new_buffer.push(
+                *_progress_transition_tuple(transition), priority=1.0
+            )
+            for transition in record["transitions"]
+        ]
+        best_index = record["best_index"]
+        if best_index is not None and record["best_score"] > record["min_score"]:
+            new_buffer.register_progress_endpoint(
+                indexes[best_index], record["best_score"]
+            )
+
+    agent.replay_buffer = new_buffer
+    if len(new_buffer) > 0:
+        recalc_all_priorities_batched(agent, batch_size=priority_batch_size)
+    return {
+        "selected_chains": len(selected),
+        "buffer_transitions": len(new_buffer),
+        "progress_endpoints": len(new_buffer.progress_endpoints),
+    }
+
+
 def _log_replay_action_diagnostics(agent):
     action_stats = {
         action_idx: {
@@ -493,6 +595,30 @@ def run_deepxde_rl_training(
     adaptive_tolerance_enabled = bool(
         adaptive_tolerance_config.get("enabled", False)
     )
+    progress_replay_config = dict(
+        rl_agent_params.get("progress_replay", {}) or {}
+    )
+    progress_replay_enabled = bool(
+        progress_replay_config.get("enabled", False)
+    )
+    if adaptive_tolerance_enabled and progress_replay_enabled:
+        raise ValueError(
+            "adaptive_tolerance and progress_replay cannot be enabled together"
+        )
+    progress_fraction = float(progress_replay_config.get("fraction", 0.30))
+    progress_rank_alpha = float(
+        progress_replay_config.get("rank_alpha", 0.70)
+    )
+    progress_min_score = float(progress_replay_config.get("min_score", 0.0))
+    progress_eps = float(progress_replay_config.get("eps", 1e-12))
+    if not np.isfinite(progress_fraction) or not 0.0 <= progress_fraction <= 1.0:
+        raise ValueError("progress_replay fraction must be in [0, 1]")
+    if not np.isfinite(progress_rank_alpha) or progress_rank_alpha < 0.0:
+        raise ValueError("progress_replay rank_alpha cannot be negative")
+    if not np.isfinite(progress_min_score) or progress_min_score < 0.0:
+        raise ValueError("progress_replay min_score cannot be negative")
+    if not np.isfinite(progress_eps) or progress_eps <= 0.0:
+        raise ValueError("progress_replay eps must be greater than zero")
     max_actions_per_trajectory = int(
         rl_agent_params.get("max_actions_per_trajectory", 12)
     )
@@ -515,7 +641,10 @@ def run_deepxde_rl_training(
                          loss_surface_params=loss_surface_params,
                          n_save_models=rl_agent_params['n_save_models'],
                          tolerance=rl_agent_params["tolerance"],
-                         terminate_on_tolerance=not adaptive_tolerance_enabled)
+                         terminate_on_tolerance=not (
+                             adaptive_tolerance_enabled
+                             or progress_replay_enabled
+                         ))
     env.configure_chain_reward(
         alpha=rl_agent_params.get("chain_reward_alpha", 0.2),
         dense_clip=rl_agent_params.get("chain_reward_dense_clip", 5.0),
@@ -552,6 +681,9 @@ def run_deepxde_rl_training(
                         epsilon_random_steps=rl_agent_params.get(
                             "epsilon_random_steps"
                         ),
+                        progress_replay_enabled=progress_replay_enabled,
+                        progress_fraction=progress_fraction,
+                        progress_rank_alpha=progress_rank_alpha,
                         exp = rl_agent_params["exp"],
                         model_snapshot_dir=f"{save_path}/rl_model_snapshots")
 
@@ -614,6 +746,7 @@ def run_deepxde_rl_training(
 
     idx_traj = 0
     archive_transitions = []
+    progress_archive_records = []
     current_adaptive_tolerance = None
 
     for traj in range(train_args["n_trajectories"]):
@@ -631,6 +764,8 @@ def run_deepxde_rl_training(
         total_reward = 0.0
         trajectory_transitions = []
         trajectory_losses = []
+        trajectory_initial_loss = None
+        progress_rollout_metrics = None
         final_done = 0
 
         print('\n############################################################################' +
@@ -666,6 +801,17 @@ def run_deepxde_rl_training(
 
             model.compile(torch_opt, loss_weights=loss_weights)
             model.optimizer = torch_opt
+            if progress_replay_enabled and trajectory_initial_loss is None:
+                trajectory_initial_loss = _evaluate_weighted_train_loss(model)
+                if not np.isfinite(trajectory_initial_loss):
+                    raise RuntimeError(
+                        "Could not evaluate a finite initial weighted train loss "
+                        "for progress replay."
+                    )
+                print(
+                    "Progress replay initial weighted loss: "
+                    f"{trajectory_initial_loss}"
+                )
             saver = ModelSaverCallback(total_iterations=chunk_iters, n_save_models=train_args['n_save_models'])
             callbacks = list(base_callbacks) + [saver]
 
@@ -789,10 +935,17 @@ def run_deepxde_rl_training(
             if final_done == -1:
                 trajectory_transitions[-1]["done"] = -1
 
-            trajectory_rewards = env.compute_chain_rewards(
-                losses=trajectory_losses,
-                done=final_done,
-            )
+            if progress_replay_enabled:
+                trajectory_rewards = env.compute_progress_rewards(
+                    initial_loss=trajectory_initial_loss,
+                    losses=trajectory_losses,
+                    eps=progress_eps,
+                )
+            else:
+                trajectory_rewards = env.compute_chain_rewards(
+                    losses=trajectory_losses,
+                    done=final_done,
+                )
 
             assert len(trajectory_rewards) == len(trajectory_transitions), (
                 f"len(trajectory_rewards)={len(trajectory_rewards)} != "
@@ -805,7 +958,7 @@ def run_deepxde_rl_training(
                 chain_reward = float(chain_reward)
                 chain_total_reward += chain_reward
 
-                if not adaptive_tolerance_enabled:
+                if not adaptive_tolerance_enabled and not progress_replay_enabled:
                     rl_agent.push_memory((
                         tr["state"],
                         tr["next_state"],
@@ -828,7 +981,11 @@ def run_deepxde_rl_training(
                     'done': tr["done"],
                     'reward_model_raw': chain_reward,
                     'reward_model': chain_reward,
-                    'reward_scheme': "env_chain_reward",
+                    'reward_scheme': (
+                        "progress_log_reward"
+                        if progress_replay_enabled
+                        else "env_chain_reward"
+                    ),
                     'old_reward_model': tr["old_reward_model"],
                     'old_raw_reward': tr["old_raw_reward"],
                     'opt_model_i': tr["opt_model_i"],
@@ -848,7 +1005,7 @@ def run_deepxde_rl_training(
                 except Exception as e:
                     print(e)
 
-                if adaptive_tolerance_enabled:
+                if adaptive_tolerance_enabled or progress_replay_enabled:
                     archive_transitions.append(to_cpu({
                         key: value
                         for key, value in entry.items()
@@ -932,8 +1089,72 @@ def run_deepxde_rl_training(
                         ]
                     experiment.log_metrics(adaptive_metrics, step=rl_agent.steps_done)
 
+            elif progress_replay_enabled:
+                archived_trajectory = archive_transitions[-len(trajectory_transitions):]
+                progress_stats = _compute_progress_stats(
+                    trajectory_initial_loss,
+                    trajectory_losses,
+                    eps=progress_eps,
+                )
+                record = {
+                    "transitions": archived_trajectory,
+                    "best_index": progress_stats["best_index"],
+                    "best_score": progress_stats["best_score"],
+                    "min_score": progress_min_score,
+                }
+                progress_archive_records.append(record)
+
+                if (
+                    len(rl_agent.replay_buffer) + len(archived_trajectory)
+                    > rl_agent.replay_buffer.capacity
+                ):
+                    rebuild_stats = _rebuild_progress_replay_buffer(
+                        agent=rl_agent,
+                        records=progress_archive_records,
+                        priority_batch_size=priority_recalc_batch_size,
+                    )
+                    print(f"Progress replay rebuild: {rebuild_stats}\n")
+                else:
+                    indexes = [
+                        rl_agent.push_memory(
+                            _progress_transition_tuple(transition)
+                        )
+                        for transition in archived_trajectory
+                    ]
+                    best_index = progress_stats["best_index"]
+                    if (
+                        best_index is not None
+                        and progress_stats["best_score"] > progress_min_score
+                    ):
+                        rl_agent.replay_buffer.register_progress_endpoint(
+                            indexes[best_index], progress_stats["best_score"]
+                        )
+
+                progress_rollout_metrics = {
+                    "progress_initial_loss": progress_stats["initial_loss"],
+                    "progress_best_loss": progress_stats["best_loss"],
+                    "progress_final_loss": progress_stats["final_loss"],
+                    "progress_best_score": progress_stats["best_score"],
+                    "progress_final_score": progress_stats["final_score"],
+                    "progress_stability_gap": progress_stats["stability_gap"],
+                    "progress_best_step": progress_stats["best_step"],
+                    "progress_pool_size": len(
+                        rl_agent.replay_buffer.progress_endpoints
+                    ),
+                }
+                print(
+                    "\nProgress replay: "
+                    f"initial={progress_stats['initial_loss']}, "
+                    f"best={progress_stats['best_loss']} at step "
+                    f"{progress_stats['best_step']}, "
+                    f"final={progress_stats['final_loss']}, "
+                    f"score={progress_stats['best_score']}, "
+                    f"pool={len(rl_agent.replay_buffer.progress_endpoints)}\n"
+                )
+
             print(
-                f"\nPushed trajectory with env chain rewards. "
+                f"\nPushed trajectory with "
+                f"{'progress log rewards' if progress_replay_enabled else 'env chain rewards'}. "
                 f"steps={len(trajectory_transitions)}, "
                 f"final_loss={trajectory_losses[-1]}, "
                 f"final_done={final_done}, "
@@ -943,8 +1164,19 @@ def run_deepxde_rl_training(
             if len(rl_agent.replay_buffer) >= rl_agent_params["agent_min_buffer"]:
                 rl_agent.optim_(iters=rl_agent_params["agent_update_iters"])
 
+            if progress_rollout_metrics is not None:
+                progress_rollout_metrics.update(
+                    rl_agent.consume_progress_sampling_metrics()
+                )
+                experiment = rl_agent_params.get("exp")
+                if experiment is not None:
+                    experiment.log_metrics(
+                        progress_rollout_metrics,
+                        step=rl_agent.steps_done,
+                    )
 
-        if adaptive_tolerance_enabled:
+
+        if adaptive_tolerance_enabled or progress_replay_enabled:
             idx_traj += 1
         elif done == 1:
             idx_traj += 1

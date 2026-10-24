@@ -159,6 +159,25 @@ class EnvRLOptimizer(gym.Env):
         rewards = terminal_rewards + alpha * dense_rewards
         return rewards.tolist()
 
+    def compute_progress_rewards(self, initial_loss, losses, eps=1e-12):
+        """Return unclipped local log-progress rewards for one physical rollout."""
+        losses = np.asarray(losses, dtype=np.float64)
+        if len(losses) == 0:
+            return []
+
+        initial_loss = float(initial_loss)
+        eps = float(eps)
+        all_losses = np.concatenate(([initial_loss], losses))
+        if eps <= 0.0:
+            raise ValueError("eps must be greater than zero")
+        if not np.all(np.isfinite(all_losses)) or np.any(all_losses < 0.0):
+            raise ValueError("progress rewards require finite non-negative losses")
+
+        rewards = np.log(all_losses[:-1] + eps) - np.log(
+            all_losses[1:] + eps
+        )
+        return rewards.tolist()
+
     def relabel_chain(self, losses, tolerance):
         """Relabel a physical loss chain for the current success tolerance."""
         losses = np.asarray(losses, dtype=np.float64)

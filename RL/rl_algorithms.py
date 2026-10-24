@@ -33,7 +33,9 @@ class DQNAgent:
                  include_terminal_starts: bool = False,
                  model_snapshot_dir="rl_model_snapshots",
                  epsilon_start=None, epsilon_end=None,
-                 epsilon_decay_steps=None, epsilon_random_steps=None):
+                 epsilon_decay_steps=None, epsilon_random_steps=None,
+                 progress_replay_enabled=False, progress_fraction=0.30,
+                 progress_rank_alpha=0.70):
         self.n_observation = n_observation
         self.n_action = n_action
         self.gamma = gamma
@@ -119,6 +121,19 @@ class DQNAgent:
         self.success_reward_threshold = 0.0
         # прокидываем порог в буфер
         self.replay_buffer.success_threshold = self.success_reward_threshold
+
+        # Progress replay is independent of semantic success replay. It samples
+        # prefixes ending at the best checkpoint of a physical trajectory.
+        self.progress_replay_enabled = bool(progress_replay_enabled)
+        self.progress_fraction = float(progress_fraction)
+        self.progress_rank_alpha = float(progress_rank_alpha)
+        if not math.isfinite(self.progress_fraction) or not 0.0 <= self.progress_fraction <= 1.0:
+            raise ValueError("progress_fraction must be in [0, 1]")
+        if not math.isfinite(self.progress_rank_alpha) or self.progress_rank_alpha < 0.0:
+            raise ValueError("progress_rank_alpha cannot be negative")
+        self._progress_sample_total = 0
+        self._progress_sample_count = 0
+        self._progress_sample_score_sum = 0.0
 
         #warmup
         self.warmup_updates_total = warmup_updates
@@ -219,8 +234,9 @@ class DQNAgent:
     
     def push_memory(self, rl_params, priority=None):
         tr = self.detach_transition(Transition(*rl_params))
-        self.replay_buffer.push(
-            tr.state, tr.next_state, tr.action, tr.reward, tr.done, tr.model_reward, tr.opt_model_i, coeff=1.5
+        return self.replay_buffer.push(
+            tr.state, tr.next_state, tr.action, tr.reward, tr.done,
+            tr.model_reward, tr.opt_model_i, priority=priority, coeff=1.5
         )
 
     def _stack_state(self, st):
@@ -253,14 +269,31 @@ class DQNAgent:
     #         clean_buffer.push(*self.detach_transition(transition))
     #     return clean_buffer
 
+    def consume_progress_sampling_metrics(self):
+        total = self._progress_sample_total
+        count = self._progress_sample_count
+        metrics = {
+            "progress_sample_fraction": count / max(total, 1),
+            "progress_sampled_score_mean": (
+                self._progress_sample_score_sum / max(count, 1)
+            ),
+        }
+        self._progress_sample_total = 0
+        self._progress_sample_count = 0
+        self._progress_sample_score_sum = 0.0
+        return metrics
+
     def _sample_sequences(self, batch_size, L, uniform: bool, beta=None):
         """
         Сэмплируем последовательности из буфера.
         - При uniform=True (warmup) берём только обычные sequence-выборки.
         - При uniform=False (основное обучение) мешаем:
             * часть батча из обычного PER (по приоритетам)
-            * часть батча из успешных эпизодов (success_sequences),
-              если такие есть и success_frac > 0.
+            * progress prefixes, если включён progress replay;
+            * иначе сохраняем legacy success replay.
+
+        Возвращает также bool-маску progress_cuts: для этих
+        последовательностей bootstrap обрывается на последнем переходе.
         """
         rb = self.replay_buffer
 
@@ -274,7 +307,77 @@ class DQNAgent:
                 device=self.device,
                 include_terminal_starts=self.include_terminal_starts,
             )
-            return seqs, idxs, is_w
+            cuts = torch.zeros(batch_size, dtype=torch.bool, device=self.device)
+            if self.progress_replay_enabled:
+                self._progress_sample_total += batch_size
+            return seqs, idxs, is_w, cuts
+
+        if self.progress_replay_enabled:
+            rb = self.replay_buffer
+            if self.progress_fraction <= 0.0 or not rb.progress_endpoints:
+                seqs, idxs, is_w = rb.sample_sequences(
+                    batch_size,
+                    L,
+                    beta=beta,
+                    uniform=False,
+                    device=self.device,
+                    include_terminal_starts=self.include_terminal_starts,
+                )
+                cuts = torch.zeros(
+                    batch_size, dtype=torch.bool, device=self.device
+                )
+                self._progress_sample_total += batch_size
+                return seqs, idxs, is_w, cuts
+
+            n_progress = max(1, int(batch_size * self.progress_fraction))
+            n_progress = min(n_progress, batch_size)
+            n_main = batch_size - n_progress
+
+            seqs_all = []
+            idxs_all = []
+            isw_all = []
+            cuts_all = []
+
+            if n_main > 0:
+                main_seqs, main_idxs, main_is_w = rb.sample_sequences(
+                    n_main,
+                    L,
+                    beta=beta,
+                    uniform=False,
+                    device=self.device,
+                    include_terminal_starts=self.include_terminal_starts,
+                )
+                seqs_all.extend(main_seqs)
+                idxs_all.append(main_idxs.to(torch.long))
+                isw_all.append(main_is_w.to(self.device))
+                cuts_all.append(torch.zeros(
+                    n_main, dtype=torch.bool, device=self.device
+                ))
+
+            progress_seqs, progress_idxs, progress_is_w, progress_scores = (
+                rb.sample_progress_sequences(
+                    n_progress,
+                    L,
+                    rank_alpha=self.progress_rank_alpha,
+                    device=self.device,
+                )
+            )
+            seqs_all.extend(progress_seqs)
+            idxs_all.append(progress_idxs.to(torch.long))
+            isw_all.append(progress_is_w.to(self.device))
+            cuts_all.append(torch.ones(
+                n_progress, dtype=torch.bool, device=self.device
+            ))
+
+            self._progress_sample_total += batch_size
+            self._progress_sample_count += n_progress
+            self._progress_sample_score_sum += float(progress_scores.sum().item())
+            return (
+                seqs_all,
+                torch.cat(idxs_all, dim=0),
+                torch.cat(isw_all, dim=0),
+                torch.cat(cuts_all, dim=0),
+            )
 
         # --- Основной режим: PER + при необходимости success-эпизоды ---
         if self.success_frac <= 0.0 or not rb.success_indexes:
@@ -287,7 +390,8 @@ class DQNAgent:
                 device=self.device,
                 include_terminal_starts=self.include_terminal_starts,
             )
-            return seqs, idxs, is_w
+            cuts = torch.zeros(batch_size, dtype=torch.bool, device=self.device)
+            return seqs, idxs, is_w, cuts
 
         # Сколько последовательностей взять из success-эпизодов
         n_succ = int(batch_size * self.success_frac)
@@ -337,7 +441,8 @@ class DQNAgent:
         # На всякий случай контролируем длину
         assert len(seqs_all) == batch_size, f"Expected {batch_size} seqs, got {len(seqs_all)}"
 
-        return seqs_all, idxs_cat, isw_cat
+        cuts = torch.zeros(batch_size, dtype=torch.bool, device=self.device)
+        return seqs_all, idxs_cat, isw_cat, cuts
 
     
 
@@ -348,7 +453,13 @@ class DQNAgent:
             a_star = q_all.argmax(dim=1)               # [B]
         return (a_batch == a_star)                     # [B] bool
 
-    def _soft_watkins_targets(self, seq, gamma):
+    @staticmethod
+    def _effective_parameter_done(done, sequence_length, progress_cut):
+        if progress_cut and sequence_length == 1:
+            return torch.ones_like(done)
+        return done
+
+    def _soft_watkins_targets(self, seq, gamma, cut_bootstrap_at_end=False):
         states      = torch.stack([self._stack_state(tr.state)      for tr in seq])
         next_states = torch.stack([self._stack_state(tr.next_state) for tr in seq])
         actions     = torch.tensor([tr.action[0] for tr in seq], dtype=torch.long, device=self.device)
@@ -362,7 +473,8 @@ class DQNAgent:
         sum_w = torch.zeros((), device=self.device)
         for n in range(len(seq)):                               # n=0..N-1  => (n+1)-step
             ret = ret + pow_ * rewards[n]                       # += γ^n * r_{t+1+n}
-            if not dones[n]:
+            bootstrap_cut = cut_bootstrap_at_end and n == len(seq) - 1
+            if not dones[n] and not bootstrap_cut:
                 with torch.no_grad():
                     _, q_on_next  = self.model_optim(next_states[n:n+1])
                     a_star        = q_on_next.argmax(dim=1)
@@ -405,10 +517,10 @@ class DQNAgent:
                 break
 
             if self.warmup_active:
-                seqs, idxs, is_w = self._sample_sequences(self.batch_size, self.seq_len, uniform=True, beta=None)
+                seqs, idxs, is_w, progress_cuts = self._sample_sequences(self.batch_size, self.seq_len, uniform=True, beta=None)
                 is_w = is_w.to(self.device)           # единицы
             else:
-                seqs, idxs, is_w = self._sample_sequences(self.batch_size, self.seq_len, uniform=False, beta=self.per_beta)
+                seqs, idxs, is_w, progress_cuts = self._sample_sequences(self.batch_size, self.seq_len, uniform=False, beta=self.per_beta)
                 self.per_beta = min(1.0, self.per_beta + self.per_beta_inc)
                 is_w = is_w.to(self.device)
 
@@ -438,7 +550,14 @@ class DQNAgent:
 
             # --- SOFT/WATKINS G^{λ,κ} на каждый элемент батча из своей последовательности ---
             with torch.no_grad():
-                soft_watkins_targets = [ self._soft_watkins_targets(seq, self.gamma) for seq in seqs ]
+                soft_watkins_targets = [
+                    self._soft_watkins_targets(
+                        seq,
+                        self.gamma,
+                        cut_bootstrap_at_end=bool(progress_cuts[i].item()),
+                    )
+                    for i, seq in enumerate(seqs)
+                ]
                 y_opt_list, lambda_weight_list = zip(*soft_watkins_targets)
             y_opt = torch.stack(y_opt_list, dim=0)   # [B]
             lambda_weight = torch.stack(lambda_weight_list, dim=0)   # [B]
@@ -492,7 +611,12 @@ class DQNAgent:
                     q_next_on  = q_params_next_on[i][pname]         # (n_choices,)
                     a_next_p   = int(q_next_on.argmax().item())
                     q_next_tg  = q_params_next_tg[i][pname][a_next_p]
-                    y_p = reward[i] + (1.0 - done[i]) * self.gamma * q_next_tg
+                    parameter_done = self._effective_parameter_done(
+                        done[i],
+                        len(seqs[i]),
+                        bool(progress_cuts[i].item()),
+                    )
+                    y_p = reward[i] + (1.0 - parameter_done) * self.gamma * q_next_tg
                     delta_p_raw = (y_p - q_curr).detach()  
 
                     sigma_batch_p = float(delta_p_raw.abs().clamp_min(self.param_td_eps).item())
