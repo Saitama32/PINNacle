@@ -205,7 +205,7 @@ def main():
     rl_agent_params = {
         "n_save_models": args.n_save_models,
         "n_trajectories": args.n_trajectories,
-        "max_actions_per_trajectory": 6,
+        "max_actions_per_trajectory": 12,
         "tolerance": 0.076681697,
         "use_tol": False,
         "new_tol": True,
@@ -220,7 +220,7 @@ def main():
         "rl_reward_method": "absolute",
         "reward_operator_coeff": 1,
         "reward_boundary_coeff": 1,
-        "agent_min_buffer": 32,
+        "agent_min_buffer": epsilon_random_steps,
         "agent_update_iters": 5,
         "epsilon_start": 0.95,
         "epsilon_end": 0.15,
