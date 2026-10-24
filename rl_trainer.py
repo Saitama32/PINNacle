@@ -493,6 +493,11 @@ def run_deepxde_rl_training(
     adaptive_tolerance_enabled = bool(
         adaptive_tolerance_config.get("enabled", False)
     )
+    max_actions_per_trajectory = int(
+        rl_agent_params.get("max_actions_per_trajectory", 12)
+    )
+    if max_actions_per_trajectory < 2:
+        raise ValueError("max_actions_per_trajectory must be at least 2.")
     priority_recalc_batch_size = int(
         adaptive_tolerance_config.get("priority_recalc_batch_size", 256)
         if adaptive_tolerance_enabled
@@ -772,7 +777,9 @@ def run_deepxde_rl_training(
             if done == 1:
                 break
             elif done == 0:
-                if t == 10:
+                # Keep the legacy termination mechanism: set the penalty after
+                # the penultimate action so the following action ends the chain.
+                if t == max_actions_per_trajectory - 2:
                     rl_penalty = -1 
             elif done == -1:
                 rl_penalty = 0
