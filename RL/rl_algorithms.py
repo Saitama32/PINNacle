@@ -35,7 +35,8 @@ class DQNAgent:
                  epsilon_start=None, epsilon_end=None,
                  epsilon_decay_steps=None, epsilon_random_steps=None,
                  progress_replay_enabled=False, progress_fraction=0.30,
-                 progress_rank_alpha=0.70):
+                 progress_rank_alpha=0.70,
+                 progress_train_all_suffixes=False):
         self.n_observation = n_observation
         self.n_action = n_action
         self.gamma = gamma
@@ -127,6 +128,7 @@ class DQNAgent:
         self.progress_replay_enabled = bool(progress_replay_enabled)
         self.progress_fraction = float(progress_fraction)
         self.progress_rank_alpha = float(progress_rank_alpha)
+        self.progress_train_all_suffixes = bool(progress_train_all_suffixes)
         if not math.isfinite(self.progress_fraction) or not 0.0 <= self.progress_fraction <= 1.0:
             raise ValueError("progress_fraction must be in [0, 1]")
         if not math.isfinite(self.progress_rank_alpha) or self.progress_rank_alpha < 0.0:
@@ -294,6 +296,8 @@ class DQNAgent:
 
         Возвращает также bool-маску progress_cuts: для этих
         последовательностей bootstrap обрывается на последнем переходе.
+        multiplicity_weights сохраняют суммарный вес всех суффиксов
+        одного progress endpoint равным одному логическому batch slot.
         """
         rb = self.replay_buffer
 
@@ -308,9 +312,12 @@ class DQNAgent:
                 include_terminal_starts=self.include_terminal_starts,
             )
             cuts = torch.zeros(batch_size, dtype=torch.bool, device=self.device)
+            multiplicity_weights = torch.ones(
+                batch_size, dtype=torch.float, device=self.device
+            )
             if self.progress_replay_enabled:
                 self._progress_sample_total += batch_size
-            return seqs, idxs, is_w, cuts
+            return seqs, idxs, is_w, cuts, multiplicity_weights
 
         if self.progress_replay_enabled:
             rb = self.replay_buffer
@@ -326,8 +333,11 @@ class DQNAgent:
                 cuts = torch.zeros(
                     batch_size, dtype=torch.bool, device=self.device
                 )
+                multiplicity_weights = torch.ones(
+                    batch_size, dtype=torch.float, device=self.device
+                )
                 self._progress_sample_total += batch_size
-                return seqs, idxs, is_w, cuts
+                return seqs, idxs, is_w, cuts, multiplicity_weights
 
             n_progress = max(1, int(batch_size * self.progress_fraction))
             n_progress = min(n_progress, batch_size)
@@ -337,6 +347,7 @@ class DQNAgent:
             idxs_all = []
             isw_all = []
             cuts_all = []
+            multiplicity_all = []
 
             if n_main > 0:
                 main_seqs, main_idxs, main_is_w = rb.sample_sequences(
@@ -353,6 +364,9 @@ class DQNAgent:
                 cuts_all.append(torch.zeros(
                     n_main, dtype=torch.bool, device=self.device
                 ))
+                multiplicity_all.append(torch.ones(
+                    n_main, dtype=torch.float, device=self.device
+                ))
 
             progress_seqs, progress_idxs, progress_is_w, progress_scores = (
                 rb.sample_progress_sequences(
@@ -360,14 +374,52 @@ class DQNAgent:
                     L,
                     rank_alpha=self.progress_rank_alpha,
                     device=self.device,
+                    full_prefix=self.progress_train_all_suffixes,
                 )
             )
-            seqs_all.extend(progress_seqs)
-            idxs_all.append(progress_idxs.to(torch.long))
-            isw_all.append(progress_is_w.to(self.device))
-            cuts_all.append(torch.ones(
-                n_progress, dtype=torch.bool, device=self.device
-            ))
+            if self.progress_train_all_suffixes:
+                expanded_seqs = []
+                expanded_idxs = []
+                expanded_isw = []
+                expanded_multiplicity = []
+                for sequence, start_idx, sequence_isw in zip(
+                    progress_seqs,
+                    progress_idxs.tolist(),
+                    progress_is_w.tolist(),
+                ):
+                    suffix_count = len(sequence)
+                    suffix_weight = 1.0 / suffix_count
+                    for suffix_start in range(suffix_count):
+                        expanded_seqs.append(sequence[suffix_start:])
+                        expanded_idxs.append(start_idx + suffix_start)
+                        expanded_isw.append(sequence_isw)
+                        expanded_multiplicity.append(suffix_weight)
+
+                seqs_all.extend(expanded_seqs)
+                idxs_all.append(torch.tensor(
+                    expanded_idxs, dtype=torch.long, device=self.device
+                ))
+                isw_all.append(torch.tensor(
+                    expanded_isw, dtype=torch.float, device=self.device
+                ))
+                cuts_all.append(torch.ones(
+                    len(expanded_seqs), dtype=torch.bool, device=self.device
+                ))
+                multiplicity_all.append(torch.tensor(
+                    expanded_multiplicity,
+                    dtype=torch.float,
+                    device=self.device,
+                ))
+            else:
+                seqs_all.extend(progress_seqs)
+                idxs_all.append(progress_idxs.to(torch.long))
+                isw_all.append(progress_is_w.to(self.device))
+                cuts_all.append(torch.ones(
+                    n_progress, dtype=torch.bool, device=self.device
+                ))
+                multiplicity_all.append(torch.ones(
+                    n_progress, dtype=torch.float, device=self.device
+                ))
 
             self._progress_sample_total += batch_size
             self._progress_sample_count += n_progress
@@ -377,6 +429,7 @@ class DQNAgent:
                 torch.cat(idxs_all, dim=0),
                 torch.cat(isw_all, dim=0),
                 torch.cat(cuts_all, dim=0),
+                torch.cat(multiplicity_all, dim=0),
             )
 
         # --- Основной режим: PER + при необходимости success-эпизоды ---
@@ -391,7 +444,10 @@ class DQNAgent:
                 include_terminal_starts=self.include_terminal_starts,
             )
             cuts = torch.zeros(batch_size, dtype=torch.bool, device=self.device)
-            return seqs, idxs, is_w, cuts
+            multiplicity_weights = torch.ones(
+                batch_size, dtype=torch.float, device=self.device
+            )
+            return seqs, idxs, is_w, cuts, multiplicity_weights
 
         # Сколько последовательностей взять из success-эпизодов
         n_succ = int(batch_size * self.success_frac)
@@ -442,7 +498,10 @@ class DQNAgent:
         assert len(seqs_all) == batch_size, f"Expected {batch_size} seqs, got {len(seqs_all)}"
 
         cuts = torch.zeros(batch_size, dtype=torch.bool, device=self.device)
-        return seqs_all, idxs_cat, isw_cat, cuts
+        multiplicity_weights = torch.ones(
+            batch_size, dtype=torch.float, device=self.device
+        )
+        return seqs_all, idxs_cat, isw_cat, cuts, multiplicity_weights
 
     
 
@@ -458,6 +517,23 @@ class DQNAgent:
         if progress_cut and sequence_length == 1:
             return torch.ones_like(done)
         return done
+
+    @staticmethod
+    def _aggregate_priorities_by_index(idxs, priorities, eps):
+        """Keep the largest sampled TD priority for every replay index."""
+        priority_by_index = {}
+        for index, priority in zip(
+            idxs.detach().cpu().tolist(),
+            priorities.detach().cpu().tolist(),
+        ):
+            priority_by_index[index] = max(
+                priority_by_index.get(index, eps),
+                float(priority),
+            )
+        return (
+            torch.tensor(list(priority_by_index.keys()), dtype=torch.long),
+            torch.tensor(list(priority_by_index.values()), dtype=torch.float),
+        )
 
     def _soft_watkins_targets(self, seq, gamma, cut_bootstrap_at_end=False):
         states      = torch.stack([self._stack_state(tr.state)      for tr in seq])
@@ -517,12 +593,20 @@ class DQNAgent:
                 break
 
             if self.warmup_active:
-                seqs, idxs, is_w, progress_cuts = self._sample_sequences(self.batch_size, self.seq_len, uniform=True, beta=None)
+                seqs, idxs, is_w, progress_cuts, multiplicity_weights = self._sample_sequences(
+                    self.batch_size, self.seq_len, uniform=True, beta=None
+                )
                 is_w = is_w.to(self.device)           # единицы
             else:
-                seqs, idxs, is_w, progress_cuts = self._sample_sequences(self.batch_size, self.seq_len, uniform=False, beta=self.per_beta)
+                seqs, idxs, is_w, progress_cuts, multiplicity_weights = self._sample_sequences(
+                    self.batch_size,
+                    self.seq_len,
+                    uniform=False,
+                    beta=self.per_beta,
+                )
                 self.per_beta = min(1.0, self.per_beta + self.per_beta_inc)
                 is_w = is_w.to(self.device)
+            multiplicity_weights = multiplicity_weights.to(self.device)
 
             policy_position_metrics = collect_policy_metrics_by_seq_position(self, seqs)    
 
@@ -587,7 +671,9 @@ class DQNAgent:
 
             # --- применяем маску к лоссу оптимизаторной головы ---
             per_sample_loss_opt = self.huberloss(input=q_sa, target=y_opt) * is_w
-            loss_opt = (per_sample_loss_opt * tr_keep).sum() / tr_keep.sum().clamp_min(1.0)
+            weighted_keep = tr_keep * multiplicity_weights
+            loss_denominator = weighted_keep.sum().clamp_min(1.0)
+            loss_opt = (per_sample_loss_opt * weighted_keep).sum() / loss_denominator
 
 
             td_opt_abs = (q_sa - y_opt).abs().detach()
@@ -633,7 +719,9 @@ class DQNAgent:
                 loss_param_items.append(lp_sum)
                 td_param_items.append(td_sum)
 
-            loss_param = torch.stack(loss_param_items).sum() / tr_keep.sum().clamp_min(1.0)
+            loss_param = (
+                torch.stack(loss_param_items) * multiplicity_weights
+            ).sum() / loss_denominator
 
             # --- шаг оптимизации ---
             self.optimizer_opt.zero_grad()
@@ -649,7 +737,15 @@ class DQNAgent:
                 td_param_abs = torch.as_tensor(td_param_items, dtype=torch.float, device=self.device)
                 td_param_abs = td_param_abs * tr_keep + self.tr_eps
                 new_priors = td_opt_abs + td_param_abs
-            self.replay_buffer.update_priorities(idxs, new_priors.cpu())
+            # A progress endpoint can be sampled more than once and expanded
+            # into suffixes that overlap ordinary PER samples. Aggregate by
+            # index so priority updates are independent of sample order.
+            unique_idxs, unique_priors = self._aggregate_priorities_by_index(
+                idxs,
+                new_priors,
+                self.tr_eps,
+            )
+            self.replay_buffer.update_priorities(unique_idxs, unique_priors)
 
             if self.warmup_active:
                 self.warmup_updates_done += 1

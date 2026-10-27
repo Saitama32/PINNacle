@@ -86,7 +86,14 @@ class PrioritizedReplayBuffer:
             return
         self.progress_endpoints[index] = score
 
-    def sample_progress_sequences(self, batch_size, L, rank_alpha=0.7, device='cpu'):
+    def sample_progress_sequences(
+        self,
+        batch_size,
+        L,
+        rank_alpha=0.7,
+        device='cpu',
+        full_prefix=False,
+    ):
         """Sample prefixes ending at progress endpoints using rank probabilities."""
         if not self.progress_endpoints:
             raise RuntimeError("Progress endpoint pool is empty")
@@ -117,10 +124,12 @@ class PrioritizedReplayBuffer:
             sequence = self._build_sequence_ending_at(
                 end_index, L, random_start=False
             )
-            # Progress replay deliberately permits a one-step sequence: an
-            # immediate best checkpoint is still useful training data.
-            start_position = random.randint(0, len(sequence) - 1)
-            sequence = sequence[start_position:]
+            if not full_prefix:
+                # Legacy progress replay trains one randomly chosen suffix.
+                # A one-step suffix is valid because an immediate best
+                # checkpoint is still useful training data.
+                start_position = random.randint(0, len(sequence) - 1)
+                sequence = sequence[start_position:]
             start_index = end_index - (len(sequence) - 1)
 
             sequences.append(sequence)

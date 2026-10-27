@@ -205,7 +205,7 @@ def main():
     rl_agent_params = {
         "n_save_models": args.n_save_models,
         "n_trajectories": args.n_trajectories,
-        "max_actions_per_trajectory": 6,
+        "max_actions_per_trajectory": 12,
         "tolerance": 0.076681697,
         "use_tol": False,
         "new_tol": True,
@@ -244,6 +244,7 @@ def main():
             "rank_alpha": 0.70,
             "min_score": 0.0,
             "eps": 1e-12,
+            "train_all_suffixes": True,
         },
         "lr": args.lr,
         "exp": experiment,
