@@ -113,7 +113,7 @@ def main(seed_override=None):
         args.seed = int(seed_override)
 
     date_str = time.strftime("%m.%d-%H.%M.%S", time.localtime())
-    save_path = os.path.join(args.out, f"{date_str}-{args.name}")
+    save_path = os.path.join(args.out, f"{date_str}-{args.name}-beta{args.beta:g}")
     os.makedirs(save_path, exist_ok=True)
 
     pde_kwargs = {
