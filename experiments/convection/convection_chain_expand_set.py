@@ -247,8 +247,8 @@ def main():
             "train_all_suffixes": True,
             # BN-only ablation: keep both optional algorithm changes in
             # their legacy modes for the next run.
-            "recursive_soft_watkins": False,
-            "update_priorities_from_progress": True,
+            "recursive_soft_watkins": True,
+            "update_priorities_from_progress": False,
         },
         "lr": args.lr,
         "exp": experiment,
