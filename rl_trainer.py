@@ -615,6 +615,9 @@ def run_deepxde_rl_training(
     recursive_soft_watkins = bool(
         progress_replay_config.get("recursive_soft_watkins", False)
     )
+    pure_progress_return = bool(
+        progress_replay_config.get("pure_progress_return", False)
+    )
     update_priorities_from_progress = bool(
         progress_replay_config.get("update_priorities_from_progress", True)
     )
@@ -695,6 +698,7 @@ def run_deepxde_rl_training(
                         progress_rank_alpha=progress_rank_alpha,
                         progress_train_all_suffixes=progress_train_all_suffixes,
                         recursive_soft_watkins=recursive_soft_watkins,
+                        pure_progress_return=pure_progress_return,
                         update_priorities_from_progress=(
                             update_priorities_from_progress
                         ),

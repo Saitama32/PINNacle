@@ -39,6 +39,7 @@ class DQNAgent:
                  progress_rank_alpha=0.70,
                  progress_train_all_suffixes=False,
                  recursive_soft_watkins=False,
+                 pure_progress_return=False,
                  update_priorities_from_progress=True):
         self.n_observation = n_observation
         self.n_action = n_action
@@ -133,6 +134,7 @@ class DQNAgent:
         self.progress_rank_alpha = float(progress_rank_alpha)
         self.progress_train_all_suffixes = bool(progress_train_all_suffixes)
         self.recursive_soft_watkins = bool(recursive_soft_watkins)
+        self.pure_progress_return = bool(pure_progress_return)
         self.update_priorities_from_progress = bool(
             update_priorities_from_progress
         )
@@ -168,6 +170,7 @@ class DQNAgent:
             "recalc_batch_size": recalc_batch_size,
             "progress_train_all_suffixes": self.progress_train_all_suffixes,
             "recursive_soft_watkins": self.recursive_soft_watkins,
+            "pure_progress_return": self.pure_progress_return,
             "update_priorities_from_progress": (
                 self.update_priorities_from_progress
             ),
@@ -678,7 +681,41 @@ class DQNAgent:
 
         return return_value.detach(), residual_mass.detach()
 
-    def _soft_watkins_targets(self, seq, gamma, cut_bootstrap_at_end=False):
+    def _pure_discounted_return_target(self, seq, gamma):
+        """Observed discounted return through the sampled endpoint.
+
+        This target deliberately contains no Q bootstrap. It is used only for
+        progress-replay copies, whose final transition is a sampling endpoint
+        rather than a physical terminal.
+        """
+        rewards = torch.tensor(
+            [tr.reward for tr in seq], dtype=torch.float, device=self.device
+        )
+        dones = torch.tensor(
+            [tr.done != 0 for tr in seq],
+            dtype=torch.bool,
+            device=self.device,
+        )
+
+        return_value = rewards[-1]
+        for n in range(len(seq) - 2, -1, -1):
+            continuation = 1.0 - dones[n].to(dtype=rewards.dtype)
+            return_value = rewards[n] + gamma * continuation * return_value
+
+        # The second value is retained for the existing diagnostics. For a
+        # pure observed return, the sampled horizon carries all target mass.
+        observed_mass = torch.ones((), device=self.device)
+        return return_value.detach(), observed_mass
+
+    def _soft_watkins_targets(
+        self,
+        seq,
+        gamma,
+        cut_bootstrap_at_end=False,
+        use_pure_return=False,
+    ):
+        if use_pure_return:
+            return self._pure_discounted_return_target(seq, gamma)
         if self.recursive_soft_watkins:
             return self._recursive_soft_watkins_targets(
                 seq, gamma, cut_bootstrap_at_end=cut_bootstrap_at_end
@@ -750,6 +787,10 @@ class DQNAgent:
                         seq,
                         self.gamma,
                         cut_bootstrap_at_end=bool(progress_cuts[i].item()),
+                        use_pure_return=(
+                            self.pure_progress_return
+                            and bool(progress_cuts[i].item())
+                        ),
                     )
                     for i, seq in enumerate(seqs)
                 ]

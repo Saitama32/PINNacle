@@ -245,10 +245,11 @@ def main():
             "min_score": 0.0,
             "eps": 1e-12,
             "train_all_suffixes": True,
-            # BN-only ablation: keep both optional algorithm changes in
-            # their legacy modes for the next run.
-            "recursive_soft_watkins": True,
-            "update_priorities_from_progress": False,
+            # Independent ablation switches. pure_progress_return affects
+            # progress samples only; ordinary PER still uses Soft Watkins.
+            "recursive_soft_watkins": False,
+            "pure_progress_return": True,
+            "update_priorities_from_progress": True,
         },
         "lr": args.lr,
         "exp": experiment,
