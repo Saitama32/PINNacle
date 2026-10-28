@@ -249,7 +249,7 @@ def main():
             # progress samples only; ordinary PER still uses Soft Watkins.
             "recursive_soft_watkins": False,
             "pure_progress_return": True,
-            "update_priorities_from_progress": True,
+            "update_priorities_from_progress": False,
         },
         "lr": args.lr,
         "exp": experiment,
