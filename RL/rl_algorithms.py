@@ -12,6 +12,7 @@ from collections import defaultdict
 from math import ceil
 import statistics
 from pathlib import Path
+from contextlib import contextmanager
 from RL.rl_utils.DQN_classes import DQN_optim, DQN_params
 from comet_ml.integration.pytorch import watch
 from RL.rl_utils.per_buffer import PrioritizedReplayBuffer, Transition
@@ -36,7 +37,9 @@ class DQNAgent:
                  epsilon_decay_steps=None, epsilon_random_steps=None,
                  progress_replay_enabled=False, progress_fraction=0.30,
                  progress_rank_alpha=0.70,
-                 progress_train_all_suffixes=False):
+                 progress_train_all_suffixes=False,
+                 recursive_soft_watkins=False,
+                 update_priorities_from_progress=True):
         self.n_observation = n_observation
         self.n_action = n_action
         self.gamma = gamma
@@ -129,6 +132,10 @@ class DQNAgent:
         self.progress_fraction = float(progress_fraction)
         self.progress_rank_alpha = float(progress_rank_alpha)
         self.progress_train_all_suffixes = bool(progress_train_all_suffixes)
+        self.recursive_soft_watkins = bool(recursive_soft_watkins)
+        self.update_priorities_from_progress = bool(
+            update_priorities_from_progress
+        )
         if not math.isfinite(self.progress_fraction) or not 0.0 <= self.progress_fraction <= 1.0:
             raise ValueError("progress_fraction must be in [0, 1]")
         if not math.isfinite(self.progress_rank_alpha) or self.progress_rank_alpha < 0.0:
@@ -159,6 +166,11 @@ class DQNAgent:
             "epsilon_random_steps": self.epsilon_random_steps,
             "warmup_updates": warmup_updates,
             "recalc_batch_size": recalc_batch_size,
+            "progress_train_all_suffixes": self.progress_train_all_suffixes,
+            "recursive_soft_watkins": self.recursive_soft_watkins,
+            "update_priorities_from_progress": (
+                self.update_priorities_from_progress
+            ),
             "EPS_START": EPS_START,
             "EPS_END": EPS_END,
             "EPS_DECAY": EPS_DECAY,
@@ -177,6 +189,20 @@ class DQNAgent:
 
         self.optimizer_opt = optim.Adam(self.model_optim.parameters(), lr=lr)
         self.optimizer_params = optim.Adam(self.model_params.parameters(), lr=lr)
+
+    @staticmethod
+    @contextmanager
+    def _evaluation_mode(*models):
+        """Temporarily use inference mode without mutating BatchNorm stats."""
+        unique_models = list(dict.fromkeys(models))
+        training_modes = [model.training for model in unique_models]
+        try:
+            for model in unique_models:
+                model.eval()
+            yield
+        finally:
+            for model, was_training in zip(unique_models, training_modes):
+                model.train(was_training)
 
     def reinit_target(self):
         self.target_model_optim = DQN_optim(len(self.i2opt)).to(self.device)
@@ -507,7 +533,7 @@ class DQNAgent:
 
     def _greedy_mask(self, s_batch, a_batch):
     # s_batch: Tensor[B, ..., 26,26], a_batch: LongTensor[B]
-        with torch.no_grad():
+        with self._evaluation_mode(self.model_optim), torch.no_grad():
             _, q_all = self.model_optim(s_batch)       # [B, A]
             a_star = q_all.argmax(dim=1)               # [B]
         return (a_batch == a_star)                     # [B] bool
@@ -535,7 +561,14 @@ class DQNAgent:
             torch.tensor(list(priority_by_index.values()), dtype=torch.float),
         )
 
-    def _soft_watkins_targets(self, seq, gamma, cut_bootstrap_at_end=False):
+    def _priority_update_mask(self, progress_cuts):
+        if self.update_priorities_from_progress:
+            return torch.ones_like(progress_cuts, dtype=torch.bool)
+        return ~progress_cuts.to(dtype=torch.bool)
+
+    def _legacy_soft_watkins_targets(
+        self, seq, gamma, cut_bootstrap_at_end=False
+    ):
         states      = torch.stack([self._stack_state(tr.state)      for tr in seq])
         next_states = torch.stack([self._stack_state(tr.next_state) for tr in seq])
         actions     = torch.tensor([tr.action[0] for tr in seq], dtype=torch.long, device=self.device)
@@ -551,7 +584,9 @@ class DQNAgent:
             ret = ret + pow_ * rewards[n]                       # += γ^n * r_{t+1+n}
             bootstrap_cut = cut_bootstrap_at_end and n == len(seq) - 1
             if not dones[n] and not bootstrap_cut:
-                with torch.no_grad():
+                with self._evaluation_mode(
+                    self.model_optim, self.target_model_optim
+                ), torch.no_grad():
                     _, q_on_next  = self.model_optim(next_states[n:n+1])
                     a_star        = q_on_next.argmax(dim=1)
                     _, q_tg_next  = self.target_model_optim(next_states[n:n+1])
@@ -575,6 +610,82 @@ class DQNAgent:
 
         G_lambda = G_lambda / sum_w.clamp_min(1e-3)
         return G_lambda.detach(), sum_w.detach()
+
+    def _recursive_soft_watkins_targets(
+        self, seq, gamma, cut_bootstrap_at_end=False
+    ):
+        """Backward soft-Watkins return with residual horizon mass."""
+        states = torch.stack([self._stack_state(tr.state) for tr in seq])
+        next_states = torch.stack([
+            self._stack_state(tr.next_state) for tr in seq
+        ])
+        actions = torch.tensor(
+            [tr.action[0] for tr in seq],
+            dtype=torch.long,
+            device=self.device,
+        )
+        rewards = torch.tensor(
+            [tr.reward for tr in seq], dtype=torch.float, device=self.device
+        )
+        dones = torch.tensor(
+            [tr.done != 0 for tr in seq],
+            dtype=torch.bool,
+            device=self.device,
+        )
+
+        with self._evaluation_mode(
+            self.model_optim, self.target_model_optim
+        ), torch.no_grad():
+            greedy_mask = self._greedy_mask(states, actions)
+            g_vals = torch.where(
+                greedy_mask,
+                torch.ones_like(rewards),
+                torch.full_like(rewards, self.kappa),
+            )
+
+            bootstraps = []
+            for n in range(len(seq)):
+                bootstrap_cut = cut_bootstrap_at_end and n == len(seq) - 1
+                if dones[n] or bootstrap_cut:
+                    boot = torch.zeros((), device=self.device)
+                else:
+                    _, q_on_next = self.model_optim(next_states[n:n + 1])
+                    a_star = q_on_next.argmax(dim=1)
+                    _, q_tg_next = self.target_model_optim(
+                        next_states[n:n + 1]
+                    )
+                    boot = q_tg_next.gather(
+                        1, a_star.view(-1, 1)
+                    ).squeeze()
+                bootstraps.append(boot)
+
+            return_value = rewards[-1] + gamma * bootstraps[-1]
+            residual_mass = torch.ones((), device=self.device)
+            for n in range(len(seq) - 2, -1, -1):
+                if dones[n]:
+                    return_value = rewards[n]
+                    residual_mass = torch.ones((), device=self.device)
+                    continue
+
+                # Continuing beyond this reward depends on the behavior
+                # action at the next state, not the action being valued now.
+                continuation = self.lambda_ * g_vals[n + 1]
+                return_value = rewards[n] + gamma * (
+                    (1.0 - continuation) * bootstraps[n]
+                    + continuation * return_value
+                )
+                residual_mass = residual_mass * continuation
+
+        return return_value.detach(), residual_mass.detach()
+
+    def _soft_watkins_targets(self, seq, gamma, cut_bootstrap_at_end=False):
+        if self.recursive_soft_watkins:
+            return self._recursive_soft_watkins_targets(
+                seq, gamma, cut_bootstrap_at_end=cut_bootstrap_at_end
+            )
+        return self._legacy_soft_watkins_targets(
+            seq, gamma, cut_bootstrap_at_end=cut_bootstrap_at_end
+        )
 
     
     def optim_(self, iters=1):
@@ -658,7 +769,9 @@ class DQNAgent:
             sigma_t = torch.full_like(q_sa, fill_value=sigma)         # [B], на девайсе
 
             # --- разность между online и target на ТЕКУЩЕМ (s_t, a_t) ---
-            with torch.no_grad():
+            with self._evaluation_mode(
+                self.target_model_optim
+            ), torch.no_grad():
                 _, q_opt_tgt_cur = self.target_model_optim(state)     # [B, A]
             q_tgt_sa = q_opt_tgt_cur.gather(1, action_o.view(-1,1)).squeeze(1)  # [B]
             gap = (q_sa.detach() - q_tgt_sa)                          # [B]
@@ -682,7 +795,9 @@ class DQNAgent:
             # --- PARAM HEADS: Double per-parameter ---
             opt_names = [self.i2opt[int(i.item())] for i in action_o]
             q_params_cur = self.model_params(flat, opt_names)
-            with torch.no_grad():
+            with self._evaluation_mode(
+                self.model_params, self.target_model_params
+            ), torch.no_grad():
                 q_params_next_on = self.model_params(next_state, opt_names)
                 q_params_next_tg = self.target_model_params(next_state, opt_names)
 
@@ -740,12 +855,16 @@ class DQNAgent:
             # A progress endpoint can be sampled more than once and expanded
             # into suffixes that overlap ordinary PER samples. Aggregate by
             # index so priority updates are independent of sample order.
-            unique_idxs, unique_priors = self._aggregate_priorities_by_index(
-                idxs,
-                new_priors,
-                self.tr_eps,
-            )
-            self.replay_buffer.update_priorities(unique_idxs, unique_priors)
+            priority_update_mask = self._priority_update_mask(progress_cuts)
+            if bool(priority_update_mask.any()):
+                unique_idxs, unique_priors = self._aggregate_priorities_by_index(
+                    idxs[priority_update_mask],
+                    new_priors[priority_update_mask],
+                    self.tr_eps,
+                )
+                self.replay_buffer.update_priorities(
+                    unique_idxs, unique_priors
+                )
 
             if self.warmup_active:
                 self.warmup_updates_done += 1
@@ -1018,7 +1137,9 @@ class DQNAgent:
 
         # --- GREEDY ---
         if sample > eps_threshold:
-            with torch.no_grad():
+            with self._evaluation_mode(
+                self.model_optim, self.model_params
+            ), torch.no_grad():
                 liner_out, q_opt = self.model_optim(state_tensor)
                 optim_class = int(torch.argmax(q_opt).item())
 

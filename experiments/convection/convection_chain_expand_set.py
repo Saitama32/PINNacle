@@ -245,6 +245,10 @@ def main():
             "min_score": 0.0,
             "eps": 1e-12,
             "train_all_suffixes": True,
+            # BN-only ablation: keep both optional algorithm changes in
+            # their legacy modes for the next run.
+            "recursive_soft_watkins": False,
+            "update_priorities_from_progress": True,
         },
         "lr": args.lr,
         "exp": experiment,

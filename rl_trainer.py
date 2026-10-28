@@ -612,6 +612,12 @@ def run_deepxde_rl_training(
     progress_train_all_suffixes = bool(
         progress_replay_config.get("train_all_suffixes", False)
     )
+    recursive_soft_watkins = bool(
+        progress_replay_config.get("recursive_soft_watkins", False)
+    )
+    update_priorities_from_progress = bool(
+        progress_replay_config.get("update_priorities_from_progress", True)
+    )
     progress_min_score = float(progress_replay_config.get("min_score", 0.0))
     progress_eps = float(progress_replay_config.get("eps", 1e-12))
     if not np.isfinite(progress_fraction) or not 0.0 <= progress_fraction <= 1.0:
@@ -688,6 +694,10 @@ def run_deepxde_rl_training(
                         progress_fraction=progress_fraction,
                         progress_rank_alpha=progress_rank_alpha,
                         progress_train_all_suffixes=progress_train_all_suffixes,
+                        recursive_soft_watkins=recursive_soft_watkins,
+                        update_priorities_from_progress=(
+                            update_priorities_from_progress
+                        ),
                         exp = rl_agent_params["exp"],
                         model_snapshot_dir=f"{save_path}/rl_model_snapshots")
 
