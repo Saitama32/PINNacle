@@ -9,7 +9,7 @@ sys.path.append(project_root)
 
 from comet_config import start_comet_experiment
 
-rho = 40.0
+rho = 80.0
 experiment = start_comet_experiment(
     project_name=f"rlpinn-reaction-rho{rho}-tolerance-expand-set",
 )
