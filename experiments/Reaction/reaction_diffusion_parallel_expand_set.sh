@@ -1,5 +1,5 @@
 #!/bin/bash
-# Parallel launch for ReactionDiffusion1D nu=5 rho=5 RL optimizer chain.
+# Parallel launch for ReactionDiffusion1D nu=0.01 rho=20 RL optimizer chain.
 
 SCRIPT="experiments/Reaction/reaction_diffusion_chain_expand_set.py"
 

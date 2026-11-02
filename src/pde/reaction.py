@@ -98,7 +98,7 @@ class _ReactionBase(baseclass.BaseTimePDE):
 class Reaction1D(_ReactionBase):
     """Logistic reaction equation u_t - rho*u*(1-u) = 0."""
 
-    def __init__(self, rho=10.0, geom=(0.0, 2 * np.pi), time=(0.0, 1.0)):
+    def __init__(self, rho=80.0, geom=(0.0, 2 * np.pi), time=(0.0, 1.0)):
         super().__init__(rho, geom, time)
 
         def reaction_pde(x, u):
@@ -120,7 +120,7 @@ class Reaction1D(_ReactionBase):
 class ReactionDiffusion1D(_ReactionBase):
     """Fisher reaction-diffusion equation on a periodic one-dimensional domain."""
 
-    def __init__(self, nu=5.0, rho=5.0, geom=(0.0, 2 * np.pi), time=(0.0, 1.0)):
+    def __init__(self, nu=0.01, rho=20.0, geom=(0.0, 2 * np.pi), time=(0.0, 1.0)):
         if nu <= 0:
             raise ValueError("nu must be positive")
         if tuple(geom) != (0.0, 2 * np.pi) or tuple(time) != (0.0, 1.0):

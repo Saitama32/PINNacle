@@ -11,7 +11,7 @@ from comet_config import start_comet_experiment
 nu = 0.01
 rho = 20.0
 experiment = start_comet_experiment(
-    project_name=f"rlpinn-reaction-diffusion-nu{nu}-rho{rho}-tolerance-expand-set",
+    project_name=f"rlpinn-reaction-diffusion-nu{nu}-rho{rho}-optimization-expand-set",
 )
 
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
@@ -31,7 +31,7 @@ experiment.log_parameters(
     {
         "param": "v_1",
         "reward_function": "v_2",
-        "description": "farm_transitions_reaction_diffusion_nu5_rho5_basic_RL_optimizer",
+        "description": "farm_transitions_reaction_diffusion_nu0_01_rho20_basic_RL_optimizer",
     }
 )
 
@@ -64,7 +64,7 @@ def build_get_model_reaction_diffusion(hidden_layers: str, nu: float, rho: float
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--name", type=str, default="reaction_diffusion_nu5_rho5_rl")
+    parser.add_argument("--name", type=str, default="reaction_diffusion_nu0_01_rho20_rl")
     parser.add_argument("--device", type=str, default="0")
     parser.add_argument("--seed", type=int, default=1234)
 

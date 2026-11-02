@@ -11,7 +11,7 @@ from comet_config import start_comet_experiment
 
 rho = 80.0
 experiment = start_comet_experiment(
-    project_name=f"rlpinn-reaction-rho{rho}-tolerance-expand-set",
+    project_name=f"rlpinn-reaction-rho{rho}-optimization-expand-set",
 )
 
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
@@ -31,7 +31,7 @@ experiment.log_parameters(
     {
         "param": "v_1",
         "reward_function": "v_2",
-        "description": "farm_transitions_reaction_rho10_basic_RL_optimizer",
+        "description": "farm_transitions_reaction_rho80_basic_RL_optimizer",
     }
 )
 
@@ -64,7 +64,7 @@ def build_get_model_reaction(hidden_layers: str, rho: float):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--name", type=str, default="reaction_rho10_rl")
+    parser.add_argument("--name", type=str, default="reaction_rho80_rl")
     parser.add_argument("--device", type=str, default="0")
     parser.add_argument("--seed", type=int, default=1234)
 
@@ -220,7 +220,7 @@ def main():
         "lr": args.lr,
         "exp": experiment,
         "log_key": False,
-        "proj_name": "rlpinn-reaction-rho10-tolerance-expand-set",
+        "proj_name": "rlpinn-reaction-rho80-0-tolerance-expand-set",
     }
 
     experiment.log_parameters({

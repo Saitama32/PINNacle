@@ -1,5 +1,5 @@
 #!/bin/bash
-# Parallel launch for Reaction1D rho=10 RL optimizer chain.
+# Parallel launch for Reaction1D rho=80 RL optimizer chain.
 
 SCRIPT="experiments/Reaction/reaction_chain_expand_set.py"
 
