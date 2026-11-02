@@ -1,20 +1,22 @@
 # run_reaction_rl.py
-import os
-import sys
-
+import os, sys
 os.environ["DDEBACKEND"] = "pytorch"
+from comet_ml import start
+from dotenv import load_dotenv
 
-project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-sys.path.append(project_root)
-
-from comet_config import start_comet_experiment
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+load_dotenv(os.path.join(PROJECT_ROOT, ".env"))
+api_key = os.getenv("COMET_API_KEY")
 
 rho = 80.0
-experiment = start_comet_experiment(
-    project_name=f"rlpinn-reaction-rho{rho}-tolerance-expand-set",
+experiment = start(
+    api_key=api_key,
+    project_name="rlpinn-reaction-rho80-expand-set_comparison",
+    workspace="saitama32",
 )
 
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
+sys.path.append(PROJECT_ROOT)
 import time
 import argparse
 import dill
@@ -31,9 +33,20 @@ experiment.log_parameters(
     {
         "param": "v_1",
         "reward_function": "v_2",
-        "description": "farm_transitions_reaction_rho10_basic_RL_optimizer",
+        "description": "compare_reaction_rho80_expand_set_RL_optimizer",
     }
 )
+
+
+def str2bool(v):
+    if isinstance(v, bool):
+        return v
+    val = str(v).strip().lower()
+    if val in {"true", "1", "yes", "y", "on"}:
+        return True
+    if val in {"false", "0", "no", "n", "off"}:
+        return False
+    raise argparse.ArgumentTypeError(f"Invalid boolean value: {v}")
 
 
 def build_get_model_reaction(hidden_layers: str, rho: float):
@@ -62,9 +75,9 @@ def build_get_model_reaction(hidden_layers: str, rho: float):
     return get_model
 
 
-def main():
+def main(seed_override=None):
     parser = argparse.ArgumentParser()
-    parser.add_argument("--name", type=str, default="reaction_rho10_rl")
+    parser.add_argument("--name", type=str, default="reaction_rho80_compare")
     parser.add_argument("--device", type=str, default="0")
     parser.add_argument("--seed", type=int, default=1234)
 
@@ -80,11 +93,16 @@ def main():
     parser.add_argument("--state-h", type=int, default=26)
     parser.add_argument("--state-w", type=int, default=26)
     parser.add_argument("--n-save-models", type=int, default=10)
+    parser.add_argument("--log_key", type=str2bool, nargs="?", const=True, default=False)
+    parser.add_argument("--exp_key", type=str, required=True)
+    parser.add_argument("--model_step", type=int, default=1000)
     parser.add_argument("--out", type=str, default="runs_single")
     args = parser.parse_args()
+    if seed_override is not None:
+        args.seed = int(seed_override)
 
     date_str = time.strftime("%m.%d-%H.%M.%S", time.localtime())
-    save_path = os.path.join(args.out, f"{date_str}-{args.name}")
+    save_path = os.path.join(args.out, f"{date_str}-{args.name}-rho{args.rho:g}")
     os.makedirs(save_path, exist_ok=True)
 
     get_model = build_get_model_reaction(args.hidden_layers, args.rho)
@@ -152,7 +170,7 @@ def main():
         "learning_rate": 5e-4,
         "resume": True,
         "finetune_AE_model": False,
-        "log_key": True,
+        "log_key": args.log_key,
     }
     loss_surface_params = {
         "loss_types": ["loss_total", "loss_oper", "loss_bnd"],
@@ -185,9 +203,7 @@ def main():
     rl_agent_params = {
         "n_save_models": args.n_save_models,
         "n_trajectories": args.n_trajectories,
-        "tolerance": 0.000499081,
-        "use_tol": False,
-        "new_tol": True,
+        "tolerance": 0.0,
         "prev_tol": 0,
         "stuck_threshold": 10,
         "min_loss_change": 1e-7,
@@ -201,26 +217,18 @@ def main():
         "reward_boundary_coeff": 1,
         "agent_min_buffer": 32,
         "agent_update_iters": 5,
-        "epsilon_start": 0.95,
-        "epsilon_end": 0.15,
-        "epsilon_decay": 5000,
-        "epsilon_random_steps": 64,
-        "offline_pretrain_steps": 500,
-        "offline_pretrain_iters": 5,
-        "include_terminal_starts": True,
-        "recompute_chain_rewards": True,
-        "adaptive_tolerance": {
-            "enabled": False,
-            "warmup_transitions": 64,
-            "elite_fraction": 0.05,
-            "upward_factor": 1.30,
-            "downward_min_relative_improvement": 0.05,
-            "priority_recalc_batch_size": 256,
-        },
         "lr": args.lr,
         "exp": experiment,
-        "log_key": False,
-        "proj_name": "rlpinn-reaction-rho10-tolerance-expand-set",
+        "log_key": args.log_key,
+        "proj_name": "rlpinn-reaction-rho80-farm-transitions",
+    }
+    comparison_params = {
+        "seed": args.seed,
+        "total_epochs": 7000,
+        "experiment_key": args.exp_key,
+        "agent_model_step": args.model_step,
+        "multi_pde_comparison": True,
+        "agent_optimizing_status": "all_epoch",
     }
 
     experiment.log_parameters({
@@ -228,6 +236,7 @@ def main():
         "rho": args.rho,
         "hidden_layers": args.hidden_layers,
     })
+    experiment.log_parameters(comparison_params)
 
     data = dill.dumps(
         (
@@ -237,16 +246,22 @@ def main():
             AE_model_params,
             AE_train_params,
             loss_surface_params,
+            comparison_params,
         )
     )
     train_process_rl(
         data=data,
         save_path=save_path,
-        device=args.device,
+        device=0,
         seed=args.seed,
         rl_agent_params=rl_agent_params,
+        comparison_params=comparison_params,
     )
 
 
 if __name__ == "__main__":
-    main()
+    seeds = [123, 234, 345, 456, 567, 678, 789, 890, 901, 1012]
+
+    for seed in seeds:
+        print(f"\nStarting experiment with seed = {seed}")
+        main(seed_override=seed)
