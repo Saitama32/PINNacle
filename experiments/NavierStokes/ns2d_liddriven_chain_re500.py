@@ -1,17 +1,19 @@
-# run_ns2d_liddriven_rl.py
-import os, sys
+# run_ns2d_liddriven_re500_rl.py
+import os
+import sys
+
 os.environ["DDEBACKEND"] = "pytorch"
 
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 sys.path.append(project_root)
+
 from comet_config import start_comet_experiment
-from comet_ml.integration.pytorch import log_model
 
 experiment = start_comet_experiment(
-    project_name="rlpinn_ns2d_liddriven_re500_loss_ratio_reward_optimization",
+    project_name="rlpinn-ns2d-liddriven-re500-optimization_expand_set",
 )
 
-os.environ['KMP_DUPLICATE_LIB_OK'] = 'TRUE'
+os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 import time
 import argparse
 import dill
@@ -24,26 +26,32 @@ from src.utils.args import parse_hidden_layers
 from src.utils.callbacks import TesterCallback, PlotCallback, LossCallback
 from rl_trainer import train_process_rl
 
-experiment.log_parameters({
-    "param": "v_1",
-    "reward_function": "v_2",
-    "description": "optimization_ns2d_liddriven_re500_rl_optimizer"
-})
+experiment.log_parameters(
+    {
+        "param": "v_1",
+        "reward_function": "v_2",
+        "description": "optimization_ns2d_liddriven_re500_expand_set_rl_optimizer",
+    }
+)
+
 
 def build_get_model_ns2d_liddriven(hidden_layers: str, datapath: str, a: float, nu: float):
     def get_model():
         pde = NS2D_LidDriven(datapath=datapath, a=a, nu=nu)
 
-        layers = [pde.input_dim] + parse_hidden_layers(argparse.Namespace(hidden_layers=hidden_layers)) + [pde.output_dim]
-        net = dde.nn.FNN(layers, "tanh", "Glorot normal")
-        net = net.float()
+        layers = [
+            pde.input_dim,
+            *parse_hidden_layers(argparse.Namespace(hidden_layers=hidden_layers)),
+            pde.output_dim,
+        ]
+        net = dde.nn.FNN(layers, "tanh", "Glorot normal").float()
 
         loss_weights = np.ones(pde.num_loss, dtype=float)
         for i, c in enumerate(pde.loss_config):
-            t = c.get("type", "")
-            if t in ("boundary", "initial"):
+            loss_type = c.get("type", "")
+            if loss_type in ("boundary", "initial", "ic"):
                 loss_weights[i] = 100.0
-            elif t == "pde":
+            elif loss_type == "pde":
                 loss_weights[i] = 1.0
             else:
                 loss_weights[i] = 1.0
@@ -80,8 +88,13 @@ def main():
     save_path = os.path.join(args.out, f"{date_str}-{args.name}")
     os.makedirs(save_path, exist_ok=True)
 
-    get_model = build_get_model_ns2d_liddriven(args.hidden_layers, args.datapath, args.a, args.nu)
-    get_model_rec = build_get_model_ns2d_liddriven(args.hidden_layers, args.datapath, args.a, args.nu)
+    pde_kwargs = {
+        "datapath": args.datapath,
+        "a": args.a,
+        "nu": args.nu,
+    }
+    get_model = build_get_model_ns2d_liddriven(args.hidden_layers, **pde_kwargs)
+    get_model_rec = build_get_model_ns2d_liddriven(args.hidden_layers, **pde_kwargs)
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -111,6 +124,14 @@ def main():
         "PSO": {
             "lr": [0.0, 1e-3, 1e-4],
             "epochs": [100, 200, 300],
+        },
+        "SOAP": {
+            "lr": [1e-2, 1e-3, 3e-4],
+            "epochs": [100, 1000, 2500],
+        },
+        "Muon": {
+            "lr": [2e-2, 1e-2, 5e-3],
+            "epochs": [100, 1000, 2500],
         },
     }
 
@@ -182,8 +203,8 @@ def main():
         "n_save_models": args.n_save_models,
         "n_trajectories": args.n_trajectories,
         "tolerance": 0.000626677787536777,
-        "use_tol": True,
-        "new_tol": False,
+        "use_tol": False,
+        "new_tol": True,
         "prev_tol": 0.0,
         "stuck_threshold": 10,
         "min_loss_change": 1e-7,
@@ -197,23 +218,45 @@ def main():
         "reward_boundary_coeff": 1,
         "agent_min_buffer": 32,
         "agent_update_iters": 5,
-        "lr": 1e-3,
+        "offline_pretrain_steps": 500,
+        "offline_pretrain_iters": 5,
+        "include_terminal_starts": True,
+        "recompute_chain_rewards": True,
+        "lr": args.lr,
         "exp": experiment,
         "log_key": False,
-        "proj_name": "rlpinn-ns2d-liddriven-re500-0-tolerance-expand-set"
+        "proj_name": "rlpinn-ns2d-liddriven-re500-0-tolerance-expand-set",
     }
     
-    # backup_params = {
-    #     "experiment_key" : "b0dae86c42924e4484b8bd194e2d58d9",
-    # }
-    backup_params = None
-
-    experiment.log_parameters(rl_agent_params)
-    # experiment.log_parameters(backup_params)
+    experiment.log_parameters(
+        {
+            **rl_agent_params,
+            "datapath": args.datapath,
+            "a": args.a,
+            "nu": args.nu,
+            "reynolds_number": 1.0 / args.nu,
+            "hidden_layers": args.hidden_layers,
+        }
+    )
     # --- вызов train_process_rl ---
 
-    data = dill.dumps((get_model, train_args, optimizers, AE_model_params, AE_train_params, loss_surface_params))
-    train_process_rl(data=data, save_path=save_path, device=args.device, seed=args.seed, rl_agent_params=rl_agent_params)
+    data = dill.dumps(
+        (
+            get_model,
+            train_args,
+            optimizers,
+            AE_model_params,
+            AE_train_params,
+            loss_surface_params,
+        )
+    )
+    train_process_rl(
+        data=data,
+        save_path=save_path,
+        device=args.device,
+        seed=args.seed,
+        rl_agent_params=rl_agent_params,
+    )
 
 
 if __name__ == "__main__":
