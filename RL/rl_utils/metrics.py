@@ -120,7 +120,7 @@ def collect_policy_metrics_by_seq_position(agent, seqs):
             agent._stack_state(s) for s in states_list
         ]).to(agent.device)
 
-        with torch.no_grad():
+        with agent._evaluation_mode(agent.model_optim), torch.no_grad():
             _, q_opt = agent.model_optim(states_tensor)
 
         metrics.update(

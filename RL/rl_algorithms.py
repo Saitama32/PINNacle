@@ -12,6 +12,7 @@ from collections import defaultdict
 from math import ceil
 import statistics
 from pathlib import Path
+from contextlib import contextmanager
 from RL.rl_utils.DQN_classes import DQN_optim, DQN_params
 from comet_ml.integration.pytorch import watch
 from RL.rl_utils.per_buffer import PrioritizedReplayBuffer, Transition, UniformReplayBuffer
@@ -33,6 +34,7 @@ class DQNAgent:
                  use_prioritized_replay: bool = True,
                  use_soft_watkins: bool = True,
                  use_trust_region_masking: bool = True,
+                 train_all_suffixes: bool = False,
                  model_snapshot_dir="rl_model_snapshots"):
         self.n_observation = n_observation
         self.n_action = n_action
@@ -45,6 +47,7 @@ class DQNAgent:
         self.use_prioritized_replay = use_prioritized_replay
         self.use_soft_watkins = use_soft_watkins
         self.use_trust_region_masking = use_trust_region_masking
+        self.train_all_suffixes = bool(train_all_suffixes)
         self.n_transitions_reinit = n_transitions_reinit
         self.steps_done = 0
         self.epsilon_step_offset = 0
@@ -120,6 +123,7 @@ class DQNAgent:
             "use_prioritized_replay": self.use_prioritized_replay,
             "use_soft_watkins": self.use_soft_watkins,
             "use_trust_region_masking": self.use_trust_region_masking,
+            "train_all_suffixes": self.train_all_suffixes,
         }
         if self.exp is not None:
             self.exp.log_parameters(epsilon_and_warmap_params)
@@ -134,6 +138,20 @@ class DQNAgent:
 
         self.optimizer_opt = optim.Adam(self.model_optim.parameters(), lr=lr)
         self.optimizer_params = optim.Adam(self.model_params.parameters(), lr=lr)
+
+    @staticmethod
+    @contextmanager
+    def _evaluation_mode(*models):
+        """Temporarily run inference without updating BatchNorm statistics."""
+        unique_models = list(dict.fromkeys(models))
+        training_modes = [model.training for model in unique_models]
+        try:
+            for model in unique_models:
+                model.eval()
+            yield
+        finally:
+            for model, was_training in zip(unique_models, training_modes):
+                model.train(was_training)
 
     def reinit_target(self):
         self.target_model_optim = DQN_optim(len(self.i2opt)).to(self.device)
@@ -219,6 +237,55 @@ class DQNAgent:
     #         clean_buffer.push(*self.detach_transition(transition))
     #     return clean_buffer
 
+    @staticmethod
+    def _expand_all_suffixes(sequences, idxs, is_w, device):
+        """Expand logical sequences into suffixes with unit total weight each."""
+        expanded_sequences = []
+        expanded_idxs = []
+        expanded_is_w = []
+        multiplicity_weights = []
+
+        for sequence, start_idx, sequence_is_w in zip(
+            sequences,
+            idxs.detach().cpu().tolist(),
+            is_w.detach().cpu().tolist(),
+        ):
+            suffix_count = len(sequence)
+            if suffix_count == 0:
+                raise RuntimeError("Cannot expand an empty replay sequence")
+            suffix_weight = 1.0 / suffix_count
+            for suffix_start in range(suffix_count):
+                expanded_sequences.append(sequence[suffix_start:])
+                expanded_idxs.append(start_idx + suffix_start)
+                expanded_is_w.append(sequence_is_w)
+                multiplicity_weights.append(suffix_weight)
+
+        return (
+            expanded_sequences,
+            torch.tensor(expanded_idxs, dtype=torch.long, device=device),
+            torch.tensor(expanded_is_w, dtype=torch.float, device=device),
+            torch.tensor(
+                multiplicity_weights, dtype=torch.float, device=device
+            ),
+        )
+
+    @staticmethod
+    def _aggregate_priorities_by_index(idxs, priorities, eps):
+        """Keep the largest sampled TD priority for every replay index."""
+        priority_by_index = {}
+        for index, priority in zip(
+            idxs.detach().cpu().tolist(),
+            priorities.detach().cpu().tolist(),
+        ):
+            priority_by_index[index] = max(
+                priority_by_index.get(index, eps),
+                float(priority),
+            )
+        return (
+            torch.tensor(list(priority_by_index.keys()), dtype=torch.long),
+            torch.tensor(list(priority_by_index.values()), dtype=torch.float),
+        )
+
     def _sample_sequences(self, batch_size, L, uniform: bool, beta=None):
         """
         Сэмплируем последовательности из буфера.
@@ -243,7 +310,10 @@ class DQNAgent:
                 device=self.device,
                 include_terminal_starts=self.include_terminal_starts,
             )
-            return seqs, idxs, is_w
+            multiplicity_weights = torch.ones(
+                batch_size, dtype=torch.float, device=self.device
+            )
+            return seqs, idxs, is_w, multiplicity_weights
 
         # --- Основной режим: PER + при необходимости success-эпизоды ---
         main_uniform = not self.use_prioritized_replay
@@ -259,7 +329,10 @@ class DQNAgent:
                 device=self.device,
                 include_terminal_starts=self.include_terminal_starts,
             )
-            return seqs, idxs, is_w
+            multiplicity_weights = torch.ones(
+                batch_size, dtype=torch.float, device=self.device
+            )
+            return seqs, idxs, is_w, multiplicity_weights
 
         # Сколько последовательностей взять из success-эпизодов
         n_succ = int(batch_size * self.success_frac)
@@ -275,6 +348,7 @@ class DQNAgent:
         seqs_all = []
         idxs_all = []
         isw_all  = []
+        multiplicity_all = []
 
         # 1) Основная часть — обычный PER по стартовым индексам
         if n_main > 0:
@@ -289,6 +363,9 @@ class DQNAgent:
             seqs_all.extend(main_seqs)
             idxs_all.append(main_idxs.to(torch.long))
             isw_all.append(main_is_w.to(self.device))
+            multiplicity_all.append(torch.ones(
+                n_main, dtype=torch.float, device=self.device
+            ))
 
         # 2) Success-последовательности (равномерно по success_indexes)
         if n_succ > 0:
@@ -297,25 +374,53 @@ class DQNAgent:
                 L,
                 device=self.device,
                 include_terminal_starts=self.include_terminal_starts,
+                full_prefix=self.train_all_suffixes,
             )
-            seqs_all.extend(succ_seqs)
-            idxs_all.append(succ_idxs.to(torch.long))
-            isw_all.append(succ_is_w.to(self.device))
+            if self.train_all_suffixes:
+                (
+                    suffix_seqs,
+                    suffix_idxs,
+                    suffix_is_w,
+                    suffix_multiplicity,
+                ) = self._expand_all_suffixes(
+                    succ_seqs, succ_idxs, succ_is_w, self.device
+                )
+                seqs_all.extend(suffix_seqs)
+                idxs_all.append(suffix_idxs)
+                isw_all.append(suffix_is_w)
+                multiplicity_all.append(suffix_multiplicity)
+            else:
+                seqs_all.extend(succ_seqs)
+                idxs_all.append(succ_idxs.to(torch.long))
+                isw_all.append(succ_is_w.to(self.device))
+                multiplicity_all.append(torch.ones(
+                    n_succ, dtype=torch.float, device=self.device
+                ))
 
         # 3) Склеиваем индексы и веса в тензоры
         idxs_cat = torch.cat(idxs_all, dim=0)
         isw_cat  = torch.cat(isw_all, dim=0)
+        multiplicity_cat = torch.cat(multiplicity_all, dim=0)
 
         # На всякий случай контролируем длину
-        assert len(seqs_all) == batch_size, f"Expected {batch_size} seqs, got {len(seqs_all)}"
+        if not self.train_all_suffixes:
+            assert len(seqs_all) == batch_size, (
+                f"Expected {batch_size} seqs, got {len(seqs_all)}"
+            )
+        expected_weight = torch.tensor(
+            float(batch_size), dtype=torch.float, device=self.device
+        )
+        assert torch.isclose(multiplicity_cat.sum(), expected_weight), (
+            "Expanded suffix weights must preserve the logical batch size"
+        )
 
-        return seqs_all, idxs_cat, isw_cat
+        return seqs_all, idxs_cat, isw_cat, multiplicity_cat
 
     
 
     def _greedy_mask(self, s_batch, a_batch):
     # s_batch: Tensor[B, ..., 26,26], a_batch: LongTensor[B]
-        with torch.no_grad():
+        with self._evaluation_mode(self.model_optim), torch.no_grad():
             _, q_all = self.model_optim(s_batch)       # [B, A]
             a_star = q_all.argmax(dim=1)               # [B]
         return (a_batch == a_star)                     # [B] bool
@@ -335,7 +440,9 @@ class DQNAgent:
         for n in range(len(seq)):                               # n=0..N-1  => (n+1)-step
             ret = ret + pow_ * rewards[n]                       # += γ^n * r_{t+1+n}
             if not dones[n]:
-                with torch.no_grad():
+                with self._evaluation_mode(
+                    self.model_optim, self.target_model_optim
+                ), torch.no_grad():
                     _, q_on_next  = self.model_optim(next_states[n:n+1])
                     a_star        = q_on_next.argmax(dim=1)
                     _, q_tg_next  = self.target_model_optim(next_states[n:n+1])
@@ -362,7 +469,9 @@ class DQNAgent:
 
     def _one_step_optimizer_targets(self, next_state, reward, done):
         """Historical one-step Double-DQN target used before soft Watkins."""
-        with torch.no_grad():
+        with self._evaluation_mode(
+            self.model_optim, self.target_model_optim
+        ), torch.no_grad():
             _, q_next_online = self.model_optim(next_state)
             next_actions = q_next_online.argmax(dim=1)
             _, q_next_target = self.target_model_optim(next_state)
@@ -384,7 +493,9 @@ class DQNAgent:
             drop = torch.zeros_like(q_sa, dtype=torch.bool)
             return drop, torch.ones_like(q_sa), sigma_t, sigma
 
-        with torch.no_grad():
+        with self._evaluation_mode(
+            self.target_model_optim
+        ), torch.no_grad():
             _, q_opt_target = self.target_model_optim(state)
         q_target_sa = q_opt_target.gather(1, action_o.view(-1, 1)).squeeze(1)
         gap = q_sa.detach() - q_target_sa
@@ -410,10 +521,12 @@ class DQNAgent:
                 break
 
             if self.warmup_active:
-                seqs, idxs, is_w = self._sample_sequences(self.batch_size, self.seq_len, uniform=True, beta=None)
+                seqs, idxs, is_w, multiplicity_weights = self._sample_sequences(
+                    self.batch_size, self.seq_len, uniform=True, beta=None
+                )
                 is_w = is_w.to(self.device)           # единицы
             else:
-                seqs, idxs, is_w = self._sample_sequences(
+                seqs, idxs, is_w, multiplicity_weights = self._sample_sequences(
                     self.batch_size,
                     self.seq_len,
                     uniform=not self.use_prioritized_replay,
@@ -422,6 +535,7 @@ class DQNAgent:
                 if self.use_prioritized_replay:
                     self.per_beta = min(1.0, self.per_beta + self.per_beta_inc)
                 is_w = is_w.to(self.device)
+            multiplicity_weights = multiplicity_weights.to(self.device)
 
             policy_position_metrics = collect_policy_metrics_by_seq_position(self, seqs)    
 
@@ -466,7 +580,11 @@ class DQNAgent:
 
             # --- применяем маску к лоссу оптимизаторной головы ---
             per_sample_loss_opt = self.huberloss(input=q_sa, target=y_opt) * is_w
-            loss_opt = (per_sample_loss_opt * tr_keep).sum() / tr_keep.sum().clamp_min(1.0)
+            weighted_keep = tr_keep * multiplicity_weights
+            loss_denominator = weighted_keep.sum().clamp_min(1.0)
+            loss_opt = (
+                per_sample_loss_opt * weighted_keep
+            ).sum() / loss_denominator
 
 
             td_opt_abs = (q_sa - y_opt).abs().detach()
@@ -475,7 +593,9 @@ class DQNAgent:
             # --- PARAM HEADS: Double per-parameter ---
             opt_names = [self.i2opt[int(i.item())] for i in action_o]
             q_params_cur = self.model_params(flat, opt_names)
-            with torch.no_grad():
+            with self._evaluation_mode(
+                self.model_params, self.target_model_params
+            ), torch.no_grad():
                 q_params_next_on = self.model_params(next_state, opt_names)
                 q_params_next_tg = self.target_model_params(next_state, opt_names)
 
@@ -507,7 +627,9 @@ class DQNAgent:
                 loss_param_items.append(lp_sum)
                 td_param_items.append(td_sum)
 
-            loss_param = torch.stack(loss_param_items).sum() / tr_keep.sum().clamp_min(1.0)
+            loss_param = (
+                torch.stack(loss_param_items) * multiplicity_weights
+            ).sum() / loss_denominator
 
             # --- шаг оптимизации ---
             self.optimizer_opt.zero_grad()
@@ -526,7 +648,15 @@ class DQNAgent:
                     )
                     td_param_abs = td_param_abs * tr_keep + self.tr_eps
                     new_priors = td_opt_abs + td_param_abs
-                self.replay_buffer.update_priorities(idxs, new_priors.cpu())
+                if self.train_all_suffixes:
+                    unique_idxs, unique_priors = self._aggregate_priorities_by_index(
+                        idxs, new_priors, self.tr_eps
+                    )
+                    self.replay_buffer.update_priorities(
+                        unique_idxs, unique_priors
+                    )
+                else:
+                    self.replay_buffer.update_priorities(idxs, new_priors.cpu())
 
             if self.warmup_active:
                 self.warmup_updates_done += 1
@@ -804,7 +934,9 @@ class DQNAgent:
 
         # --- GREEDY ---
         if sample > eps_threshold:
-            with torch.no_grad():
+            with self._evaluation_mode(
+                self.model_optim, self.model_params
+            ), torch.no_grad():
                 liner_out, q_opt = self.model_optim(state_tensor)
                 optim_class = int(torch.argmax(q_opt).item())
 

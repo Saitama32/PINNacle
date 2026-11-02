@@ -209,6 +209,7 @@ def main():
         "offline_pretrain_iters": 5,
         "include_terminal_starts": True,
         "recompute_chain_rewards": True,
+        "train_all_suffixes": True,
         "adaptive_tolerance": {
             "enabled": False,
             "warmup_transitions": 64,

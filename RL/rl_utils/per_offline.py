@@ -1,7 +1,27 @@
 # per_offline.py
 import torch
 
+
+def _restore_agent_model_modes(func):
+    def wrapped(agent, *args, **kwargs):
+        models = (
+            agent.model_optim,
+            agent.target_model_optim,
+            agent.model_params,
+            agent.target_model_params,
+        )
+        training_modes = [model.training for model in models]
+        try:
+            return func(agent, *args, **kwargs)
+        finally:
+            for model, was_training in zip(models, training_modes):
+                model.train(was_training)
+
+    return wrapped
+
+
 @torch.no_grad()
+@_restore_agent_model_modes
 def recalc_all_priorities_batched(agent, batch_size: int = 32):
     """
     Пересчитывает приоритеты для ВСЕГО буфера agent.replay_buffer по |TD|.

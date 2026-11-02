@@ -291,6 +291,7 @@ class PrioritizedReplayBuffer:
         L: int,
         device='cpu',
         include_terminal_starts=False,
+        full_prefix=False,
     ):
         """
         Сэмплирует batch_size последовательностей длиной ≤L,
@@ -331,7 +332,11 @@ class PrioritizedReplayBuffer:
                 end_idx = success_list[random.randint(0, N_succ - 1)]
 
                 # Строим последовательность, заканчивающуюся этим success
-                if include_terminal_starts:
+                if full_prefix:
+                    candidate = self._build_sequence_ending_at(
+                        end_idx, L, random_start=False
+                    )
+                elif include_terminal_starts:
                     candidate = self._build_sequence_ending_at(
                         end_idx, L, random_start=False
                     )
@@ -342,7 +347,11 @@ class PrioritizedReplayBuffer:
                         end_idx, L, random_start=True
                     )
 
-                if not include_terminal_starts and len(candidate) <= 1:
+                if (
+                    not full_prefix
+                    and not include_terminal_starts
+                    and len(candidate) <= 1
+                ):
                     continue
 
                 seq = candidate

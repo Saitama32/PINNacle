@@ -245,12 +245,8 @@ def _print_offline_greedy_chain_diagnostic(agent, max_states=16):
         dim=0,
     )
 
-    was_training = agent.model_optim.training
-    agent.model_optim.eval()
-    with torch.no_grad():
+    with agent._evaluation_mode(agent.model_optim), torch.no_grad():
         _, q_values = agent.model_optim(state_batch)
-    if was_training:
-        agent.model_optim.train()
 
     q_values = q_values.detach().cpu()
     greedy_actions = q_values.argmax(dim=1)
@@ -357,6 +353,9 @@ def run_deepxde_rl_training(
                         ),
                         use_trust_region_masking=rl_agent_params.get(
                             "use_trust_region_masking", True
+                        ),
+                        train_all_suffixes=rl_agent_params.get(
+                            "train_all_suffixes", False
                         ),
                         exp = rl_agent_params["exp"],
                         model_snapshot_dir=f"{save_path}/rl_model_snapshots")
