@@ -35,6 +35,8 @@ class DQNAgent:
                  use_soft_watkins: bool = True,
                  use_trust_region_masking: bool = True,
                  train_all_suffixes: bool = False,
+                 network_normalization: str = "batchnorm",
+                 group_norm_groups: int = 8,
                  model_snapshot_dir="rl_model_snapshots"):
         self.n_observation = n_observation
         self.n_action = n_action
@@ -48,6 +50,10 @@ class DQNAgent:
         self.use_soft_watkins = use_soft_watkins
         self.use_trust_region_masking = use_trust_region_masking
         self.train_all_suffixes = bool(train_all_suffixes)
+        self.network_normalization = str(network_normalization).lower().replace(
+            "_", ""
+        )
+        self.group_norm_groups = int(group_norm_groups)
         self.n_transitions_reinit = n_transitions_reinit
         self.steps_done = 0
         self.epsilon_step_offset = 0
@@ -124,12 +130,22 @@ class DQNAgent:
             "use_soft_watkins": self.use_soft_watkins,
             "use_trust_region_masking": self.use_trust_region_masking,
             "train_all_suffixes": self.train_all_suffixes,
+            "network_normalization": self.network_normalization,
+            "group_norm_groups": self.group_norm_groups,
         }
         if self.exp is not None:
             self.exp.log_parameters(epsilon_and_warmap_params)
 
-        self.model_optim = DQN_optim(len(self.i2opt)).to(device)
-        self.model_params = DQN_params(self.optimizer_dict).to(device)
+        self.model_optim = DQN_optim(
+            len(self.i2opt),
+            normalization=self.network_normalization,
+            group_norm_groups=self.group_norm_groups,
+        ).to(device)
+        self.model_params = DQN_params(
+            self.optimizer_dict,
+            normalization=self.network_normalization,
+            group_norm_groups=self.group_norm_groups,
+        ).to(device)
         # if self.exp is not None:
         #     watch(self.model_optim, log_step_interval = 200)
         #     watch(self.model_params, log_step_interval = 200)
@@ -154,8 +170,16 @@ class DQNAgent:
                 model.train(was_training)
 
     def reinit_target(self):
-        self.target_model_optim = DQN_optim(len(self.i2opt)).to(self.device)
-        self.target_model_params = DQN_params(self.optimizer_dict).to(self.device)
+        self.target_model_optim = DQN_optim(
+            len(self.i2opt),
+            normalization=self.network_normalization,
+            group_norm_groups=self.group_norm_groups,
+        ).to(self.device)
+        self.target_model_params = DQN_params(
+            self.optimizer_dict,
+            normalization=self.network_normalization,
+            group_norm_groups=self.group_norm_groups,
+        ).to(self.device)
         for param in self.target_model_optim.parameters():
             param.requires_grad = False
         for param in self.target_model_params.parameters():
@@ -286,6 +310,29 @@ class DQNAgent:
             torch.tensor(list(priority_by_index.values()), dtype=torch.float),
         )
 
+    @staticmethod
+    def _weighted_mean(values, weights):
+        values = values.float()
+        weights = weights.to(device=values.device, dtype=values.dtype)
+        return (values * weights).sum() / weights.sum().clamp_min(1e-8)
+
+    @staticmethod
+    def _weighted_quantile(values, weights, quantile):
+        values = values.detach().float().reshape(-1)
+        weights = weights.detach().to(
+            device=values.device, dtype=values.dtype
+        ).reshape(-1)
+        if values.numel() == 0:
+            raise ValueError("Cannot calculate a weighted quantile of no values")
+        order = torch.argsort(values)
+        sorted_values = values[order]
+        sorted_weights = weights[order]
+        cutoff = float(quantile) * sorted_weights.sum()
+        index = torch.searchsorted(
+            sorted_weights.cumsum(dim=0), cutoff, right=False
+        ).clamp_max(sorted_values.numel() - 1)
+        return sorted_values[index]
+
     def _sample_sequences(self, batch_size, L, uniform: bool, beta=None):
         """
         Сэмплируем последовательности из буфера.
@@ -313,7 +360,7 @@ class DQNAgent:
             multiplicity_weights = torch.ones(
                 batch_size, dtype=torch.float, device=self.device
             )
-            return seqs, idxs, is_w, multiplicity_weights
+            return seqs, idxs, is_w, multiplicity_weights, seqs
 
         # --- Основной режим: PER + при необходимости success-эпизоды ---
         main_uniform = not self.use_prioritized_replay
@@ -332,7 +379,7 @@ class DQNAgent:
             multiplicity_weights = torch.ones(
                 batch_size, dtype=torch.float, device=self.device
             )
-            return seqs, idxs, is_w, multiplicity_weights
+            return seqs, idxs, is_w, multiplicity_weights, seqs
 
         # Сколько последовательностей взять из success-эпизодов
         n_succ = int(batch_size * self.success_frac)
@@ -349,6 +396,7 @@ class DQNAgent:
         idxs_all = []
         isw_all  = []
         multiplicity_all = []
+        logical_seqs = []
 
         # 1) Основная часть — обычный PER по стартовым индексам
         if n_main > 0:
@@ -361,6 +409,7 @@ class DQNAgent:
                 include_terminal_starts=self.include_terminal_starts,
             )
             seqs_all.extend(main_seqs)
+            logical_seqs.extend(main_seqs)
             idxs_all.append(main_idxs.to(torch.long))
             isw_all.append(main_is_w.to(self.device))
             multiplicity_all.append(torch.ones(
@@ -369,13 +418,20 @@ class DQNAgent:
 
         # 2) Success-последовательности (равномерно по success_indexes)
         if n_succ > 0:
-            succ_seqs, succ_idxs, succ_is_w = rb.sample_success_sequences(
+            (
+                succ_seqs,
+                succ_idxs,
+                succ_is_w,
+                succ_full_prefixes,
+            ) = rb.sample_success_sequences(
                 n_succ,
                 L,
                 device=self.device,
                 include_terminal_starts=self.include_terminal_starts,
                 full_prefix=self.train_all_suffixes,
+                return_full_prefixes=True,
             )
+            logical_seqs.extend(succ_full_prefixes)
             if self.train_all_suffixes:
                 (
                     suffix_seqs,
@@ -413,8 +469,11 @@ class DQNAgent:
         assert torch.isclose(multiplicity_cat.sum(), expected_weight), (
             "Expanded suffix weights must preserve the logical batch size"
         )
+        assert len(logical_seqs) == batch_size, (
+            f"Expected {batch_size} logical sequences, got {len(logical_seqs)}"
+        )
 
-        return seqs_all, idxs_cat, isw_cat, multiplicity_cat
+        return seqs_all, idxs_cat, isw_cat, multiplicity_cat, logical_seqs
 
     
 
@@ -513,7 +572,9 @@ class DQNAgent:
         """
         loss_arr_optim_class, loss_arr_param = [], []
         all_rewards, all_dones = [], []
-        model_reward_i_ar = []
+        all_metric_weights = []
+        model_reward_values = []
+        model_reward_weights = []
         chain_mc_metric_values = defaultdict(list)
 
         for _ in range(iters):
@@ -521,12 +582,24 @@ class DQNAgent:
                 break
 
             if self.warmup_active:
-                seqs, idxs, is_w, multiplicity_weights = self._sample_sequences(
+                (
+                    seqs,
+                    idxs,
+                    is_w,
+                    multiplicity_weights,
+                    logical_seqs,
+                ) = self._sample_sequences(
                     self.batch_size, self.seq_len, uniform=True, beta=None
                 )
                 is_w = is_w.to(self.device)           # единицы
             else:
-                seqs, idxs, is_w, multiplicity_weights = self._sample_sequences(
+                (
+                    seqs,
+                    idxs,
+                    is_w,
+                    multiplicity_weights,
+                    logical_seqs,
+                ) = self._sample_sequences(
                     self.batch_size,
                     self.seq_len,
                     uniform=not self.use_prioritized_replay,
@@ -537,7 +610,9 @@ class DQNAgent:
                 is_w = is_w.to(self.device)
             multiplicity_weights = multiplicity_weights.to(self.device)
 
-            policy_position_metrics = collect_policy_metrics_by_seq_position(self, seqs)    
+            policy_position_metrics = collect_policy_metrics_by_seq_position(
+                self, logical_seqs
+            )
 
             first_trs = [seq[0] for seq in seqs]
 
@@ -558,7 +633,7 @@ class DQNAgent:
             opt_model_i = torch.IntTensor(opt_model_i).to(self.device)
 
             # --- OPTIMIZER HEAD: текущие Q(s_t,a_t)
-            flat, q_opt_cur = self.model_optim(state)
+            _, q_opt_cur = self.model_optim(state)
             q_sa = q_opt_cur.gather(1, action_o.view(-1,1)).squeeze(1)
 
             # --- SOFT/WATKINS G^{λ,κ} на каждый элемент батча из своей последовательности ---
@@ -592,7 +667,7 @@ class DQNAgent:
 
             # --- PARAM HEADS: Double per-parameter ---
             opt_names = [self.i2opt[int(i.item())] for i in action_o]
-            q_params_cur = self.model_params(flat, opt_names)
+            q_params_cur = self.model_params(state, opt_names)
             with self._evaluation_mode(
                 self.model_params, self.target_model_params
             ), torch.no_grad():
@@ -684,11 +759,23 @@ class DQNAgent:
                 delta_raw  = (y_opt - q_sa).detach()
                 delta_norm = (delta_raw / sigma_t)
 
-                mean_abs_delta_norm = float(delta_norm.abs().mean().item())
+                mean_abs_delta_norm = float(
+                    self._weighted_mean(
+                        delta_norm.abs(), multiplicity_weights
+                    ).item()
+                )
                 sigma_td = float(sigma)
-                q_abs_mean = float(q_sa.abs().mean().item())
-                y_opt_mean = float(y_opt.abs().mean().item())
-                lambda_weight_mean = float(lambda_weight.mean().item())
+                q_abs_mean = float(
+                    self._weighted_mean(q_sa.abs(), multiplicity_weights).item()
+                )
+                y_opt_mean = float(
+                    self._weighted_mean(y_opt.abs(), multiplicity_weights).item()
+                )
+                lambda_weight_mean = float(
+                    self._weighted_mean(
+                        lambda_weight, multiplicity_weights
+                    ).item()
+                )
                 lambda_weight_min = float(lambda_weight.min().item())
                 lambda_weight_max = float(lambda_weight.max().item())
 
@@ -697,9 +784,9 @@ class DQNAgent:
 
                 prio_p95 = None
                 if new_priors is not None:
-                    prio_p95 = float(
-                        torch.quantile(new_priors.detach().float(), 0.95).item()
-                    )
+                    prio_p95 = float(self._weighted_quantile(
+                        new_priors, multiplicity_weights, 0.95
+                    ).item())
 
                 greedy_actions = q_opt_cur.argmax(dim=1)
                 action_diagnostics = {}
@@ -708,19 +795,32 @@ class DQNAgent:
                     action_count = int(action_mask.sum().item())
                     action_diagnostics[
                         f"train_policy/greedy_frac/{optim_name}"
-                    ] = float((greedy_actions == action_idx).float().mean().item())
+                    ] = float(self._weighted_mean(
+                        (greedy_actions == action_idx).float(),
+                        multiplicity_weights,
+                    ).item())
                     action_diagnostics[
                         f"train_q/{optim_name}/mean_all_states"
-                    ] = float(q_opt_cur[:, action_idx].mean().item())
+                    ] = float(self._weighted_mean(
+                        q_opt_cur[:, action_idx], multiplicity_weights
+                    ).item())
 
                     if action_count == 0:
                         continue
 
                     action_diagnostics[
                         f"train_action/{optim_name}/target_mean"
-                    ] = float(y_opt[action_mask].mean().item())
+                    ] = float(self._weighted_mean(
+                        y_opt[action_mask], multiplicity_weights[action_mask]
+                    ).item())
 
-                chain_mc_metrics = collect_chain_mc_metrics(self, seqs, q_sa, self.gamma)
+                chain_mc_metrics = collect_chain_mc_metrics(
+                    self,
+                    seqs,
+                    q_sa,
+                    self.gamma,
+                    weights=multiplicity_weights,
+                )
                 for metric_name, metric_value in chain_mc_metrics.items():
                     chain_mc_metric_values[metric_name].append(metric_value)
 
@@ -731,19 +831,30 @@ class DQNAgent:
 
             all_rewards.append(reward.detach().cpu())
             all_dones.append(done_raw.detach().cpu())
+            all_metric_weights.append(multiplicity_weights.detach().cpu())
 
             agent_action_mask = opt_model_i >= 0
-            model_reward_i_ar += model_reward[agent_action_mask].reshape(-1).tolist()
+            model_reward_values.append(
+                model_reward[agent_action_mask].detach().cpu().reshape(-1)
+            )
+            model_reward_weights.append(
+                multiplicity_weights[agent_action_mask]
+                .detach()
+                .cpu()
+                .reshape(-1)
+            )
 
 
-            dropped  = int(tr_mask_drop.sum().item())
-            kept     = int(tr_keep.sum().item())
-            drop_frac = dropped / max(dropped + kept, 1)
+            drop_frac = float(self._weighted_mean(
+                tr_mask_drop.float(), multiplicity_weights
+            ).item())
 
             delta_raw = (y_opt - q_sa).detach()
-            mean_abs_delta = delta_raw.abs().mean().item()
+            mean_abs_delta = float(self._weighted_mean(
+                delta_raw.abs(), multiplicity_weights
+            ).item())
 
-            lens = [len(seq) for seq in seqs]
+            lens = [len(seq) for seq in logical_seqs]
             frac_len_gt1 = sum(l > 1 for l in lens) / max(len(lens), 1)
             avg_len = (sum(lens) / max(len(lens), 1))
 
@@ -752,9 +863,9 @@ class DQNAgent:
             # Посчитаем, сколько из них заканчиваются success-терминалом
 
             count_seq_success = 0
-            count_seq_total   = len(seqs)
+            count_seq_total   = len(logical_seqs)
 
-            for seq in seqs:
+            for seq in logical_seqs:
                 last = seq[-1]
                 # тот же критерий успеха, что использует буфер
                 if (last.done == 1) and (last.model_reward > self.success_reward_threshold):
@@ -794,28 +905,44 @@ class DQNAgent:
 
         reward_tensor = torch.cat(all_rewards)
         done_tensor = torch.cat(all_dones)
+        metric_weight_tensor = torch.cat(all_metric_weights).float()
 
         # Подсчёт: хорошее завершение — done == 1 и reward > 0
-        count_good_end = torch.sum((done_tensor == 1) & (reward_tensor > 0)).item()
+        count_good_end = float(metric_weight_tensor[
+            (done_tensor == 1) & (reward_tensor > 0)
+        ].sum().item())
 
         # Подсчёт: плохое завершение — done == -1 и reward < 0
-        count_bad_end = torch.sum((done_tensor == -1) & (reward_tensor < 0)).item()
+        count_bad_end = float(metric_weight_tensor[
+            (done_tensor == -1) & (reward_tensor < 0)
+        ].sum().item())
 
         # матрица сопряжённости, чтобы сразу увидеть, почему пересечений нет
         sign_reward = torch.sign(reward_tensor).clamp(min=-1, max=1)  # -1, 0, 1
         for d in (-1, 0, 1):
             row_mask = (done_tensor == d)
-            c_neg = ((row_mask) & (sign_reward == -1)).sum().item()
-            c_zero = ((row_mask) & (sign_reward ==  0)).sum().item()
-            c_pos = ((row_mask) & (sign_reward ==  1)).sum().item()
-            print(f"done={d}: reward<0={c_neg}, reward==0={c_zero}, reward>0={c_pos}")
+            c_neg = metric_weight_tensor[row_mask & (sign_reward == -1)].sum().item()
+            c_zero = metric_weight_tensor[row_mask & (sign_reward == 0)].sum().item()
+            c_pos = metric_weight_tensor[row_mask & (sign_reward == 1)].sum().item()
+            print(
+                f"done={d}: reward<0={c_neg:.3f}, "
+                f"reward==0={c_zero:.3f}, reward>0={c_pos:.3f}"
+            )
 
 
         print(f"Count of good ends: {count_good_end}")
         print(f"Count of bad ends: {count_bad_end}") 
 
-        print("done counts:", (done_tensor == 1).sum().item(), (done_tensor == -1).sum().item())
-        print("reward>0:", (reward_tensor > 0).sum().item(), "reward<0:", (reward_tensor < 0).sum().item())
+        print(
+            "weighted done counts:",
+            metric_weight_tensor[done_tensor == 1].sum().item(),
+            metric_weight_tensor[done_tensor == -1].sum().item(),
+        )
+        print(
+            "weighted reward counts:",
+            metric_weight_tensor[reward_tensor > 0].sum().item(),
+            metric_weight_tensor[reward_tensor < 0].sum().item(),
+        )
    
         
         # mean_batch_loss_optim_class = 0
@@ -827,8 +954,9 @@ class DQNAgent:
         #     for el in loss_arr_param:
         #         mean_batch_loss_param += el
         #     mean_batch_loss_param = mean_batch_loss_param / len(loss_arr_param)
-        agent_reward_count = len(model_reward_i_ar)
-        bad_action = [el for el in model_reward_i_ar if el <= 0]
+        agent_reward_tensor = torch.cat(model_reward_values).float()
+        agent_reward_weight_tensor = torch.cat(model_reward_weights).float()
+        agent_reward_count = float(agent_reward_weight_tensor.sum().item())
 
         optim_batch_loss_mean = statistics.mean(loss_arr_optim_class)
         param_batch_loss_mean = statistics.mean(loss_arr_param) 
@@ -845,12 +973,38 @@ class DQNAgent:
             self.exp.log_metric("param_batch_loss_mean", param_batch_loss_mean, step=self.steps_done)
             self.exp.log_metric("param_batch_loss_median", statistics.median(loss_arr_param), step=self.steps_done)
             self.exp.log_metric("steps_done", self.steps_done, step=self.steps_done)
-            self.exp.log_metric("all_rewards_mean", statistics.mean(reward_tensor.tolist()), step=self.steps_done)
+            self.exp.log_metric(
+                "all_rewards_mean",
+                float(self._weighted_mean(
+                    reward_tensor, metric_weight_tensor
+                ).item()),
+                step=self.steps_done,
+            )
             self.exp.log_metric("agent_reward_count", agent_reward_count, step=self.steps_done)
             if agent_reward_count > 0:
-                self.exp.log_metric("agent_reward_mean", statistics.mean(model_reward_i_ar), step=self.steps_done)
-                self.exp.log_metric("agent_reward_median", statistics.median(model_reward_i_ar), step=self.steps_done)
-                self.exp.log_metric("bad_action_procent", len(bad_action)/agent_reward_count, step=self.steps_done)
+                self.exp.log_metric(
+                    "agent_reward_mean",
+                    float(self._weighted_mean(
+                        agent_reward_tensor, agent_reward_weight_tensor
+                    ).item()),
+                    step=self.steps_done,
+                )
+                self.exp.log_metric(
+                    "agent_reward_median",
+                    float(self._weighted_quantile(
+                        agent_reward_tensor,
+                        agent_reward_weight_tensor,
+                        0.5,
+                    ).item()),
+                    step=self.steps_done,
+                )
+                self.exp.log_metric(
+                    "bad_action_procent",
+                    float(agent_reward_weight_tensor[
+                        agent_reward_tensor <= 0
+                    ].sum().item() / agent_reward_count),
+                    step=self.steps_done,
+                )
             self.exp.log_metric("count_good_end", count_good_end, step=self.steps_done)
             self.exp.log_metric("count_bad_end", count_bad_end, step=self.steps_done)
             # Save and upload only every fifth trained model.
@@ -937,13 +1091,13 @@ class DQNAgent:
             with self._evaluation_mode(
                 self.model_optim, self.model_params
             ), torch.no_grad():
-                liner_out, q_opt = self.model_optim(state_tensor)
+                _, q_opt = self.model_optim(state_tensor)
                 optim_class = int(torch.argmax(q_opt).item())
 
                 optim_name = self.i2opt[optim_class]
 
                 param_class = {}
-                param_dict = self.model_params(liner_out, [optim_name])[0]
+                param_dict = self.model_params(state_tensor, [optim_name])[0]
 
                 for key in param_dict:
                     if key == 'epochs':

@@ -2,14 +2,46 @@ import torch.nn as nn
 
 
 class ConvEncoder(nn.Module):
-    def __init__(self, in_channels=4, hidden_dim=128):
+    def __init__(
+        self,
+        in_channels=4,
+        hidden_dim=128,
+        normalization="batchnorm",
+        group_norm_groups=8,
+    ):
         super().__init__()
         self.hidden_dim = hidden_dim
         self.feature_dim = 128
+        self.normalization = str(normalization).lower().replace("_", "")
+        self.group_norm_groups = int(group_norm_groups)
+        if self.normalization not in {"batchnorm", "groupnorm"}:
+            raise ValueError(
+                "normalization must be either 'batchnorm' or 'groupnorm', "
+                f"got {normalization!r}"
+            )
+        if self.group_norm_groups <= 0:
+            raise ValueError("group_norm_groups must be positive")
+        if self.normalization == "groupnorm":
+            invalid_channels = [
+                channels
+                for channels in (32, 64, 128)
+                if channels % self.group_norm_groups != 0
+            ]
+            if invalid_channels:
+                raise ValueError(
+                    "group_norm_groups must divide every encoder channel "
+                    f"count (32, 64, 128); got {self.group_norm_groups}"
+                )
 
-        self.backbone_1d = self._make_backbone(nn.Conv1d, nn.BatchNorm1d, in_channels)
-        self.backbone_2d = self._make_backbone(nn.Conv2d, nn.BatchNorm2d, in_channels)
-        self.backbone_3d = self._make_backbone(nn.Conv3d, nn.BatchNorm3d, in_channels)
+        self.backbone_1d = self._make_backbone(
+            nn.Conv1d, nn.BatchNorm1d, in_channels
+        )
+        self.backbone_2d = self._make_backbone(
+            nn.Conv2d, nn.BatchNorm2d, in_channels
+        )
+        self.backbone_3d = self._make_backbone(
+            nn.Conv3d, nn.BatchNorm3d, in_channels
+        )
 
         self.gap_1d = nn.AdaptiveAvgPool1d(1)
         self.gap_2d = nn.AdaptiveAvgPool2d(1)
@@ -26,17 +58,21 @@ class ConvEncoder(nn.Module):
 
         self._init_weights()
 
-    @staticmethod
-    def _make_backbone(conv_cls, norm_cls, in_channels):
+    def _make_norm(self, batch_norm_cls, channels):
+        if self.normalization == "batchnorm":
+            return batch_norm_cls(channels)
+        return nn.GroupNorm(self.group_norm_groups, channels)
+
+    def _make_backbone(self, conv_cls, batch_norm_cls, in_channels):
         return nn.Sequential(
             conv_cls(in_channels, 32, kernel_size=3, stride=1, padding=1),
-            norm_cls(32),
+            self._make_norm(batch_norm_cls, 32),
             nn.ReLU(inplace=True),
             conv_cls(32, 64, kernel_size=3, stride=2, padding=1),
-            norm_cls(64),
+            self._make_norm(batch_norm_cls, 64),
             nn.ReLU(inplace=True),
             conv_cls(64, 128, kernel_size=3, stride=2, padding=1),
-            norm_cls(128),
+            self._make_norm(batch_norm_cls, 128),
             nn.ReLU(inplace=True),
         )
 
@@ -100,9 +136,21 @@ class DuelingHead(nn.Module):
 
 
 class DQN_optim(nn.Module):
-    def __init__(self, optim_n, in_channels=4, hidden_dim=128):
+    def __init__(
+        self,
+        optim_n,
+        in_channels=4,
+        hidden_dim=128,
+        normalization="batchnorm",
+        group_norm_groups=8,
+    ):
         super().__init__()
-        self.encoder = ConvEncoder(in_channels=in_channels, hidden_dim=hidden_dim)
+        self.encoder = ConvEncoder(
+            in_channels=in_channels,
+            hidden_dim=hidden_dim,
+            normalization=normalization,
+            group_norm_groups=group_norm_groups,
+        )
         self.head = DuelingHead(hidden_dim, optim_n)
         self.fc_optim_class = self.head.fc_out_adv
 
@@ -113,9 +161,21 @@ class DQN_optim(nn.Module):
 
 
 class DQN_params(nn.Module):
-    def __init__(self, optimizer_dict, in_channels=4, hidden_dim=128):
+    def __init__(
+        self,
+        optimizer_dict,
+        in_channels=4,
+        hidden_dim=128,
+        normalization="batchnorm",
+        group_norm_groups=8,
+    ):
         super().__init__()
-        self.encoder = ConvEncoder(in_channels=in_channels, hidden_dim=hidden_dim)
+        self.encoder = ConvEncoder(
+            in_channels=in_channels,
+            hidden_dim=hidden_dim,
+            normalization=normalization,
+            group_norm_groups=group_norm_groups,
+        )
         self.optimizer_dict = optimizer_dict
         self.fc_param_by_opt = nn.ModuleDict()
 
@@ -125,10 +185,12 @@ class DQN_params(nn.Module):
                 self.fc_param_by_opt[opt_name][param_name] = DuelingHead(hidden_dim, len(values))
 
     def forward(self, x, optim_name_ar):
-        if x.dim() >= 3:
-            flat, h = self.encoder(x)
-        else:
-            flat, h = x, x
+        if x.dim() < 3:
+            raise ValueError(
+                "DQN_params expects raw state tensors so its own encoder is "
+                f"trained; got shape {tuple(x.shape)}"
+            )
+        _, h = self.encoder(x)
 
         out = []
         for i, opt_name in enumerate(optim_name_ar):

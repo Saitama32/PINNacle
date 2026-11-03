@@ -13,7 +13,7 @@ def mc_return(seq, gamma, *, device):
     return ret
 
 
-def collect_chain_mc_metrics(agent, seqs, q_sa, gamma):
+def collect_chain_mc_metrics(agent, seqs, q_sa, gamma, weights=None):
     if not seqs:
         return {
             "chain_mc_abs_error_mean": 0.0,
@@ -30,22 +30,35 @@ def collect_chain_mc_metrics(agent, seqs, q_sa, gamma):
         ])
         q_values = q_sa.detach()
         mc_errors = q_values - mc_returns
+        if weights is None:
+            weights = torch.ones_like(mc_returns)
+        else:
+            weights = weights.detach().to(
+                device=agent.device, dtype=mc_returns.dtype
+            )
+        weight_sum = weights.sum().clamp_min(1e-8)
 
-        mc_return_abs_mean = mc_returns.abs().mean().clamp_min(1e-8)
-        q_centered = q_values - q_values.mean()
-        mc_centered = mc_returns - mc_returns.mean()
-        q_std = q_values.std(unbiased=False)
-        mc_std = mc_returns.std(unbiased=False)
+        def weighted_mean(values):
+            return (values * weights).sum() / weight_sum
+
+        mc_return_abs_mean = weighted_mean(mc_returns.abs()).clamp_min(1e-8)
+        q_centered = q_values - weighted_mean(q_values)
+        mc_centered = mc_returns - weighted_mean(mc_returns)
+        q_std = weighted_mean(q_centered.square()).sqrt()
+        mc_std = weighted_mean(mc_centered.square()).sqrt()
 
         if q_std.item() < 1e-8 or mc_std.item() < 1e-8:
             q_corr = 0.0
         else:
-            q_corr = float((q_centered * mc_centered).mean().div(q_std * mc_std).item())
+            covariance = weighted_mean(q_centered * mc_centered)
+            q_corr = float(covariance.div(q_std * mc_std).item())
 
         return {
-            "chain_mc_abs_error_mean": float(mc_errors.abs().mean().item()),
-            "chain_mc_mse": float((mc_errors ** 2).mean().item()),
+            "chain_mc_abs_error_mean": float(weighted_mean(mc_errors.abs()).item()),
+            "chain_mc_mse": float(weighted_mean(mc_errors.square()).item()),
             "chain_mc_return_abs_mean": float(mc_return_abs_mean.item()),
-            "chain_mc_error_norm": float(mc_errors.abs().mean().div(mc_return_abs_mean).item()),
+            "chain_mc_error_norm": float(
+                weighted_mean(mc_errors.abs()).div(mc_return_abs_mean).item()
+            ),
             "chain_mc_q_corr": q_corr,
         }

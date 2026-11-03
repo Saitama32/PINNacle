@@ -292,6 +292,7 @@ class PrioritizedReplayBuffer:
         device='cpu',
         include_terminal_starts=False,
         full_prefix=False,
+        return_full_prefixes=False,
     ):
         """
         Сэмплирует batch_size последовательностей длиной ≤L,
@@ -313,12 +314,15 @@ class PrioritizedReplayBuffer:
                 device=device,
                 include_terminal_starts=include_terminal_starts,
             )
+            if return_full_prefixes:
+                return seqs, idxs, is_w, seqs
             return seqs, idxs, is_w
 
         success_list = list(self.success_indexes)
         N_succ = len(success_list)
 
         seqs = []
+        full_prefixes = []
         idxs = []
 
         # чтобы не зависнуть, если данные очень "кривые"
@@ -326,26 +330,27 @@ class PrioritizedReplayBuffer:
 
         for _ in range(batch_size):
             seq = None
+            full_prefix_for_metrics = None
             start_idx_for_this_seq = None
 
             for _try in range(max_tries_per_seq):
                 end_idx = success_list[random.randint(0, N_succ - 1)]
 
                 # Строим последовательность, заканчивающуюся этим success
+                full_candidate = self._build_sequence_ending_at(
+                    end_idx, L, random_start=False
+                )
                 if full_prefix:
-                    candidate = self._build_sequence_ending_at(
-                        end_idx, L, random_start=False
-                    )
+                    candidate = full_candidate
                 elif include_terminal_starts:
-                    candidate = self._build_sequence_ending_at(
-                        end_idx, L, random_start=False
-                    )
-                    start_pos = random.randint(0, len(candidate) - 1)
-                    candidate = candidate[start_pos:]
+                    start_pos = random.randint(0, len(full_candidate) - 1)
+                    candidate = full_candidate[start_pos:]
                 else:
-                    candidate = self._build_sequence_ending_at(
-                        end_idx, L, random_start=True
-                    )
+                    if len(full_candidate) <= 2:
+                        candidate = full_candidate
+                    else:
+                        start_pos = random.randint(0, len(full_candidate) - 2)
+                        candidate = full_candidate[start_pos:]
 
                 if (
                     not full_prefix
@@ -355,6 +360,7 @@ class PrioritizedReplayBuffer:
                     continue
 
                 seq = candidate
+                full_prefix_for_metrics = full_candidate
 
                 # индекс первого элемента, зная end_idx и длину
                 start_idx_for_this_seq = end_idx - (len(seq) - 1)
@@ -374,14 +380,18 @@ class PrioritizedReplayBuffer:
                     include_terminal_starts=include_terminal_starts,
                 )
                 seq = fallback_seqs[0]
+                full_prefix_for_metrics = seq
                 start_idx_for_this_seq = int(fallback_idxs[0])
 
             seqs.append(seq)
+            full_prefixes.append(full_prefix_for_metrics)
             idxs.append(start_idx_for_this_seq)
 
         idxs = torch.tensor(idxs, dtype=torch.long, device=device)
         is_w = torch.ones(batch_size, dtype=torch.float, device=device)
 
+        if return_full_prefixes:
+            return seqs, idxs, is_w, full_prefixes
         return seqs, idxs, is_w
 
 

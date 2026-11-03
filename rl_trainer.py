@@ -357,6 +357,12 @@ def run_deepxde_rl_training(
                         train_all_suffixes=rl_agent_params.get(
                             "train_all_suffixes", False
                         ),
+                        network_normalization=rl_agent_params.get(
+                            "network_normalization", "batchnorm"
+                        ),
+                        group_norm_groups=rl_agent_params.get(
+                            "group_norm_groups", 8
+                        ),
                         exp = rl_agent_params["exp"],
                         model_snapshot_dir=f"{save_path}/rl_model_snapshots")
 

@@ -5,6 +5,8 @@ import torch
 import torch.nn as nn
 
 from RL.rl_algorithms import DQNAgent
+from RL.rl_utils.DQN_classes import ConvEncoder, DQN_params
+from RL.rl_utils.metrics import collect_policy_metrics_by_seq_position
 from RL.rl_utils.per_buffer import Transition, UniformReplayBuffer
 
 
@@ -57,16 +59,19 @@ class FailingTarget(nn.Module):
 
 class AgentAblationTests(unittest.TestCase):
     def make_agent(self, **flags):
+        agent_params = {
+            "optimizer_dict": OPTIMIZERS,
+            "memory_size": 16,
+            "batch_size": 2,
+            "gamma": 0.9,
+            "warmup_updates": 0,
+            "success_frac": 0.0,
+            "device": "cpu",
+            "exp": None,
+        }
+        agent_params.update(flags)
         return DQNAgent(
-            optimizer_dict=OPTIMIZERS,
-            memory_size=16,
-            batch_size=2,
-            gamma=0.9,
-            warmup_updates=0,
-            success_frac=0.0,
-            device="cpu",
-            exp=None,
-            **flags,
+            **agent_params,
         )
 
     def test_uniform_replay_has_unit_weights_and_no_priorities(self):
@@ -158,6 +163,106 @@ class AgentAblationTests(unittest.TestCase):
         explicit_losses = explicit_agent.optim_(iters=1)
 
         self.assertEqual(default_losses, explicit_losses)
+
+    def test_all_suffixes_keep_one_logical_sequence_for_metrics(self):
+        agent = self.make_agent(
+            train_all_suffixes=True,
+            success_frac=1.0,
+        )
+        fill_buffer(agent)
+
+        sequences, _, _, multiplicity, logical_sequences = agent._sample_sequences(
+            batch_size=2,
+            L=12,
+            uniform=False,
+            beta=agent.per_beta,
+        )
+
+        self.assertEqual([len(sequence) for sequence in logical_sequences], [3, 3])
+        self.assertEqual(
+            sorted(len(sequence) for sequence in sequences),
+            [1, 1, 2, 2, 3, 3],
+        )
+        self.assertAlmostEqual(float(multiplicity.sum().item()), 2.0)
+
+        metrics = collect_policy_metrics_by_seq_position(
+            agent, logical_sequences
+        )
+        self.assertEqual(metrics["policy_eval/seq_count"], 2)
+        self.assertEqual(metrics["policy_eval/seq_frac"], 1.0)
+
+    def test_suffix_weights_make_metrics_independent_of_expansion(self):
+        values = torch.tensor([2.0, 2.0, 2.0, 8.0])
+        weights = torch.tensor([1 / 3, 1 / 3, 1 / 3, 1.0])
+        weighted = DQNAgent._weighted_mean(values, weights)
+        self.assertAlmostEqual(float(weighted.item()), 5.0)
+
+    def test_batchnorm_is_default_and_groupnorm_is_configurable(self):
+        batch_encoder = ConvEncoder()
+        self.assertTrue(any(
+            isinstance(module, nn.BatchNorm2d)
+            for module in batch_encoder.backbone_2d.modules()
+        ))
+        self.assertFalse(any(
+            isinstance(module, nn.GroupNorm)
+            for module in batch_encoder.backbone_2d.modules()
+        ))
+
+        group_encoder = ConvEncoder(
+            normalization="group_norm",
+            group_norm_groups=8,
+        )
+        self.assertTrue(any(
+            isinstance(module, nn.GroupNorm)
+            for module in group_encoder.backbone_2d.modules()
+        ))
+        self.assertFalse(any(
+            isinstance(module, nn.BatchNorm2d)
+            for module in group_encoder.backbone_2d.modules()
+        ))
+        flat, representation = group_encoder(torch.randn(2, 4, 8, 8))
+        self.assertEqual(tuple(flat.shape), (2, 128))
+        self.assertEqual(tuple(representation.shape), (2, 128))
+
+    def test_parameter_head_trains_its_own_representation(self):
+        parameter_model = DQN_params(
+            OPTIMIZERS,
+            normalization="groupnorm",
+        )
+        states = torch.randn(2, 4, 8, 8)
+        outputs = parameter_model(states, ["Adam", "LBFGS"])
+        loss = sum(value.sum() for item in outputs for value in item.values())
+        loss.backward()
+
+        encoder_gradients = [
+            parameter.grad
+            for parameter in parameter_model.encoder.parameters()
+            if parameter.grad is not None
+        ]
+        self.assertTrue(encoder_gradients)
+        self.assertGreater(
+            sum(float(gradient.abs().sum().item()) for gradient in encoder_gradients),
+            0.0,
+        )
+
+        with self.assertRaisesRegex(ValueError, "raw state tensors"):
+            parameter_model(torch.randn(2, 128), ["Adam", "LBFGS"])
+
+    def test_groupnorm_all_suffixes_complete_an_update(self):
+        agent = self.make_agent(
+            train_all_suffixes=True,
+            success_frac=1.0,
+            network_normalization="groupnorm",
+            group_norm_groups=8,
+        )
+        fill_buffer(agent)
+
+        optimizer_losses, parameter_losses = agent.optim_(iters=1)
+
+        self.assertEqual(len(optimizer_losses), 1)
+        self.assertEqual(len(parameter_losses), 1)
+        self.assertTrue(torch.isfinite(torch.tensor(optimizer_losses)).all())
+        self.assertTrue(torch.isfinite(torch.tensor(parameter_losses)).all())
 
 
 if __name__ == "__main__":
