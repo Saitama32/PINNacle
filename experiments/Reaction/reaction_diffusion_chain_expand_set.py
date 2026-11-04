@@ -208,8 +208,7 @@ def main():
         "include_terminal_starts": True,
         "recompute_chain_rewards": True,
         "train_all_suffixes": True,
-        "network_normalization": "groupnorm",
-        "group_norm_groups": 8, 
+        "network_normalization": "batchnorm",
         "policy_evaluation": {
             "enabled": True,
             "every_actions": 100,
