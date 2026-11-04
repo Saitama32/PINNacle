@@ -207,7 +207,7 @@ def main():
         "offline_pretrain_iters": 5,
         "include_terminal_starts": True,
         "recompute_chain_rewards": True,
-        "train_all_suffixes": False,
+        "train_all_suffixes": True,
         "network_normalization": "groupnorm",
         "group_norm_groups": 8, 
         "policy_evaluation": {
