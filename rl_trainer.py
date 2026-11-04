@@ -199,6 +199,34 @@ def run_deepxde_rl_training(
     # state_dim = np.prod(env.observation_space.shape)
     n_action = env.action_space
 
+    checkpoint_states = None
+    parameter_representation = rl_agent_params.get(
+        "parameter_representation", "legacy_flat"
+    )
+    network_normalization = rl_agent_params.get(
+        "network_normalization", "batchnorm"
+    )
+    group_norm_groups = rl_agent_params.get("group_norm_groups", 8)
+    if comparison_params is not None:
+        model_step = comparison_params.get("agent_model_step")
+        optim_state, params_state, checkpoint_spec = load_rl_agent_from_comet(
+            comparison_params["experiment_key"],
+            step=model_step,
+            map_location=device,
+            parameter_representation=comparison_params.get(
+                "agent_architecture", "auto"
+            ),
+            network_normalization=comparison_params.get(
+                "network_normalization", "auto"
+            ),
+            group_norm_groups=comparison_params.get("group_norm_groups"),
+            return_spec=True,
+        )
+        checkpoint_states = (optim_state, params_state)
+        parameter_representation = checkpoint_spec.parameter_representation
+        network_normalization = checkpoint_spec.network_normalization
+        group_norm_groups = checkpoint_spec.group_norm_groups
+
     rl_agent = DQNAgent(n_observation,
                         n_action,
                         optimizer_dict=optimizers_dict,
@@ -208,6 +236,9 @@ def run_deepxde_rl_training(
                         device=device,
                         batch_size=rl_agent_params["rl_batch_size"],
                         n_transitions_reinit = rl_agent_params["n_transitions_reinit"],
+                        parameter_representation=parameter_representation,
+                        network_normalization=network_normalization,
+                        group_norm_groups=group_norm_groups,
                         exp = rl_agent_params["exp"])
 
     # init state (как у тебя в model.py: нулевые карты)
@@ -225,12 +256,7 @@ def run_deepxde_rl_training(
     if comparison_params is not None:
         if comparison_params.get("total_epochs") is not None:
             comparison_total_epochs = int(comparison_params["total_epochs"])
-        model_step = comparison_params.get("agent_model_step")
-        optim_state, params_state = load_rl_agent_from_comet(
-            comparison_params["experiment_key"],
-            step=model_step,
-            map_location=device,
-        )
+        optim_state, params_state = checkpoint_states
         rl_agent.model_optim.load_state_dict(optim_state)
         rl_agent.model_params.load_state_dict(params_state)
         rl_agent.model_optim.eval()

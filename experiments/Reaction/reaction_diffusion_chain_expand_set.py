@@ -98,6 +98,17 @@ def main(seed_override=None):
     parser.add_argument("--log_key", type=str2bool, nargs="?", const=True, default=False)
     parser.add_argument("--exp_key", type=str, required=True)
     parser.add_argument("--model_step", type=int, default=1000)
+    parser.add_argument(
+        "--agent_architecture",
+        choices=["auto", "legacy_flat", "separate", "shared_hidden"],
+        default="auto",
+    )
+    parser.add_argument(
+        "--network_normalization",
+        choices=["auto", "batchnorm", "groupnorm"],
+        default="auto",
+    )
+    parser.add_argument("--group_norm_groups", type=int, default=None)
     parser.add_argument("--out", type=str, default="runs_single")
     args = parser.parse_args()
     if seed_override is not None:
@@ -229,6 +240,9 @@ def main(seed_override=None):
         "total_epochs": 7000,
         "experiment_key": args.exp_key,
         "agent_model_step": args.model_step,
+        "agent_architecture": args.agent_architecture,
+        "network_normalization": args.network_normalization,
+        "group_norm_groups": args.group_norm_groups,
         "multi_pde_comparison": True,
         "agent_optimizing_status": "all_epoch",
     }

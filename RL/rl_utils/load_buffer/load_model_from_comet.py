@@ -5,6 +5,7 @@ from dotenv import load_dotenv
 import os
 import re
 from typing import Optional
+from dataclasses import dataclass
 # === Настройки ===
 WORKSPACE = "saitama32"
 PROJECT_NAME = "rlpinn"
@@ -19,6 +20,78 @@ api = API(api_key=api_key)  # или просто API()
 DEFAULT_MODEL_ASSET_DIR = "others/rl_model_snapshots"
 FALLBACK_OPTIM_ASSET_DIR = "models/rl_agent_optim"
 FALLBACK_PARAMS_ASSET_DIR = "models/rl_agent_params"
+
+
+@dataclass(frozen=True)
+class AgentCheckpointSpec:
+    parameter_representation: str
+    network_normalization: str
+    group_norm_groups: int
+
+
+def _experiment_parameters(exp) -> dict:
+    try:
+        return {
+            item["name"]: item.get("valueCurrent")
+            for item in exp.get_parameters_summary()
+        }
+    except Exception:
+        return {}
+
+
+def infer_agent_checkpoint_spec(
+    optim_state,
+    params_state,
+    experiment_parameters=None,
+    parameter_representation="auto",
+    network_normalization="auto",
+    group_norm_groups=None,
+):
+    """Infer the inference graph used by historical agent checkpoints."""
+    experiment_parameters = experiment_parameters or {}
+    representation = str(parameter_representation or "auto").lower()
+    normalization = str(network_normalization or "auto").lower().replace("_", "")
+
+    if representation == "auto":
+        params_has_encoder = any(
+            key.startswith("encoder.") for key in params_state
+        )
+        if not params_has_encoder:
+            representation = "shared_hidden"
+        elif experiment_parameters.get("parameter_representation"):
+            representation = str(
+                experiment_parameters["parameter_representation"]
+            ).lower()
+        elif experiment_parameters.get("network_normalization") is not None:
+            representation = "separate"
+        else:
+            representation = "legacy_flat"
+
+    if representation not in {"legacy_flat", "separate", "shared_hidden"}:
+        raise ValueError(f"Unsupported agent architecture: {representation!r}")
+
+    if normalization == "auto":
+        has_running_stats = any(
+            key.endswith("running_mean") or key.endswith("running_var")
+            for key in optim_state
+            if key.startswith("encoder.")
+        )
+        normalization = "batchnorm" if has_running_stats else "groupnorm"
+    if normalization not in {"batchnorm", "groupnorm"}:
+        raise ValueError(f"Unsupported network normalization: {normalization!r}")
+
+    if group_norm_groups is None:
+        group_norm_groups = experiment_parameters.get("group_norm_groups", 8)
+    try:
+        group_norm_groups = int(group_norm_groups)
+    except (TypeError, ValueError):
+        group_norm_groups = 8
+
+    return AgentCheckpointSpec(
+        parameter_representation=representation,
+        network_normalization=normalization,
+        group_norm_groups=group_norm_groups,
+    )
 
 
 def _asset_step(asset) -> int:
@@ -88,6 +161,10 @@ def load_rl_agent_from_comet(
     step: Optional[int] = None,
     map_location: str = "cpu",
     asset_dir: str = DEFAULT_MODEL_ASSET_DIR,
+    parameter_representation: str = "auto",
+    network_normalization: str = "auto",
+    group_norm_groups: Optional[int] = None,
+    return_spec: bool = False,
 ):
     """
     Загружает веса RL-агента (model_optim и model_params) из эксперимента Comet ML.
@@ -168,6 +245,22 @@ def load_rl_agent_from_comet(
     print(f"✅ model_params ({params_asset['fileName']}) загружен.")
 
     print("🎯 Оба state_dict успешно загружены из Comet.")
+    spec = infer_agent_checkpoint_spec(
+        model_optim_state,
+        model_params_state,
+        experiment_parameters=_experiment_parameters(exp),
+        parameter_representation=parameter_representation,
+        network_normalization=network_normalization,
+        group_norm_groups=group_norm_groups,
+    )
+    print(
+        "Detected agent checkpoint architecture: "
+        f"representation={spec.parameter_representation}, "
+        f"normalization={spec.network_normalization}, "
+        f"group_norm_groups={spec.group_norm_groups}"
+    )
+    if return_spec:
+        return model_optim_state, model_params_state, spec
     return model_optim_state, model_params_state
 
 # if __name__ == "__main__":

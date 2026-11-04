@@ -31,7 +31,10 @@ TAU = 0.01
 class DQNAgent:
     def __init__(self, n_observation=None, n_action=None, optimizer_dict=None, lr=1e-3, gamma=0.95, epsilon=1.0,
                  epsilon_decay=0.995, epsilon_min=0.01, memory_size=100000, batch_size=128, n_transitions_reinit = 2000, per_alpha =  0.6, per_beta0 = 0.4, device='cpu', exp=None,
-                 warmup_updates: int = 50, recalc_batch_size: int = 32,):
+                 warmup_updates: int = 50, recalc_batch_size: int = 32,
+                 parameter_representation: str = "legacy_flat",
+                 network_normalization: str = "batchnorm",
+                 group_norm_groups: int = 8,):
         self.n_observation = n_observation
         self.n_action = n_action
         self.gamma = gamma
@@ -45,6 +48,18 @@ class DQNAgent:
         self.opt_count_out = 0
         self.opt_count_for_reinit = 5
         self.optimizer_dict = optimizer_dict
+        self.parameter_representation = str(parameter_representation).lower()
+        if self.parameter_representation not in {
+            "legacy_flat", "separate", "shared_hidden"
+        }:
+            raise ValueError(
+                "parameter_representation must be legacy_flat, separate or "
+                f"shared_hidden, got {parameter_representation!r}"
+            )
+        self.network_normalization = str(network_normalization).lower().replace(
+            "_", ""
+        )
+        self.group_norm_groups = int(group_norm_groups)
         self.i2opt = {v: k for v, k in enumerate(optimizer_dict.keys())}
         uniq_params = list(set([x for xs in optimizer_dict.values() for x in xs]))
         self.i2params = {k: v for v, k in enumerate(uniq_params)}
@@ -103,13 +118,25 @@ class DQNAgent:
             "EPS_START": EPS_START,
             "EPS_END": EPS_END,
             "EPS_DECAY": EPS_DECAY,
-            "TAU": TAU
+            "TAU": TAU,
+            "parameter_representation": self.parameter_representation,
+            "network_normalization": self.network_normalization,
+            "group_norm_groups": self.group_norm_groups,
         }
         if self.exp is not None:
             self.exp.log_parameters(epsilon_and_warmap_params)
 
-        self.model_optim = DQN_optim(len(self.i2opt)).to(device)
-        self.model_params = DQN_params(self.optimizer_dict).to(device)
+        self.model_optim = DQN_optim(
+            len(self.i2opt),
+            normalization=self.network_normalization,
+            group_norm_groups=self.group_norm_groups,
+        ).to(device)
+        self.model_params = DQN_params(
+            self.optimizer_dict,
+            normalization=self.network_normalization,
+            group_norm_groups=self.group_norm_groups,
+            use_encoder=self.parameter_representation != "shared_hidden",
+        ).to(device)
         # if self.exp is not None:
         #     watch(self.model_optim, log_step_interval = 1000)
         #     watch(self.model_params, log_step_interval = 1000)
@@ -120,8 +147,17 @@ class DQNAgent:
         self.optimizer_params = optim.Adam(self.model_params.parameters(), lr=lr)
 
     def reinit_target(self):
-        self.target_model_optim = DQN_optim(len(self.i2opt)).to(self.device)
-        self.target_model_params = DQN_params(self.optimizer_dict).to(self.device)
+        self.target_model_optim = DQN_optim(
+            len(self.i2opt),
+            normalization=self.network_normalization,
+            group_norm_groups=self.group_norm_groups,
+        ).to(self.device)
+        self.target_model_params = DQN_params(
+            self.optimizer_dict,
+            normalization=self.network_normalization,
+            group_norm_groups=self.group_norm_groups,
+            use_encoder=self.parameter_representation != "shared_hidden",
+        ).to(self.device)
         for param in self.target_model_optim.parameters():
             param.requires_grad = False
         for param in self.target_model_params.parameters():
@@ -130,6 +166,20 @@ class DQNAgent:
         self.target_model_optim.eval()
         self.target_model_params.load_state_dict(self.model_params.state_dict())
         self.target_model_params.eval()
+
+    def _optimizer_features(self, model, state):
+        return model.forward_features(state)
+
+    def _parameter_input(self, state, flat, hidden):
+        if self.parameter_representation == "legacy_flat":
+            return flat
+        if self.parameter_representation == "separate":
+            return state
+        return hidden
+
+    def _parameter_values(self, params_model, state, flat, hidden, opt_names):
+        representation = self._parameter_input(state, flat, hidden)
+        return params_model(representation, opt_names)
 
     def detach_transition(self, transition):
         def detach_item(item):
@@ -345,7 +395,9 @@ class DQNAgent:
             opt_model_i = torch.IntTensor(opt_model_i).to(self.device)
 
             # --- OPTIMIZER HEAD: текущие Q(s_t,a_t)
-            flat, q_opt_cur = self.model_optim(state)
+            flat, hidden, q_opt_cur = self._optimizer_features(
+                self.model_optim, state
+            )
             q_sa = q_opt_cur.gather(1, action_o.view(-1,1)).squeeze(1)
 
             # --- SOFT/WATKINS G^{λ,κ} на каждый элемент батча из своей последовательности ---
@@ -386,10 +438,30 @@ class DQNAgent:
 
             # --- PARAM HEADS: Double per-parameter ---
             opt_names = [self.i2opt[int(i.item())] for i in action_o]
-            q_params_cur = self.model_params(flat, opt_names)
+            q_params_cur = self._parameter_values(
+                self.model_params, state, flat, hidden, opt_names
+            )
             with torch.no_grad():
-                q_params_next_on = self.model_params(next_state, opt_names)
-                q_params_next_tg = self.target_model_params(next_state, opt_names)
+                next_flat_on, next_hidden_on, _ = self._optimizer_features(
+                    self.model_optim, next_state
+                )
+                next_flat_tg, next_hidden_tg, _ = self._optimizer_features(
+                    self.target_model_optim, next_state
+                )
+                q_params_next_on = self._parameter_values(
+                    self.model_params,
+                    next_state,
+                    next_flat_on,
+                    next_hidden_on,
+                    opt_names,
+                )
+                q_params_next_tg = self._parameter_values(
+                    self.target_model_params,
+                    next_state,
+                    next_flat_tg,
+                    next_hidden_tg,
+                    opt_names,
+                )
 
             loss_param_items, td_param_items = [], []
             for i in range(B):
@@ -686,13 +758,21 @@ class DQNAgent:
         # --- GREEDY ---
         if sample > eps_threshold:
             with torch.no_grad():
-                liner_out, q_opt = self.model_optim(state_tensor)
+                flat, hidden, q_opt = self._optimizer_features(
+                    self.model_optim, state_tensor
+                )
                 optim_class = int(torch.argmax(q_opt).item())
 
                 optim_name = self.i2opt[optim_class]
 
                 param_class = {}
-                param_dict = self.model_params(liner_out, [optim_name])[0]
+                param_dict = self._parameter_values(
+                    self.model_params,
+                    state_tensor,
+                    flat,
+                    hidden,
+                    [optim_name],
+                )[0]
 
                 for key in param_dict:
                     if key == 'epochs':

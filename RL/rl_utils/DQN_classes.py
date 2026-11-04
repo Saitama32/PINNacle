@@ -3,39 +3,62 @@ import torch.nn as nn
 
 
 class ConvEncoder(nn.Module):
-    def __init__(self, in_channels=4, hidden_dim=128):
+    def __init__(
+        self,
+        in_channels=4,
+        hidden_dim=128,
+        normalization="batchnorm",
+        group_norm_groups=8,
+    ):
         super().__init__()
+        self.normalization = str(normalization).lower().replace("_", "")
+        self.group_norm_groups = int(group_norm_groups)
+        if self.normalization not in {"batchnorm", "groupnorm"}:
+            raise ValueError(
+                "normalization must be 'batchnorm' or 'groupnorm', got "
+                f"{normalization!r}"
+            )
+        if self.group_norm_groups <= 0:
+            raise ValueError("group_norm_groups must be positive")
+        if self.normalization == "groupnorm" and any(
+            channels % self.group_norm_groups != 0
+            for channels in (32, 64, 128)
+        ):
+            raise ValueError(
+                "group_norm_groups must divide encoder channels 32, 64 and 128"
+            )
+
         self.backbone_1d = nn.Sequential(
             nn.Conv1d(in_channels, 32, kernel_size=3, stride=1, padding=1),
-            nn.BatchNorm1d(32),
+            self._make_norm(nn.BatchNorm1d, 32),
             nn.ReLU(inplace=True),
             nn.Conv1d(32, 64, kernel_size=3, stride=2, padding=1),
-            nn.BatchNorm1d(64),
+            self._make_norm(nn.BatchNorm1d, 64),
             nn.ReLU(inplace=True),
             nn.Conv1d(64, 128, kernel_size=3, stride=2, padding=1),
-            nn.BatchNorm1d(128),
+            self._make_norm(nn.BatchNorm1d, 128),
             nn.ReLU(inplace=True),
         )
         self.backbone_2d = nn.Sequential(
             nn.Conv2d(in_channels, 32, kernel_size=3, stride=1, padding=1),
-            nn.BatchNorm2d(32),
+            self._make_norm(nn.BatchNorm2d, 32),
             nn.ReLU(inplace=True),
             nn.Conv2d(32, 64, kernel_size=3, stride=2, padding=1),
-            nn.BatchNorm2d(64),
+            self._make_norm(nn.BatchNorm2d, 64),
             nn.ReLU(inplace=True),
             nn.Conv2d(64, 128, kernel_size=3, stride=2, padding=1),
-            nn.BatchNorm2d(128),
+            self._make_norm(nn.BatchNorm2d, 128),
             nn.ReLU(inplace=True),
         )
         self.backbone_3d = nn.Sequential(
             nn.Conv3d(in_channels, 32, kernel_size=3, stride=1, padding=1),
-            nn.BatchNorm3d(32),
+            self._make_norm(nn.BatchNorm3d, 32),
             nn.ReLU(inplace=True),
             nn.Conv3d(32, 64, kernel_size=3, stride=2, padding=1),
-            nn.BatchNorm3d(64),
+            self._make_norm(nn.BatchNorm3d, 64),
             nn.ReLU(inplace=True),
             nn.Conv3d(64, 128, kernel_size=3, stride=2, padding=1),
-            nn.BatchNorm3d(128),
+            self._make_norm(nn.BatchNorm3d, 128),
             nn.ReLU(inplace=True),
         )
 
@@ -60,6 +83,11 @@ class ConvEncoder(nn.Module):
             elif isinstance(module, nn.Linear):
                 nn.init.kaiming_uniform_(module.weight, nonlinearity="relu")
                 nn.init.zeros_(module.bias)
+
+    def _make_norm(self, batch_norm_cls, channels):
+        if self.normalization == "batchnorm":
+            return batch_norm_cls(channels)
+        return nn.GroupNorm(self.group_norm_groups, channels)
 
     def forward(self, x):
         if x.dim() == 3:
@@ -145,9 +173,21 @@ class DuelingHead(nn.Module):
 
 
 class DQN_optim(nn.Module):
-    def __init__(self, optim_n, in_channels=4, hidden_dim=128):
+    def __init__(
+        self,
+        optim_n,
+        in_channels=4,
+        hidden_dim=128,
+        normalization="batchnorm",
+        group_norm_groups=8,
+    ):
         super().__init__()
-        self.encoder = ConvEncoder(in_channels=in_channels, hidden_dim=hidden_dim)
+        self.encoder = ConvEncoder(
+            in_channels=in_channels,
+            hidden_dim=hidden_dim,
+            normalization=normalization,
+            group_norm_groups=group_norm_groups,
+        )
         self.head = DuelingHead(hidden_dim, optim_n)
         self.fc_optim_class = self.head.fc_out_adv
 
@@ -156,14 +196,34 @@ class DQN_optim(nn.Module):
         q = self.head(h)
         return flat, q
 
+    def forward_features(self, x):
+        flat, hidden = self.encoder(x)
+        return flat, hidden, self.head(hidden)
+
     def load_state_dict(self, state_dict, strict=True, assign=False):
         return _load_with_legacy_2d_fallback(self, state_dict, strict=strict, assign=assign)
 
 
 class DQN_params(nn.Module):
-    def __init__(self, optimizer_dict, in_channels=4, hidden_dim=128):
+    def __init__(
+        self,
+        optimizer_dict,
+        in_channels=4,
+        hidden_dim=128,
+        normalization="batchnorm",
+        group_norm_groups=8,
+        use_encoder=True,
+    ):
         super().__init__()
-        self.encoder = ConvEncoder(in_channels=in_channels, hidden_dim=hidden_dim)
+        self.hidden_dim = int(hidden_dim)
+        self.use_encoder = bool(use_encoder)
+        if self.use_encoder:
+            self.encoder = ConvEncoder(
+                in_channels=in_channels,
+                hidden_dim=hidden_dim,
+                normalization=normalization,
+                group_norm_groups=group_norm_groups,
+            )
         self.optimizer_dict = optimizer_dict
         self.fc_param_by_opt = nn.ModuleDict()
 
@@ -174,9 +234,19 @@ class DQN_params(nn.Module):
 
     def forward(self, x, optim_name_ar):
         if x.dim() >= 3:
+            if not self.use_encoder:
+                raise ValueError(
+                    "shared_hidden parameter head expects a 2D hidden representation"
+                )
             flat, h = self.encoder(x)
         else:
             flat, h = x, x
+
+        if h.dim() != 2 or h.shape[-1] != self.hidden_dim:
+            raise ValueError(
+                f"Expected parameter representation (B, {self.hidden_dim}), "
+                f"got {tuple(h.shape)}"
+            )
 
         out = []
         for i, opt_name in enumerate(optim_name_ar):
