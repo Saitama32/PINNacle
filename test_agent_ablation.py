@@ -5,7 +5,7 @@ import torch
 import torch.nn as nn
 
 from RL.rl_algorithms import DQNAgent
-from RL.rl_utils.DQN_classes import ConvEncoder, DQN_params
+from RL.rl_utils.DQN_classes import ConvEncoder, DQN_optim, DQN_params
 from RL.rl_utils.metrics import collect_policy_metrics_by_seq_position
 from RL.rl_utils.per_buffer import Transition, UniformReplayBuffer
 
@@ -96,6 +96,20 @@ class AgentAblationTests(unittest.TestCase):
 
         buffer.update_priorities(indexes, torch.full((2,), 100.0))
         self.assertEqual(buffer.prior, [])
+
+    def test_greedy_evaluation_action_does_not_advance_online_state(self):
+        agent = self.make_agent()
+        agent.steps_done = 123
+        agent.model_optim.train()
+        agent.model_params.eval()
+
+        action, action_raw = agent.select_greedy_action(make_state(0.25))
+
+        self.assertEqual(agent.steps_done, 123)
+        self.assertTrue(agent.model_optim.training)
+        self.assertFalse(agent.model_params.training)
+        self.assertIn(action["type"], OPTIMIZERS)
+        self.assertEqual(agent.i2opt[action_raw[0]], action["type"])
 
     def test_one_step_target_uses_online_action_and_target_value(self):
         agent = self.make_agent(use_soft_watkins=False)
@@ -224,19 +238,21 @@ class AgentAblationTests(unittest.TestCase):
         self.assertEqual(tuple(flat.shape), (2, 128))
         self.assertEqual(tuple(representation.shape), (2, 128))
 
-    def test_parameter_head_trains_its_own_representation(self):
-        parameter_model = DQN_params(
-            OPTIMIZERS,
+    def test_parameter_head_trains_the_shared_encoder(self):
+        optimizer_model = DQN_optim(
+            len(OPTIMIZERS),
             normalization="groupnorm",
         )
+        parameter_model = DQN_params(OPTIMIZERS)
         states = torch.randn(2, 4, 8, 8)
-        outputs = parameter_model(states, ["Adam", "LBFGS"])
+        hidden, _ = optimizer_model(states)
+        outputs = parameter_model(hidden, ["Adam", "LBFGS"])
         loss = sum(value.sum() for item in outputs for value in item.values())
         loss.backward()
 
         encoder_gradients = [
             parameter.grad
-            for parameter in parameter_model.encoder.parameters()
+            for parameter in optimizer_model.encoder.parameters()
             if parameter.grad is not None
         ]
         self.assertTrue(encoder_gradients)
@@ -245,8 +261,10 @@ class AgentAblationTests(unittest.TestCase):
             0.0,
         )
 
-        with self.assertRaisesRegex(ValueError, "raw state tensors"):
-            parameter_model(torch.randn(2, 128), ["Adam", "LBFGS"])
+        self.assertFalse(hasattr(parameter_model, "encoder"))
+
+        with self.assertRaisesRegex(ValueError, "shared hidden representation"):
+            parameter_model(states, ["Adam", "LBFGS"])
 
     def test_groupnorm_all_suffixes_complete_an_update(self):
         agent = self.make_agent(

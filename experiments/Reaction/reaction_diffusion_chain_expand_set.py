@@ -210,6 +210,12 @@ def main():
         "train_all_suffixes": False,
         "network_normalization": "groupnorm",
         "group_norm_groups": 8, 
+        "policy_evaluation": {
+            "enabled": True,
+            "every_actions": 100,
+            "n_trajectories": 3,
+            "max_actions_per_trajectory": 12,
+        },
         "adaptive_tolerance": {
             "enabled": False,
             "warmup_transitions": 64,

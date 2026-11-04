@@ -5,6 +5,7 @@ import json
 import dill
 import random
 import itertools
+import copy
 import numpy as np
 from dataclasses import dataclass
 from typing import Any, Dict, Optional, Tuple, List
@@ -76,6 +77,33 @@ def _serialize_solver_models(solver_models):
             },
         })
     return serialized_models
+
+
+def _capture_rng_state():
+    state = {
+        "python": random.getstate(),
+        "numpy": np.random.get_state(),
+        "torch": torch.random.get_rng_state(),
+    }
+    if torch.cuda.is_available():
+        state["cuda"] = torch.cuda.get_rng_state_all()
+    return state
+
+
+def _restore_rng_state(state):
+    random.setstate(state["python"])
+    np.random.set_state(state["numpy"])
+    torch.random.set_rng_state(state["torch"])
+    if "cuda" in state:
+        torch.cuda.set_rng_state_all(state["cuda"])
+
+
+def _seed_policy_evaluation(seed):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
 
 
 def _build_torch_optimizer(opt_name: str, params, action: Dict[str, Any], model=None):
@@ -288,6 +316,116 @@ def _print_offline_greedy_chain_diagnostic(agent, max_states=16):
     )
 
 
+def _evaluate_greedy_policy(
+    *, model_factory, rl_agent, optimizers_dict, equation_params,
+    AE_model_params, AE_train_params, loss_surface_params, n_save_models,
+    tolerance, zero_state, display_every, save_path, checkpoint_step, config,
+):
+    """Run isolated greedy rollouts and return aggregate policy metrics."""
+    n_trajectories = int(config.get("n_trajectories", 4))
+    max_actions = int(config.get("max_actions_per_trajectory", 12))
+    seed = int(config.get("seed", 1729))
+    if n_trajectories <= 0 or max_actions <= 0:
+        raise ValueError(
+            "policy_evaluation requires positive n_trajectories and "
+            "max_actions_per_trajectory"
+        )
+    rng_state = _capture_rng_state()
+    successes, best_losses, final_losses, lengths = [], [], [], []
+    eval_dir = os.path.join(save_path, "policy_evaluation")
+    os.makedirs(eval_dir, exist_ok=True)
+
+    try:
+        for trajectory_i in range(n_trajectories):
+            # Common random numbers: every checkpoint sees the same starts.
+            _seed_policy_evaluation(seed + trajectory_i)
+            eval_model, eval_loss_weights = model_factory()
+            eval_env = EnvRLOptimizer(
+                optimizers=optimizers_dict,
+                equation_params=equation_params,
+                callbacks=None,
+                AE_model_params=copy.deepcopy(AE_model_params),
+                AE_train_params=copy.deepcopy(AE_train_params),
+                loss_surface_params=copy.deepcopy(loss_surface_params),
+                n_save_models=n_save_models,
+                tolerance=tolerance,
+            )
+            state = zero_state()
+            last_opt = None
+            same_opt_streak = 0
+            losses = []
+            done = 0
+
+            for action_i in range(max_actions):
+                action, _ = rl_agent.select_greedy_action(state)
+                if last_opt == action["type"]:
+                    same_opt_streak += 1
+                else:
+                    same_opt_streak = 0
+                last_opt = action["type"]
+
+                chunk_iters = int(action["epochs"])
+                torch_opt = _build_torch_optimizer(
+                    action["type"], eval_model.net.parameters(), action,
+                    model=eval_model.net,
+                )
+                eval_model.compile(torch_opt, loss_weights=eval_loss_weights)
+                eval_model.optimizer = torch_opt
+                saver = ModelSaverCallback(
+                    total_iterations=chunk_iters,
+                    n_save_models=n_save_models,
+                )
+                eval_model.train(
+                    iterations=chunk_iters,
+                    display_every=display_every,
+                    callbacks=[saver],
+                    model_save_path=eval_dir,
+                    save_model=False,
+                )
+
+                train_loss = _extract_weighted_train_loss(eval_model)
+                if not np.isfinite(train_loss):
+                    done = -1
+                    break
+
+                losses.append(float(train_loss))
+                eval_env.solver_models = saver.saved_models
+                eval_env.reward_params = {"loss": train_loss}
+                # This is equivalent to the legacy t == 10 penalty: action 12
+                # observes the failure flag if action 11 did not succeed.
+                eval_env.rl_penalty = -1 if action_i == max_actions - 1 else 0
+                eval_env.set_step_context(
+                    prev_state=state,
+                    step_i=action_i,
+                    same_opt_streak=same_opt_streak,
+                    is_model=True,
+                    rl_opt_step=rl_agent.opt_step,
+                    prev_reward_scalar=None,
+                )
+                state, _, done, _ = eval_env.step()
+                if done != 0:
+                    break
+
+            successes.append(float(done == 1))
+            best_losses.append(min(losses) if losses else float("inf"))
+            final_losses.append(losses[-1] if losses else float("inf"))
+            lengths.append(len(losses))
+    finally:
+        _restore_rng_state(rng_state)
+
+    metrics = {
+        "eval_policy/success_rate": float(np.mean(successes)),
+        "eval_policy/best_loss_median": float(np.median(best_losses)),
+        "eval_policy/final_loss_median": float(np.median(final_losses)),
+        "eval_policy/actions_mean": float(np.mean(lengths)),
+    }
+    print(
+        "\nGreedy policy evaluation "
+        f"at {checkpoint_step} online actions: {metrics}\n"
+    )
+    return metrics
+
+
 def run_deepxde_rl_training(
     model,
     loss_weights,
@@ -298,6 +436,7 @@ def run_deepxde_rl_training(
     AE_train_params=None,
     loss_surface_params=None,
     save_path: str = ".",
+    model_factory=None,
 
 ):
     """
@@ -418,6 +557,14 @@ def run_deepxde_rl_training(
         "Epsilon schedule starts at global metric step "
         f"{rl_agent.epsilon_step_offset}; first online interaction uses step 0."
     )
+    policy_eval_config = rl_agent_params.get("policy_evaluation", {})
+    policy_eval_enabled = bool(policy_eval_config.get("enabled", False))
+    policy_eval_every = int(policy_eval_config.get("every_actions", 100))
+    if policy_eval_enabled and model_factory is None:
+        raise ValueError("policy_evaluation requires model_factory")
+    if policy_eval_enabled and policy_eval_every <= 0:
+        raise ValueError("policy_evaluation.every_actions must be positive")
+    next_policy_eval_step = policy_eval_every
     # if backup_params is not None:
     #     optim_state, params_state = load_rl_agent_from_comet(backup_params["experiment_key"], map_location=device_type())
     #     rl_agent.model_optim.load_state_dict(optim_state)
@@ -659,6 +806,30 @@ def run_deepxde_rl_training(
         if done == 1:
             idx_traj += 1
 
+        online_steps = rl_agent.steps_done - rl_agent.epsilon_step_offset
+        while policy_eval_enabled and online_steps >= next_policy_eval_step:
+            eval_metrics = _evaluate_greedy_policy(
+                model_factory=model_factory,
+                rl_agent=rl_agent,
+                optimizers_dict=optimizers_dict,
+                equation_params=equation_params,
+                AE_model_params=AE_model_params,
+                AE_train_params=AE_train_params,
+                loss_surface_params=loss_surface_params,
+                n_save_models=rl_agent_params['n_save_models'],
+                tolerance=rl_agent_params["tolerance"],
+                zero_state=zero_state,
+                display_every=display_every,
+                save_path=save_path,
+                checkpoint_step=next_policy_eval_step,
+                config=policy_eval_config,
+            )
+            rl_agent_params["exp"].log_metrics(
+                eval_metrics,
+                step=next_policy_eval_step,
+            )
+            next_policy_eval_step += policy_eval_every
+
 
 def train_process_rl(data, save_path, device, seed, rl_agent_params):
     """
@@ -705,4 +876,5 @@ def train_process_rl(data, save_path, device, seed, rl_agent_params):
         AE_train_params=AE_train_params,
         loss_surface_params=loss_surface_params,
         save_path=save_path,
+        model_factory=get_model,
     )

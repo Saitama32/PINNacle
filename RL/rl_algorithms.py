@@ -141,11 +141,7 @@ class DQNAgent:
             normalization=self.network_normalization,
             group_norm_groups=self.group_norm_groups,
         ).to(device)
-        self.model_params = DQN_params(
-            self.optimizer_dict,
-            normalization=self.network_normalization,
-            group_norm_groups=self.group_norm_groups,
-        ).to(device)
+        self.model_params = DQN_params(self.optimizer_dict).to(device)
         # if self.exp is not None:
         #     watch(self.model_optim, log_step_interval = 200)
         #     watch(self.model_params, log_step_interval = 200)
@@ -175,11 +171,7 @@ class DQNAgent:
             normalization=self.network_normalization,
             group_norm_groups=self.group_norm_groups,
         ).to(self.device)
-        self.target_model_params = DQN_params(
-            self.optimizer_dict,
-            normalization=self.network_normalization,
-            group_norm_groups=self.group_norm_groups,
-        ).to(self.device)
+        self.target_model_params = DQN_params(self.optimizer_dict).to(self.device)
         for param in self.target_model_optim.parameters():
             param.requires_grad = False
         for param in self.target_model_params.parameters():
@@ -633,7 +625,7 @@ class DQNAgent:
             opt_model_i = torch.IntTensor(opt_model_i).to(self.device)
 
             # --- OPTIMIZER HEAD: текущие Q(s_t,a_t)
-            _, q_opt_cur = self.model_optim(state)
+            hidden_cur, q_opt_cur = self.model_optim(state)
             q_sa = q_opt_cur.gather(1, action_o.view(-1,1)).squeeze(1)
 
             # --- SOFT/WATKINS G^{λ,κ} на каждый элемент батча из своей последовательности ---
@@ -667,12 +659,19 @@ class DQNAgent:
 
             # --- PARAM HEADS: Double per-parameter ---
             opt_names = [self.i2opt[int(i.item())] for i in action_o]
-            q_params_cur = self.model_params(state, opt_names)
+            q_params_cur = self.model_params(hidden_cur, opt_names)
             with self._evaluation_mode(
-                self.model_params, self.target_model_params
+                self.model_optim,
+                self.target_model_optim,
+                self.model_params,
+                self.target_model_params,
             ), torch.no_grad():
-                q_params_next_on = self.model_params(next_state, opt_names)
-                q_params_next_tg = self.target_model_params(next_state, opt_names)
+                hidden_next_on, _ = self.model_optim(next_state)
+                hidden_next_tg, _ = self.target_model_optim(next_state)
+                q_params_next_on = self.model_params(hidden_next_on, opt_names)
+                q_params_next_tg = self.target_model_params(
+                    hidden_next_tg, opt_names
+                )
 
             loss_param_items, td_param_items = [], []
             for i in range(B):
@@ -1063,6 +1062,33 @@ class DQNAgent:
         return optim_class, epochs_class, param_class
     
     # Action function stub
+    def select_greedy_action(self, state):
+        """Select greedily without epsilon sampling or advancing steps_done."""
+        delta = state.get("delta", torch.zeros_like(state["loss_total"]))
+        state_tensor = torch.stack([
+            state["loss_total"],
+            state["loss_oper"],
+            state["loss_bnd"],
+            delta,
+        ], dim=0).to(self.device).unsqueeze(0)
+
+        with self._evaluation_mode(
+            self.model_optim, self.model_params
+        ), torch.no_grad():
+            hidden, q_opt = self.model_optim(state_tensor)
+            optim_class = int(torch.argmax(q_opt).item())
+            optim_name = self.i2opt[optim_class]
+            param_class = {}
+            param_dict = self.model_params(hidden, [optim_name])[0]
+            for key in param_dict:
+                if key == 'epochs':
+                    epochs_class = int(torch.argmax(param_dict[key]).item())
+                else:
+                    param_class[key] = int(torch.argmax(param_dict[key]).item())
+
+        action_raw = (optim_class, epochs_class, param_class)
+        return self.post_proc_model(*action_raw), action_raw
+
     def select_action(self, state):
 
         # собрать 4-канальное состояние
@@ -1091,13 +1117,13 @@ class DQNAgent:
             with self._evaluation_mode(
                 self.model_optim, self.model_params
             ), torch.no_grad():
-                _, q_opt = self.model_optim(state_tensor)
+                hidden, q_opt = self.model_optim(state_tensor)
                 optim_class = int(torch.argmax(q_opt).item())
 
                 optim_name = self.i2opt[optim_class]
 
                 param_class = {}
-                param_dict = self.model_params(state_tensor, [optim_name])[0]
+                param_dict = self.model_params(hidden, [optim_name])[0]
 
                 for key in param_dict:
                     if key == 'epochs':

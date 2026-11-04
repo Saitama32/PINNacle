@@ -155,27 +155,19 @@ class DQN_optim(nn.Module):
         self.fc_optim_class = self.head.fc_out_adv
 
     def forward(self, x):
-        flat, h = self.encoder(x)
+        _, h = self.encoder(x)
         q = self.head(h)
-        return flat, q
+        return h, q
 
 
 class DQN_params(nn.Module):
     def __init__(
         self,
         optimizer_dict,
-        in_channels=4,
         hidden_dim=128,
-        normalization="batchnorm",
-        group_norm_groups=8,
     ):
         super().__init__()
-        self.encoder = ConvEncoder(
-            in_channels=in_channels,
-            hidden_dim=hidden_dim,
-            normalization=normalization,
-            group_norm_groups=group_norm_groups,
-        )
+        self.hidden_dim = hidden_dim
         self.optimizer_dict = optimizer_dict
         self.fc_param_by_opt = nn.ModuleDict()
 
@@ -184,13 +176,17 @@ class DQN_params(nn.Module):
             for param_name, values in param_dict.items():
                 self.fc_param_by_opt[opt_name][param_name] = DuelingHead(hidden_dim, len(values))
 
-    def forward(self, x, optim_name_ar):
-        if x.dim() < 3:
+    def forward(self, h, optim_name_ar):
+        if h.dim() != 2 or h.shape[-1] != self.hidden_dim:
             raise ValueError(
-                "DQN_params expects raw state tensors so its own encoder is "
-                f"trained; got shape {tuple(x.shape)}"
+                "DQN_params expects the shared hidden representation with "
+                f"shape (B, {self.hidden_dim}); got {tuple(h.shape)}"
             )
-        _, h = self.encoder(x)
+        if len(optim_name_ar) != h.shape[0]:
+            raise ValueError(
+                "optim_name_ar length must match the hidden-representation "
+                f"batch size; got {len(optim_name_ar)} and {h.shape[0]}"
+            )
 
         out = []
         for i, opt_name in enumerate(optim_name_ar):

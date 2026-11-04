@@ -67,20 +67,20 @@ def recalc_all_priorities_batched(agent, batch_size: int = 32):
         state, nstate, reward, done, a_optim, opt_names = _stack_batch(chunk)
 
         # ----- OPTIMIZER HEAD TD -----
-        _, q_opt_cur = agent.model_optim(state)                          # (b,A)
+        hidden_cur, q_opt_cur = agent.model_optim(state)                 # (b,A)
         q_sa = q_opt_cur.gather(1, a_optim.view(-1,1)).squeeze(1)        # (b,)
 
-        _, q_opt_next_on  = agent.model_optim(nstate)
+        hidden_next_on, q_opt_next_on = agent.model_optim(nstate)
         a_next = q_opt_next_on.argmax(dim=1)
-        _, q_opt_next_tg  = agent.target_model_optim(nstate)
+        hidden_next_tg, q_opt_next_tg = agent.target_model_optim(nstate)
         q_next = q_opt_next_tg.gather(1, a_next.view(-1,1)).squeeze(1)
         y_opt  = reward + (1.0 - done) * agent.gamma * q_next
         td_opt = (q_sa - y_opt).abs()                                    # (b,)
 
         # ----- PARAM HEADS TD (сумма по параметрам выбранного оптимизатора) -----
-        q_params_cur      = agent.model_params(state, opt_names)
-        q_params_next_on  = agent.model_params(nstate, opt_names)
-        q_params_next_tg  = agent.target_model_params(nstate, opt_names)
+        q_params_cur = agent.model_params(hidden_cur, opt_names)
+        q_params_next_on = agent.model_params(hidden_next_on, opt_names)
+        q_params_next_tg = agent.target_model_params(hidden_next_tg, opt_names)
 
         td_param = torch.zeros(len(chunk), dtype=torch.float, device=dev)
 
