@@ -37,7 +37,7 @@ dde.config.set_default_float("float32")
 torch.set_default_dtype(torch.float32)
 
 TARGET_PROJECT_NAME = "rlpinn_wave2d_heterogeneous_rebuild_buffer_1_dim"
-DEFAULT_SOURCE_PROJECT_NAME = "rlpinn-wave2d-heterogeneous-tolerance"
+DEFAULT_SOURCE_PROJECT_NAME = "rlpinn-wave2d-heterogeneous-loss-chain-tolerance"
 LOCAL_OUTPUT_DIR = os.path.join("transitions_rebuilt", "wave2d_heterogeneous_1_dim")
 
 

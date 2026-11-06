@@ -33,7 +33,7 @@ from src.utils.args import parse_hidden_layers
 
 
 WORKSPACE = "saitama32"
-DEFAULT_SOURCE_PROJECT_NAME = "rlpinn-wave2d-heterogeneous-tolerance"
+DEFAULT_SOURCE_PROJECT_NAME = "rlpinn-wave2d-heterogeneous-loss-chain-toleranceы"
 TARGET_PROJECT_NAME = "rlpinn_wave2d_heterogeneous_rebuild_buffer_raw_loss_no_log"
 LOCAL_OUTPUT_DIR = os.path.join("transitions_rebuilt", "wave2d_heterogeneous_raw_loss")
 LOSS_KEYS = ("loss_total", "loss_oper", "loss_bnd")
