@@ -4,12 +4,12 @@
 SCRIPT="experiments/Wave/n_dim_states/wave2d_heterogeneous_chain_1d_state.py"
 SOURCE_EXPERIMENT_KEYS_GPU0="$1"
 SOURCE_EXPERIMENT_KEYS_GPU1="$2"
-SOURCE_PROJECT_NAME="${3:-rlpinn-wave2d-heterogeneous-tolerance}"
-TARGET_PROJECT_NAME="${4:-rlpinn_wave2d_heterogeneous_rebuild_buffer_1_dim}"
-NUM_WORKERS="${5:-5}"
+SOURCE_PROJECT_NAME="$3"
+TARGET_PROJECT_NAME="$4"
+NUM_WORKERS="$5"
 
-if [ -z "$SOURCE_EXPERIMENT_KEYS_GPU0" ] || [ -z "$SOURCE_EXPERIMENT_KEYS_GPU1" ]; then
-    echo "Usage: $0 <comma_separated_source_experiment_keys_gpu0> <comma_separated_source_experiment_keys_gpu1>"
+if [ -z "$SOURCE_EXPERIMENT_KEYS_GPU0" ] || [ -z "$SOURCE_EXPERIMENT_KEYS_GPU1" ] || [ -z "$SOURCE_PROJECT_NAME" ] || [ -z "$TARGET_PROJECT_NAME" ] || [ -z "$NUM_WORKERS" ]; then
+    echo "Usage: $0 <gpu0_keys_csv> <gpu1_keys_csv> <source_project_name> <target_project_name> <num_workers>"
     exit 1
 fi
 
