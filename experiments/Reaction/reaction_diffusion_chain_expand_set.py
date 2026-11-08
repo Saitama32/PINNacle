@@ -198,7 +198,7 @@ def main():
         "reward_operator_coeff": 1,
         "reward_boundary_coeff": 1,
         "agent_min_buffer": 32,
-        "agent_update_iters": 5,
+        "agent_update_iters": 1,
         "epsilon_start": 0.95,
         "epsilon_end": 0.15,
         "epsilon_decay": 5000,
