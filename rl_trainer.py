@@ -16,6 +16,7 @@ import torch
 import deepxde as dde
 from RL.rl_environment import EnvRLOptimizer
 from RL.rl_algorithms import DQNAgent
+from RL.rl_utils.hybrid_policy import HybridHeadPolicy
 from src.utils.callbacks import ModelSaverCallback  
 from deepxde.optimizers.config import set_LBFGS_options, set_MUON_options, set_PSO_options, LBFGS_options, PSO_options
 from RL.rl_utils.load_buffer.load_model_from_comet import load_rl_agent_from_comet
@@ -53,6 +54,23 @@ def set_global_seed(seed: Optional[int]) -> None:
         torch.cuda.manual_seed(seed)
         torch.cuda.manual_seed_all(seed)
     dde.config.set_random_seed(seed)
+
+
+def _capture_rng_state():
+    return {
+        "python": random.getstate(),
+        "numpy": np.random.get_state(),
+        "torch": torch.get_rng_state(),
+        "cuda": torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None,
+    }
+
+
+def _restore_rng_state(state) -> None:
+    random.setstate(state["python"])
+    np.random.set_state(state["numpy"])
+    torch.set_rng_state(state["torch"])
+    if state["cuda"] is not None and torch.cuda.is_available():
+        torch.cuda.set_rng_state_all(state["cuda"])
 
 def get_state_shape(loss_surface_params):
     if loss_surface_params.get("state_type") == "raw_loss":
@@ -198,8 +216,14 @@ def run_deepxde_rl_training(
     n_observation = env.observation_space
     # state_dim = np.prod(env.observation_space.shape)
     n_action = env.action_space
+    comparison_rng_state = (
+        _capture_rng_state() if comparison_params is not None else None
+    )
 
     checkpoint_states = None
+    parameter_checkpoint = None
+    optimizer_source_key = None
+    parameter_source_key = None
     parameter_representation = rl_agent_params.get(
         "parameter_representation", "legacy_flat"
     )
@@ -208,9 +232,25 @@ def run_deepxde_rl_training(
     )
     group_norm_groups = rl_agent_params.get("group_norm_groups", 8)
     if comparison_params is not None:
-        model_step = comparison_params.get("agent_model_step")
+        optimizer_source_key = (
+            comparison_params.get("optimizer_experiment_key")
+            or comparison_params.get("experiment_key")
+        )
+        if not optimizer_source_key:
+            raise ValueError(
+                "comparison_params requires experiment_key or "
+                "optimizer_experiment_key"
+            )
+        parameter_source_key = (
+            comparison_params.get("parameter_experiment_key")
+            or optimizer_source_key
+        )
+        model_step = comparison_params.get(
+            "optimizer_model_step",
+            comparison_params.get("agent_model_step"),
+        )
         optim_state, params_state, checkpoint_spec = load_rl_agent_from_comet(
-            comparison_params["experiment_key"],
+            optimizer_source_key,
             step=model_step,
             map_location=device,
             parameter_representation=comparison_params.get(
@@ -227,6 +267,41 @@ def run_deepxde_rl_training(
         network_normalization = checkpoint_spec.network_normalization
         group_norm_groups = checkpoint_spec.group_norm_groups
 
+        parameter_model_step = comparison_params.get(
+            "parameter_model_step",
+            comparison_params.get("agent_model_step"),
+        )
+        if (
+            parameter_source_key == optimizer_source_key
+            and parameter_model_step == model_step
+        ):
+            parameter_checkpoint = (checkpoint_states, checkpoint_spec)
+        else:
+            p_optim_state, p_params_state, parameter_spec = (
+                load_rl_agent_from_comet(
+                    parameter_source_key,
+                    step=parameter_model_step,
+                    map_location=device,
+                    parameter_representation=comparison_params.get(
+                        "parameter_agent_architecture",
+                        comparison_params.get("agent_architecture", "auto"),
+                    ),
+                    network_normalization=comparison_params.get(
+                        "parameter_network_normalization",
+                        comparison_params.get("network_normalization", "auto"),
+                    ),
+                    group_norm_groups=comparison_params.get(
+                        "parameter_group_norm_groups",
+                        comparison_params.get("group_norm_groups"),
+                    ),
+                    return_spec=True,
+                )
+            )
+            parameter_checkpoint = (
+                (p_optim_state, p_params_state),
+                parameter_spec,
+            )
+
     rl_agent = DQNAgent(n_observation,
                         n_action,
                         optimizer_dict=optimizers_dict,
@@ -241,6 +316,9 @@ def run_deepxde_rl_training(
                         group_norm_groups=group_norm_groups,
                         exp = rl_agent_params["exp"])
 
+    parameter_agent = rl_agent
+    hybrid_policy = None
+
     # init state (как у тебя в model.py: нулевые карты)
     state_shape = get_state_shape(loss_surface_params)
     def zero_state():
@@ -251,17 +329,62 @@ def run_deepxde_rl_training(
     comparison_mode = bool(comparison_params)
     final_eval_mode = comparison_mode
     comparison_total_epochs = None
+    comparison_epsilon = 0.05
     if final_eval_mode and tester_callback is not None and hasattr(tester_callback, "reset_on_train_end"):
         tester_callback.reset_on_train_end = False
     if comparison_params is not None:
         if comparison_params.get("total_epochs") is not None:
             comparison_total_epochs = int(comparison_params["total_epochs"])
+        comparison_epsilon = float(
+            comparison_params.get("evaluation_epsilon", 0.05)
+        )
         optim_state, params_state = checkpoint_states
         rl_agent.model_optim.load_state_dict(optim_state)
         rl_agent.model_params.load_state_dict(params_state)
         rl_agent.model_optim.eval()
         rl_agent.model_params.eval()
         rl_agent.reinit_target()
+
+        (parameter_states, parameter_spec) = parameter_checkpoint
+        if parameter_source_key != optimizer_source_key or parameter_states is not checkpoint_states:
+            parameter_agent = DQNAgent(
+                n_observation,
+                n_action,
+                optimizer_dict=optimizers_dict,
+                memory_size=rl_agent_params["rl_buffer_size"],
+                gamma=rl_agent_params["gamma"],
+                lr=rl_agent_params["lr"],
+                device=device,
+                batch_size=rl_agent_params["rl_batch_size"],
+                n_transitions_reinit=rl_agent_params["n_transitions_reinit"],
+                parameter_representation=(
+                    parameter_spec.parameter_representation
+                ),
+                network_normalization=parameter_spec.network_normalization,
+                group_norm_groups=parameter_spec.group_norm_groups,
+                exp=None,
+            )
+            p_optim_state, p_params_state = parameter_states
+            parameter_agent.model_optim.load_state_dict(p_optim_state)
+            parameter_agent.model_params.load_state_dict(p_params_state)
+            parameter_agent.model_optim.eval()
+            parameter_agent.model_params.eval()
+
+        hybrid_policy = HybridHeadPolicy(
+            optimizer_agent=rl_agent,
+            parameter_agent=parameter_agent,
+            optimizer_source=optimizer_source_key,
+            parameter_source=parameter_source_key,
+        )
+        print(
+            "Hybrid head policy: "
+            f"optimizer={optimizer_source_key}, "
+            f"parameters={parameter_source_key}"
+        )
+        # Agent construction consumes RNG differently for same-source and
+        # cross-source pairs. Restore it so all four policies see identical
+        # PINN initializations and epsilon draws for every evaluation seed.
+        _restore_rng_state(comparison_rng_state)
 
     idx_traj = 0
     optimizer_epoch = 0
@@ -298,16 +421,7 @@ def run_deepxde_rl_training(
 
             # --- agent action ---
             if final_eval_mode and idx_traj == 0 and t == 0:
-                delta = state.get("delta", torch.zeros_like(state["loss_total"]))
-                state_tensor = torch.stack([
-                    state["loss_total"],
-                    state["loss_oper"],
-                    state["loss_bnd"],
-                    delta,
-                ], dim=0).unsqueeze(0).to(device)
-                with torch.no_grad():
-                    _, q_values = rl_agent.model_optim(state_tensor)
-                q_values = q_values.squeeze(0)
+                _, _, q_values = rl_agent.select_optimizer_greedy(state)
                 q_by_action = {
                     rl_agent.i2opt[i]: float(q_values[i].item())
                     for i in range(len(rl_agent.i2opt))
@@ -326,7 +440,19 @@ def run_deepxde_rl_training(
                     f"{formatted_q}; greedy_action={greedy_action}; q_gap={q_gap:.6f}"
                 )
 
-            action, action_raw, is_model = rl_agent.select_action(state, force_greedy=final_eval_mode)
+            if final_eval_mode:
+                action, action_raw, is_model, hybrid_diagnostics = (
+                    hybrid_policy.select_action(
+                        state, epsilon=comparison_epsilon
+                    )
+                )
+                print(
+                    "Hybrid decision: "
+                    f"optimizer from {hybrid_diagnostics['optimizer_source']}, "
+                    f"parameters from {hybrid_diagnostics['parameter_source']}"
+                )
+            else:
+                action, action_raw, is_model = rl_agent.select_action(state)
             action_raw[2]['epochs'] = action_raw[1]
             action_raw = (action_raw[0], action_raw[2])
 

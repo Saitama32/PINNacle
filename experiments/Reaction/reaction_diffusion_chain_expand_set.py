@@ -96,8 +96,13 @@ def main(seed_override=None):
     parser.add_argument("--state-w", type=int, default=26)
     parser.add_argument("--n-save-models", type=int, default=10)
     parser.add_argument("--log_key", type=str2bool, nargs="?", const=True, default=False)
-    parser.add_argument("--exp_key", type=str, required=True)
+    parser.add_argument("--exp_key", type=str, default=None)
+    parser.add_argument("--optimizer_exp_key", type=str, default=None)
+    parser.add_argument("--parameter_exp_key", type=str, default=None)
     parser.add_argument("--model_step", type=int, default=1000)
+    parser.add_argument("--optimizer_model_step", type=int, default=None)
+    parser.add_argument("--parameter_model_step", type=int, default=None)
+    parser.add_argument("--evaluation_epsilon", type=float, default=0.05)
     parser.add_argument(
         "--agent_architecture",
         choices=["auto", "legacy_flat", "separate", "shared_hidden"],
@@ -113,6 +118,20 @@ def main(seed_override=None):
     args = parser.parse_args()
     if seed_override is not None:
         args.seed = int(seed_override)
+    optimizer_exp_key = args.optimizer_exp_key or args.exp_key
+    if optimizer_exp_key is None:
+        parser.error("--exp_key or --optimizer_exp_key is required")
+    parameter_exp_key = args.parameter_exp_key or optimizer_exp_key
+    optimizer_model_step = (
+        args.optimizer_model_step
+        if args.optimizer_model_step is not None
+        else args.model_step
+    )
+    parameter_model_step = (
+        args.parameter_model_step
+        if args.parameter_model_step is not None
+        else args.model_step
+    )
 
     date_str = time.strftime("%m.%d-%H.%M.%S", time.localtime())
     save_path = os.path.join(
@@ -238,8 +257,18 @@ def main(seed_override=None):
     comparison_params = {
         "seed": args.seed,
         "total_epochs": 7000,
-        "experiment_key": args.exp_key,
+        # experiment_key/agent_model_step are retained for old consumers.
+        "experiment_key": optimizer_exp_key,
         "agent_model_step": args.model_step,
+        "optimizer_experiment_key": optimizer_exp_key,
+        "parameter_experiment_key": parameter_exp_key,
+        "optimizer_model_step": optimizer_model_step,
+        "parameter_model_step": parameter_model_step,
+        "evaluation_epsilon": args.evaluation_epsilon,
+        "hybrid_heads": optimizer_exp_key != parameter_exp_key,
+        "head_pair": (
+            f"optim:{optimizer_exp_key[:9]}|params:{parameter_exp_key[:9]}"
+        ),
         "agent_architecture": args.agent_architecture,
         "network_normalization": args.network_normalization,
         "group_norm_groups": args.group_norm_groups,

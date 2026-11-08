@@ -723,6 +723,75 @@ class DQNAgent:
                 param_class[key] = random.randint(0, len(optim_class_dict[key]) - 1)
 
         return optim_class, epochs_class, param_class
+
+    def _action_state_tensor(self, state):
+        delta = state.get("delta", torch.zeros_like(state["loss_total"]))
+        return torch.stack([
+            state["loss_total"],
+            state["loss_oper"],
+            state["loss_bnd"],
+            delta,
+        ], dim=0).to(self.device).unsqueeze(0)
+
+    def select_optimizer_greedy(self, state):
+        """Select only the optimizer with this checkpoint's optimizer head."""
+        state_tensor = self._action_state_tensor(state)
+        with torch.no_grad():
+            _, _, q_opt = self._optimizer_features(
+                self.model_optim, state_tensor
+            )
+        optim_class = int(torch.argmax(q_opt).item())
+        return (
+            optim_class,
+            self.i2opt[optim_class],
+            q_opt.squeeze(0).detach().clone(),
+        )
+
+    def select_parameters_greedy(self, state, optim_name):
+        """
+        Select parameters using this checkpoint's complete representation path.
+
+        In a hybrid policy the original state is encoded again here. Therefore
+        a parameter head never receives hidden features produced by the other
+        checkpoint, including in ``shared_hidden`` mode.
+        """
+        if optim_name not in self.optimizer_dict:
+            raise KeyError(f"Unknown optimizer for parameter head: {optim_name}")
+
+        state_tensor = self._action_state_tensor(state)
+        with torch.no_grad():
+            flat, hidden, _ = self._optimizer_features(
+                self.model_optim, state_tensor
+            )
+            param_dict = self._parameter_values(
+                self.model_params,
+                state_tensor,
+                flat,
+                hidden,
+                [optim_name],
+            )[0]
+
+        epochs_class = None
+        param_class = {}
+        for key, values in param_dict.items():
+            choice = int(torch.argmax(values).item())
+            if key == "epochs":
+                epochs_class = choice
+            else:
+                param_class[key] = choice
+        if epochs_class is None:
+            raise RuntimeError(
+                f"Parameter head for {optim_name} did not return epochs"
+            )
+        return epochs_class, param_class
+
+    def select_greedy_action(self, state):
+        optim_class, optim_name, _ = self.select_optimizer_greedy(state)
+        epochs_class, param_class = self.select_parameters_greedy(
+            state, optim_name
+        )
+        action_raw = (optim_class, epochs_class, param_class)
+        return self.post_proc_model(*action_raw), action_raw
     
     # Action function stub
     def select_action(self, state, force_greedy: bool = False):
