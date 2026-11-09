@@ -496,6 +496,12 @@ def run_deepxde_rl_training(
                         train_all_suffixes=rl_agent_params.get(
                             "train_all_suffixes", False
                         ),
+                        parameter_target_mode=rl_agent_params.get(
+                            "parameter_target_mode", "legacy"
+                        ),
+                        normalize_parameter_contribution=rl_agent_params.get(
+                            "normalize_parameter_contribution", False
+                        ),
                         network_normalization=rl_agent_params.get(
                             "network_normalization", "batchnorm"
                         ),

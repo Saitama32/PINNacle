@@ -79,8 +79,42 @@ def recalc_all_priorities_batched(agent, batch_size: int = 32):
 
         # ----- PARAM HEADS TD (сумма по параметрам выбранного оптимизатора) -----
         q_params_cur = agent.model_params(hidden_cur, opt_names)
-        q_params_next_on = agent.model_params(hidden_next_on, opt_names)
-        q_params_next_tg = agent.target_model_params(hidden_next_tg, opt_names)
+        q_params_next_on = None
+        q_params_next_tg = None
+        shared_parameter_targets = None
+        if agent.parameter_target_mode == "legacy":
+            q_params_next_on = agent.model_params(hidden_next_on, opt_names)
+            q_params_next_tg = agent.target_model_params(
+                hidden_next_tg, opt_names
+            )
+        elif agent.parameter_target_mode == "global_one_step":
+            shared_parameter_targets = y_opt
+        elif agent.parameter_target_mode == "joint_soft_watkins":
+            shared_parameter_targets = torch.stack([
+                agent._joint_soft_watkins_target(
+                    buf._build_sequence_from_start(index, agent.seq_len),
+                    agent.gamma,
+                )[0]
+                for index in range(start, end)
+            ])
+
+        per_parameter_targets = None
+        if agent.parameter_target_mode == "per_parameter_soft_watkins":
+            per_parameter_targets = []
+            for local_index, opt_name in enumerate(opt_names):
+                sequence = buf._build_sequence_from_start(
+                    start + local_index, agent.seq_len
+                )
+                per_parameter_targets.append({
+                    parameter_name: target
+                    for parameter_name, (target, _) in (
+                        agent._per_parameter_soft_watkins_targets(
+                            sequence,
+                            agent.gamma,
+                            agent.optimizer_dict[opt_name],
+                        ).items()
+                    )
+                })
 
         td_param = torch.zeros(len(chunk), dtype=torch.float, device=dev)
 
@@ -89,11 +123,25 @@ def recalc_all_priorities_batched(agent, batch_size: int = 32):
                 act_idx = agent._get_param_act_idx(chunk[i].action, pname)
                 q_curr  = q_params_cur[i][pname][act_idx]
 
-                q_next_on  = q_params_next_on[i][pname]          # (n_choices,)
-                a_next_p   = int(q_next_on.argmax().item())
-                q_next_tg  = q_params_next_tg[i][pname][a_next_p]
-                y_p = reward[i] + (1.0 - done[i]) * agent.gamma * q_next_tg
+                if agent.parameter_target_mode == "legacy":
+                    q_next_on = q_params_next_on[i][pname]
+                    a_next_p = int(q_next_on.argmax().item())
+                    q_next_tg = q_params_next_tg[i][pname][a_next_p]
+                    y_p = (
+                        reward[i]
+                        + (1.0 - done[i]) * agent.gamma * q_next_tg
+                    )
+                elif agent.parameter_target_mode == (
+                    "per_parameter_soft_watkins"
+                ):
+                    y_p = per_parameter_targets[i][pname]
+                else:
+                    y_p = shared_parameter_targets[i]
                 td_param[i] += (q_curr - y_p).abs()
+
+            if agent.normalize_parameter_contribution:
+                parameter_count = len(agent.optimizer_dict[opt_name])
+                td_param[i] /= max(parameter_count, 1)
 
         new_p_chunk = (td_opt + td_param + buf.eps).detach().cpu().tolist()
         new_priors.extend(new_p_chunk)

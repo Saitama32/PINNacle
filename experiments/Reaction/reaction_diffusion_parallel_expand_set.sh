@@ -14,12 +14,12 @@ fi
 
 if [ "$NUM_GPUS" -eq 1 ]; then
     echo "Starting 2 processes on GPU 0..."
-    CUDA_VISIBLE_DEVICES=0 python "$SCRIPT" &
-    CUDA_VISIBLE_DEVICES=0 python "$SCRIPT" &
+    CUDA_VISIBLE_DEVICES=0 python "$SCRIPT" "$@" &
+    CUDA_VISIBLE_DEVICES=0 python "$SCRIPT" "$@" &
 elif [ "$NUM_GPUS" -ge 2 ]; then
     echo "Starting 1 process on each of the first 2 GPUs..."
-    CUDA_VISIBLE_DEVICES=0 python "$SCRIPT" &
-    CUDA_VISIBLE_DEVICES=1 python "$SCRIPT" &
+    CUDA_VISIBLE_DEVICES=0 python "$SCRIPT" "$@" &
+    CUDA_VISIBLE_DEVICES=1 python "$SCRIPT" "$@" &
 else
     echo "Unexpected GPU count: $NUM_GPUS"
     exit 1

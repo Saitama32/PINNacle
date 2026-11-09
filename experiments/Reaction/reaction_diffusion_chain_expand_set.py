@@ -208,6 +208,16 @@ def main():
         "include_terminal_starts": True,
         "recompute_chain_rewards": True,
         "train_all_suffixes": False,
+        # Parameter-head target:
+        # "legacy" — one-step bootstrap through the same optimizer;
+        # "global_one_step" — one-step bootstrap through the greedy optimizer;
+        # "joint_soft_watkins" — one multi-step trace for the complete action;
+        # "per_parameter_soft_watkins" — a separate multi-step trace for
+        # each parameter, checking greediness of optimizer + that parameter.
+        "parameter_target_mode": "legacy",
+        # True averages parameter loss and its PER-priority contribution over
+        # the number of parameter components; False preserves their sum.
+        "normalize_parameter_contribution": False,
         "network_normalization": "groupnorm",
         "group_norm_groups": 8,
         "policy_evaluation": {

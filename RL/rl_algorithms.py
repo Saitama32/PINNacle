@@ -35,6 +35,8 @@ class DQNAgent:
                  use_soft_watkins: bool = True,
                  use_trust_region_masking: bool = True,
                  train_all_suffixes: bool = False,
+                 parameter_target_mode: str = "legacy",
+                 normalize_parameter_contribution: bool = False,
                  network_normalization: str = "batchnorm",
                  group_norm_groups: int = 8,
                  model_snapshot_dir="rl_model_snapshots"):
@@ -50,6 +52,22 @@ class DQNAgent:
         self.use_soft_watkins = use_soft_watkins
         self.use_trust_region_masking = use_trust_region_masking
         self.train_all_suffixes = bool(train_all_suffixes)
+        self.parameter_target_mode = str(parameter_target_mode).lower()
+        valid_parameter_target_modes = {
+            "legacy",
+            "global_one_step",
+            "joint_soft_watkins",
+            "per_parameter_soft_watkins",
+        }
+        if self.parameter_target_mode not in valid_parameter_target_modes:
+            raise ValueError(
+                "parameter_target_mode must be one of "
+                f"{sorted(valid_parameter_target_modes)}, got "
+                f"{parameter_target_mode!r}"
+            )
+        self.normalize_parameter_contribution = bool(
+            normalize_parameter_contribution
+        )
         self.network_normalization = str(network_normalization).lower().replace(
             "_", ""
         )
@@ -130,6 +148,10 @@ class DQNAgent:
             "use_soft_watkins": self.use_soft_watkins,
             "use_trust_region_masking": self.use_trust_region_masking,
             "train_all_suffixes": self.train_all_suffixes,
+            "parameter_target_mode": self.parameter_target_mode,
+            "normalize_parameter_contribution": (
+                self.normalize_parameter_contribution
+            ),
             "network_normalization": self.network_normalization,
             "group_norm_groups": self.group_norm_groups,
         }
@@ -476,6 +498,230 @@ class DQNAgent:
             a_star = q_all.argmax(dim=1)               # [B]
         return (a_batch == a_star)                     # [B] bool
 
+    def _joint_greedy_mask(self, seq):
+        """Return whether every component of each recorded action is greedy."""
+        states = torch.stack([self._stack_state(tr.state) for tr in seq])
+        optimizer_actions = torch.tensor(
+            [tr.action[0] for tr in seq],
+            dtype=torch.long,
+            device=self.device,
+        )
+        optimizer_names = [
+            self.i2opt[int(action.item())] for action in optimizer_actions
+        ]
+
+        with self._evaluation_mode(
+            self.model_optim, self.model_params
+        ), torch.no_grad():
+            hidden, optimizer_q = self.model_optim(states)
+            parameter_q = self.model_params(hidden, optimizer_names)
+
+        joint_greedy = optimizer_actions == optimizer_q.argmax(dim=1)
+        for index, transition in enumerate(seq):
+            if not bool(joint_greedy[index].item()):
+                continue
+            for parameter_name, values in parameter_q[index].items():
+                recorded_choice = self._get_param_act_idx(
+                    transition.action, parameter_name
+                )
+                if recorded_choice != int(values.argmax().item()):
+                    joint_greedy[index] = False
+                    break
+        return joint_greedy
+
+    def _parameter_greedy_masks(self, seq, parameter_names):
+        """Build optimizer-plus-parameter masks in one network forward."""
+        states = torch.stack([self._stack_state(tr.state) for tr in seq])
+        optimizer_actions = torch.tensor(
+            [tr.action[0] for tr in seq],
+            dtype=torch.long,
+            device=self.device,
+        )
+        optimizer_names = [
+            self.i2opt[int(action.item())] for action in optimizer_actions
+        ]
+
+        with self._evaluation_mode(
+            self.model_optim, self.model_params
+        ), torch.no_grad():
+            hidden, optimizer_q = self.model_optim(states)
+            parameter_q = self.model_params(hidden, optimizer_names)
+
+        optimizer_greedy = optimizer_actions == optimizer_q.argmax(dim=1)
+        masks = {}
+        for parameter_name in parameter_names:
+            parameter_greedy = optimizer_greedy.clone()
+            for index, transition in enumerate(seq):
+                if not bool(parameter_greedy[index].item()):
+                    continue
+                values = parameter_q[index].get(parameter_name)
+                if values is None:
+                    # The component is not part of this optimizer's action.
+                    continue
+                recorded_choice = self._get_param_act_idx(
+                    transition.action, parameter_name
+                )
+                if recorded_choice != int(values.argmax().item()):
+                    parameter_greedy[index] = False
+            masks[parameter_name] = parameter_greedy
+        return masks
+
+    def _parameter_greedy_mask(self, seq, parameter_name):
+        """Check optimizer and one named parameter against the greedy policy."""
+        return self._parameter_greedy_masks(
+            seq, [parameter_name]
+        )[parameter_name]
+
+    def _soft_watkins_target_from_mask(self, seq, gamma, greedy_mask):
+        """Build one shared-reward return using the supplied trace mask."""
+        return self._soft_watkins_targets_from_masks(
+            seq, gamma, {"target": greedy_mask}
+        )["target"]
+
+    def _soft_watkins_targets_from_masks(self, seq, gamma, greedy_masks):
+        """Reuse n-step returns while mixing several independent traces."""
+        next_states = torch.stack([
+            self._stack_state(tr.next_state) for tr in seq
+        ])
+        rewards = torch.tensor(
+            [tr.reward for tr in seq], dtype=torch.float, device=self.device
+        )
+        dones = torch.tensor(
+            [tr.done != 0 for tr in seq],
+            dtype=torch.bool,
+            device=self.device,
+        )
+
+        n_step_returns = []
+        discounted_reward = torch.zeros((), device=self.device)
+        discount = torch.tensor(1.0, device=self.device)
+        for horizon in range(len(seq)):
+            discounted_reward = (
+                discounted_reward + discount * rewards[horizon]
+            )
+            if dones[horizon]:
+                bootstrap = torch.zeros((), device=self.device)
+            else:
+                with self._evaluation_mode(
+                    self.model_optim, self.target_model_optim
+                ), torch.no_grad():
+                    _, online_q = self.model_optim(
+                        next_states[horizon:horizon + 1]
+                    )
+                    next_action = online_q.argmax(dim=1)
+                    _, target_q = self.target_model_optim(
+                        next_states[horizon:horizon + 1]
+                    )
+                    bootstrap = target_q.gather(
+                        1, next_action.view(-1, 1)
+                    ).squeeze()
+            n_step_returns.append(
+                discounted_reward + (discount * gamma) * bootstrap
+            )
+            discount = discount * gamma
+
+        targets = {}
+        for name, greedy_mask in greedy_masks.items():
+            trace_values = torch.where(
+                greedy_mask,
+                torch.ones_like(rewards),
+                torch.full_like(rewards, self.kappa),
+            )
+            mixed_return = torch.zeros((), device=self.device)
+            weight_sum = torch.zeros((), device=self.device)
+            trace_prefix = torch.tensor(1.0, device=self.device)
+            for horizon, n_step_return in enumerate(n_step_returns):
+                if horizon > 0:
+                    # The current action is evaluated rather than used to
+                    # decide whether its own target receives future credit.
+                    trace_prefix = trace_prefix * trace_values[horizon]
+                weight = (
+                    (1.0 - self.lambda_)
+                    * (self.lambda_ ** horizon)
+                    * trace_prefix
+                )
+                mixed_return = mixed_return + weight * n_step_return
+                weight_sum = weight_sum + weight
+
+            mixed_return = mixed_return / weight_sum.clamp_min(1e-3)
+            targets[name] = (
+                mixed_return.detach(),
+                weight_sum.detach(),
+            )
+        return targets
+
+    def _joint_soft_watkins_target(self, seq, gamma):
+        """Soft-Watkins return whose trace follows the complete joint policy."""
+        joint_greedy = self._joint_greedy_mask(seq)
+        return self._soft_watkins_target_from_mask(seq, gamma, joint_greedy)
+
+    def _per_parameter_soft_watkins_target(
+        self, seq, gamma, parameter_name
+    ):
+        """Soft-Watkins return for one factor of the composite action."""
+        return self._per_parameter_soft_watkins_targets(
+            seq, gamma, [parameter_name]
+        )[parameter_name]
+
+    def _per_parameter_soft_watkins_targets(
+        self, seq, gamma, parameter_names
+    ):
+        """Calculate independent parameter traces for one sampled sequence."""
+        masks = self._parameter_greedy_masks(seq, parameter_names)
+        return self._soft_watkins_targets_from_masks(seq, gamma, masks)
+
+    @staticmethod
+    def _gradient_affinity(loss_a, loss_b, parameters, eps=1e-12):
+        """Cosine and norms of two losses on the same parameter collection."""
+        parameters = tuple(
+            parameter for parameter in parameters if parameter.requires_grad
+        )
+        gradients_a = torch.autograd.grad(
+            loss_a,
+            parameters,
+            retain_graph=True,
+            allow_unused=True,
+        )
+        gradients_b = torch.autograd.grad(
+            loss_b,
+            parameters,
+            retain_graph=True,
+            allow_unused=True,
+        )
+
+        dot = torch.zeros((), device=loss_a.device)
+        norm_a_sq = torch.zeros((), device=loss_a.device)
+        norm_b_sq = torch.zeros((), device=loss_a.device)
+        for gradient_a, gradient_b in zip(gradients_a, gradients_b):
+            if gradient_a is not None:
+                norm_a_sq = norm_a_sq + gradient_a.detach().pow(2).sum()
+            if gradient_b is not None:
+                norm_b_sq = norm_b_sq + gradient_b.detach().pow(2).sum()
+            if gradient_a is not None and gradient_b is not None:
+                dot = dot + (gradient_a.detach() * gradient_b.detach()).sum()
+
+        norm_a = norm_a_sq.sqrt()
+        norm_b = norm_b_sq.sqrt()
+        denominator = norm_a * norm_b
+        if float(denominator.item()) <= eps:
+            cosine = torch.zeros((), device=loss_a.device)
+        else:
+            cosine = dot / denominator
+        return (
+            float(cosine.item()),
+            float(norm_a.item()),
+            float(norm_b.item()),
+        )
+
+    def _reduce_parameter_contributions(
+        self, loss_sum, td_sum, parameter_count
+    ):
+        """Optionally make each joint action independent of its arity."""
+        if not self.normalize_parameter_contribution:
+            return loss_sum, td_sum
+        denominator = max(int(parameter_count), 1)
+        return loss_sum / denominator, td_sum / denominator
+
     def _soft_watkins_targets(self, seq, gamma):
         states      = torch.stack([self._stack_state(tr.state)      for tr in seq])
         next_states = torch.stack([self._stack_state(tr.next_state) for tr in seq])
@@ -568,6 +814,9 @@ class DQNAgent:
         model_reward_values = []
         model_reward_weights = []
         chain_mc_metric_values = defaultdict(list)
+        encoder_grad_cosines = []
+        encoder_grad_norms_optim = []
+        encoder_grad_norms_param = []
 
         for _ in range(iters):
             if len(self.replay_buffer) < self.batch_size:
@@ -660,18 +909,54 @@ class DQNAgent:
             # --- PARAM HEADS: Double per-parameter ---
             opt_names = [self.i2opt[int(i.item())] for i in action_o]
             q_params_cur = self.model_params(hidden_cur, opt_names)
-            with self._evaluation_mode(
-                self.model_optim,
-                self.target_model_optim,
-                self.model_params,
-                self.target_model_params,
-            ), torch.no_grad():
-                hidden_next_on, _ = self.model_optim(next_state)
-                hidden_next_tg, _ = self.target_model_optim(next_state)
-                q_params_next_on = self.model_params(hidden_next_on, opt_names)
-                q_params_next_tg = self.target_model_params(
-                    hidden_next_tg, opt_names
+            q_params_next_on = None
+            q_params_next_tg = None
+            shared_parameter_targets = None
+            if self.parameter_target_mode == "legacy":
+                with self._evaluation_mode(
+                    self.model_optim,
+                    self.target_model_optim,
+                    self.model_params,
+                    self.target_model_params,
+                ), torch.no_grad():
+                    hidden_next_on, _ = self.model_optim(next_state)
+                    hidden_next_tg, _ = self.target_model_optim(next_state)
+                    q_params_next_on = self.model_params(
+                        hidden_next_on, opt_names
+                    )
+                    q_params_next_tg = self.target_model_params(
+                        hidden_next_tg, opt_names
+                    )
+            elif self.parameter_target_mode == "global_one_step":
+                shared_parameter_targets = self._one_step_optimizer_targets(
+                    next_state, reward, done
                 )
+            elif self.parameter_target_mode == "joint_soft_watkins":
+                with torch.no_grad():
+                    joint_targets = [
+                        self._joint_soft_watkins_target(seq, self.gamma)
+                        for seq in seqs
+                    ]
+                    shared_parameter_targets = torch.stack([
+                        target for target, _ in joint_targets
+                    ])
+
+            per_parameter_targets = None
+            if self.parameter_target_mode == "per_parameter_soft_watkins":
+                with torch.no_grad():
+                    per_parameter_targets = [
+                        {
+                            parameter_name: target
+                            for parameter_name, (target, _) in (
+                                self._per_parameter_soft_watkins_targets(
+                                    seq,
+                                    self.gamma,
+                                    self.optimizer_dict[opt_names[index]],
+                                ).items()
+                            )
+                        }
+                        for index, seq in enumerate(seqs)
+                    ]
 
             loss_param_items, td_param_items = [], []
             for i in range(B):
@@ -681,10 +966,20 @@ class DQNAgent:
                     act_idx = self._get_param_act_idx(action[i], pname)
                     q_curr  = q_params_cur[i][pname][act_idx]
 
-                    q_next_on  = q_params_next_on[i][pname]         # (n_choices,)
-                    a_next_p   = int(q_next_on.argmax().item())
-                    q_next_tg  = q_params_next_tg[i][pname][a_next_p]
-                    y_p = reward[i] + (1.0 - done[i]) * self.gamma * q_next_tg
+                    if self.parameter_target_mode == "legacy":
+                        q_next_on = q_params_next_on[i][pname]
+                        a_next_p = int(q_next_on.argmax().item())
+                        q_next_tg = q_params_next_tg[i][pname][a_next_p]
+                        y_p = (
+                            reward[i]
+                            + (1.0 - done[i]) * self.gamma * q_next_tg
+                        )
+                    elif self.parameter_target_mode == (
+                        "per_parameter_soft_watkins"
+                    ):
+                        y_p = per_parameter_targets[i][pname]
+                    else:
+                        y_p = shared_parameter_targets[i]
                     delta_p_raw = (y_p - q_curr).detach()  
 
                     sigma_batch_p = float(delta_p_raw.abs().clamp_min(self.param_td_eps).item())
@@ -698,6 +993,11 @@ class DQNAgent:
                     lp = self.huberloss(input=delta_p_norm, target=torch.zeros_like(delta_p_norm)) * is_w[i]
                     lp_sum = lp_sum + (lp * tr_keep[i])
                     td_sum += float((q_curr - y_p).abs().item() / sigma_p)
+                lp_sum, td_sum = self._reduce_parameter_contributions(
+                    lp_sum,
+                    td_sum,
+                    len(self.optimizer_dict[opt_names[i]]),
+                )
                 loss_param_items.append(lp_sum)
                 td_param_items.append(td_sum)
 
@@ -708,6 +1008,18 @@ class DQNAgent:
             # --- шаг оптимизации ---
             self.optimizer_opt.zero_grad()
             self.optimizer_params.zero_grad()
+            (
+                encoder_grad_cosine,
+                encoder_grad_norm_optim,
+                encoder_grad_norm_param,
+            ) = self._gradient_affinity(
+                loss_opt,
+                loss_param,
+                self.model_optim.encoder.parameters(),
+            )
+            encoder_grad_cosines.append(encoder_grad_cosine)
+            encoder_grad_norms_optim.append(encoder_grad_norm_optim)
+            encoder_grad_norms_param.append(encoder_grad_norm_param)
             (loss_opt + loss_param).backward()
             torch.nn.utils.clip_grad_norm_(self.model_optim.parameters(), 10.0)
             torch.nn.utils.clip_grad_norm_(self.model_params.parameters(), 10.0)
@@ -886,6 +1198,16 @@ class DQNAgent:
             "lambda_weight_mean": lambda_weight_mean,
             "lambda_weight_min": lambda_weight_min,
             "lambda_weight_max": lambda_weight_max,
+            "encoder_grad_cosine": statistics.mean(encoder_grad_cosines),
+            "encoder_grad_norm_optim": statistics.mean(
+                encoder_grad_norms_optim
+            ),
+            "encoder_grad_norm_param": statistics.mean(
+                encoder_grad_norms_param
+            ),
+            "encoder_grad_conflict_fraction": statistics.mean([
+                float(value < 0.0) for value in encoder_grad_cosines
+            ]),
         }
         if prio_p95 is not None:
             metrics_to_log["prio_p95"] = prio_p95
