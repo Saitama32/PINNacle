@@ -214,7 +214,7 @@ def main():
         # "joint_soft_watkins" — one multi-step trace for the complete action;
         # "per_parameter_soft_watkins" — a separate multi-step trace for
         # each parameter, checking greediness of optimizer + that parameter.
-        "parameter_target_mode": "legacy",
+        "parameter_target_mode": "global_one_step",
         # True averages parameter loss and its PER-priority contribution over
         # the number of parameter components; False preserves their sum.
         "normalize_parameter_contribution": True,
