@@ -31,7 +31,7 @@ experiment.log_parameters(
     {
         "param": "v_1",
         "reward_function": "v_2",
-        "description": "farm_transitions_reaction_diffusion_nu0_01_rho20_basic_RL_optimizer",
+        "description": "with soap optimizer"
     }
 )
 
