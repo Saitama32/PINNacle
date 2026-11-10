@@ -2,7 +2,6 @@
 
 import torch
 import torch.nn as nn
-import torch.optim as optim
 import random
 from collections import deque, namedtuple
 import math
@@ -19,6 +18,7 @@ from RL.rl_utils.per_buffer import PrioritizedReplayBuffer, Transition, UniformR
 from RL.rl_utils.per_offline import recalc_all_priorities_batched
 from RL.rl_utils.metrics import collect_policy_metrics_by_seq_position
 from RL.rl_utils.informativity_metrics import collect_chain_mc_metrics
+from deepxde.optimizers.pytorch.soap import SOAP
 
 
 EPS_START = 0.5
@@ -170,8 +170,8 @@ class DQNAgent:
 
         self.reinit_target()
 
-        self.optimizer_opt = optim.Adam(self.model_optim.parameters(), lr=lr)
-        self.optimizer_params = optim.Adam(self.model_params.parameters(), lr=lr)
+        self.optimizer_opt = SOAP(self.model_optim.parameters(), lr=lr)
+        self.optimizer_params = SOAP(self.model_params.parameters(), lr=lr)
 
     @staticmethod
     @contextmanager
