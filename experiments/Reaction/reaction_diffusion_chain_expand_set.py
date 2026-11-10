@@ -217,7 +217,7 @@ def main():
         "parameter_target_mode": "per_parameter_soft_watkins",
         # True averages parameter loss and its PER-priority contribution over
         # the number of parameter components; False preserves their sum.
-        "normalize_parameter_contribution": True,
+        "normalize_parameter_contribution": False,
         "network_normalization": "groupnorm",
         "group_norm_groups": 8,
         "policy_evaluation": {
