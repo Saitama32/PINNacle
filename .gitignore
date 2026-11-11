@@ -169,3 +169,5 @@ cython_debug/
 .vscode/
 .idea/
 runs_*/
+experiments/agent_ablation/heads_ablation/reaction/cache/
+experiments/agent_ablation/heads_ablation/reaction/outputs/
