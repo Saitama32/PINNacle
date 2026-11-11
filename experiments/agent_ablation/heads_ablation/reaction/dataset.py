@@ -23,6 +23,9 @@ class DiagnosticRecord:
     reward: float
     done: int
     mc_return: float = 0.0
+    asset_step: int | None = None
+    asset_file: str | None = None
+    local_index: int | None = None
 
 
 def scalar(value, default=0.0) -> float:
@@ -67,6 +70,7 @@ def build_records(
         current = []
         for entry in entries:
             done = int(scalar(entry.get("done", 0)))
+            source = entry.get("_source", {})
             record = DiagnosticRecord(
                 record_id=record_id,
                 source_kind=source_kind,
@@ -77,6 +81,9 @@ def build_records(
                 action=transition_action(entry),
                 reward=transition_reward(entry),
                 done=done,
+                asset_step=source.get("asset_step"),
+                asset_file=source.get("asset_file"),
+                local_index=source.get("local_index"),
             )
             records.append(record)
             current.append(record)

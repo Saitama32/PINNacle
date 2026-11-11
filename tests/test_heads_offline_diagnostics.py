@@ -26,6 +26,14 @@ from experiments.agent_ablation.heads_ablation.reaction.run_offline_analysis imp
 from experiments.agent_ablation.heads_ablation.reaction.hybrid_comparison import (
     compare_hybrid_policies,
 )
+from experiments.agent_ablation.heads_ablation.reaction.counterfactual_sweep import (
+    select_stratified_records,
+    summarize_groups,
+    summarize_outcomes,
+)
+from experiments.agent_ablation.heads_ablation.reaction.run_counterfactual_sweep import (
+    SweepProgress,
+)
 
 
 OPTIMIZERS = OrderedDict(
@@ -185,3 +193,92 @@ def test_chronological_records_cut_future_rewards_before_mc_return():
     assert len(records) == 2
     assert records[0].mc_return == 2.0
     assert records[1].mc_return == 2.0
+
+
+def test_counterfactual_selection_uses_previous_transition_and_summary_ranks():
+    entries = []
+    for step in range(4):
+        entries.append(
+            {
+                "state": _state(4 - step),
+                "action": (0, 0, {"lr": 0}),
+                "reward_model": float(step),
+                "done": int(step == 3),
+                "_source": {
+                    "asset_step": step + 10,
+                    "asset_file": f"entry_step_{step + 10}.pt",
+                    "local_index": 0,
+                },
+            }
+        )
+    records = build_records([("farm", "farm-key", entries)], gamma=0.9)
+    selected = select_stratified_records(
+        records, per_source_phase=1, suffix_horizon=1
+    )
+    assert selected
+    for _, current, previous, suffix in selected:
+        assert current.chain_step == previous.chain_step + 1
+        assert current.asset_step == previous.asset_step + 1
+        assert len(suffix) == 1
+        assert suffix[0].chain_step == current.chain_step + 1
+
+    rows = []
+    for epochs_index in range(3):
+        for lr_index in range(3):
+            horizon_loss = float(1 + epochs_index * 3 + lr_index)
+            immediate_loss = 10.0 - horizon_loss
+            rows.append(
+                {
+                    "selection_id": 0,
+                    "repeat": 0,
+                    "source_key": "farm-key",
+                    "phase": "middle",
+                    "optimizer": "Adam",
+                    "g_epochs_index": 0,
+                    "g_lr_index": 0,
+                    "b_epochs_index": 1,
+                    "b_lr_index": 1,
+                    "epochs_index": epochs_index,
+                    "lr_index": lr_index,
+                    "final_loss": immediate_loss,
+                    "objective_loss": horizon_loss,
+                    "score": -immediate_loss,
+                    "immediate_score": -immediate_loss,
+                    "horizon_score": -horizon_loss,
+                }
+            )
+    summaries, aggregate = summarize_outcomes(rows)
+    assert summaries[0]["g_exact_oracle"] == 1
+    assert summaries[0]["g_rank"] == 1
+    assert summaries[0]["b_rank"] == 5
+    assert summaries[0]["g_good_action"] == 1
+    assert summaries[0]["b_good_action"] == 0
+    assert abs(summaries[0]["immediate_horizon_correlation"] + 1.0) < 1e-12
+    assert aggregate["g_oracle_accuracy"] == 1.0
+    grouped = summarize_groups(summaries)
+    overall = next(
+        row for row in grouped if row["optimizer"] == "all" and row["phase"] == "all"
+    )
+    assert overall["states"] == 1
+    assert overall["g_mean_rank"] == 1.0
+    assert overall["b_mean_rank"] == 5.0
+
+    partial_summaries, partial_aggregate = summarize_outcomes(rows[:2])
+    assert partial_summaries == []
+    assert partial_aggregate == {"evaluated_states": 0, "incomplete_states": 1}
+
+
+def test_counterfactual_progress_writes_scale_and_eta(tmp_path):
+    progress = SweepProgress(tmp_path, 9, 0, [], "Adam")
+    progress.advance(
+        10.0,
+        {"selection_id": 3, "g_optimizer": "Adam"},
+        {"epochs_index": 0, "lr_index": 1},
+    )
+    import json
+
+    snapshot = json.loads((tmp_path / "progress.json").read_text(encoding="utf-8"))
+    assert snapshot["completed_actions"] == 1
+    assert snapshot["total_actions"] == 9
+    assert abs(snapshot["percent"] - 100.0 / 9.0) < 1e-12
+    assert snapshot["eta_seconds"] == 80.0

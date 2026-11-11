@@ -92,3 +92,65 @@ History files contain two complementary `evaluation_scope` values:
 The factual calibration files do not identify the best unobserved action. That
 requires sufficient overlap between similar logged states or a separate
 counterfactual PINN action sweep from saved solver models.
+
+## 4. Counterfactual parameter sweep
+
+The sweep restores the PINN weights immediately before a selected action and
+evaluates all nine `(epochs, lr)` choices for the optimizer routed by the final
+G optimizer head. By default every counterfactual checkpoint is then continued
+with the next three recorded actions from the same physical chain. All nine
+branches receive the same controlled historical suffix. Selection is
+stratified by source experiment and by early/middle/late chain position, and
+only states with a complete requested suffix are eligible:
+
+```powershell
+python -u -m experiments.agent_ablation.heads_ablation.reaction.run_counterfactual_sweep select --device cuda --suffix-horizon 3
+python -u -m experiments.agent_ablation.heads_ablation.reaction.run_counterfactual_sweep sweep --device cuda --optimizer Adam --suffix-horizon 3
+python -u -m experiments.agent_ablation.heads_ablation.reaction.run_counterfactual_sweep sweep --device cuda --optimizer LBFGS --suffix-horizon 3
+python -u -m experiments.agent_ablation.heads_ablation.reaction.run_counterfactual_sweep summarize --suffix-horizon 3
+```
+
+Use repeated `--selection-id ID` arguments for a small targeted run. Results
+are appended after every reached epoch threshold, so an interrupted run resumes
+without discarding completed actions. `--repeats N` reconstructs the training
+points with additional deterministic seeds.
+
+The controlled objective is the best weighted loss reached by the first action
+or any suffix action, including the starting checkpoint as step zero. Reports
+contain both the immediate score and the horizon score, their correlation,
+best-step position, final-vs-best stability gap, G/B horizon regret, and the
+fraction of choices within log-regret `0.05` of the empirical best branch.
+
+The original DeepXDE collocation points were not serialized. Therefore every
+counterfactual choice for one state uses the same deterministically
+reconstructed points, which supports fair within-state ranking but does not
+reproduce the historical scalar loss exactly. Adam and LBFGS can be scheduled
+separately because LBFGS is substantially more expensive.
+
+For a multi-GPU Linux worker, run all shards and merge them automatically:
+
+```bash
+GPU_IDS=0,1,2,3 \
+PYTHON_BIN=/path/to/venv/bin/python \
+bash experiments/agent_ablation/heads_ablation/reaction/run_counterfactual_multi_gpu.sh
+```
+
+Each GPU has an independent cache, result CSV, and `Adam.log`/`LBFGS.log`.
+Rerunning the command resumes completed grid points. To launch the two phases
+manually, pass the same `--num-shards N` and a different `--shard-index` from
+`0` through `N-1` to each process, then run `merge`.
+
+Every completed counterfactual branch updates a 30-character progress bar and
+an ETA estimated from the latest 30 branch durations. Each shard writes a
+`progress.json`; the multi-GPU launcher prints their combined progress every
+30 seconds. It can also be queried manually with:
+
+```bash
+python -u -m experiments.agent_ablation.heads_ablation.reaction.run_counterfactual_sweep status --suffix-horizon 3
+```
+
+Set `OPTIMIZERS=Adam` or `OPTIMIZERS=LBFGS` to run only one phase. This is
+useful when the cluster has a wall-time limit because LBFGS is much slower.
+The merged `state_summary.csv` contains per-state oracle ranks/regrets;
+`group_summary.csv` aggregates them overall and by optimizer/trajectory phase,
+including G-vs-B win fractions and the epochs-by-lr interaction magnitude.
