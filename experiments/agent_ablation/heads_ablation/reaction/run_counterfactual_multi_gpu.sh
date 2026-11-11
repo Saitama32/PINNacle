@@ -2,22 +2,30 @@
 set -euo pipefail
 
 # Usage:
-#   GPU_IDS=0,1,2,3 bash run_counterfactual_multi_gpu.sh
-# Optional environment variables:
+#   bash run_counterfactual_multi_gpu.sh 0,1,2,3 3 Adam,LBFGS 1 python
+# Environment variables remain supported as fallbacks:
 #   PYTHON_BIN=python REPEATS=1 OPTIMIZERS=Adam,LBFGS
 #   OUTPUT_DIR=/path/to/output CACHE_DIR=/path/to/cache
 
-PYTHON_BIN="${PYTHON_BIN:-python}"
-REPEATS="${REPEATS:-1}"
-SUFFIX_HORIZON="${SUFFIX_HORIZON:-3}"
-OUTPUT_DIR="${OUTPUT_DIR:-experiments/agent_ablation/heads_ablation/reaction/outputs/counterfactual}"
-CACHE_DIR="${CACHE_DIR:-experiments/agent_ablation/heads_ablation/reaction/cache}"
-GPU_IDS="${GPU_IDS:-0}"
-OPTIMIZERS="${OPTIMIZERS:-Adam,LBFGS}"
+GPU_IDS="${1:-${GPU_IDS:-0}}"
+SUFFIX_HORIZON="${2:-${SUFFIX_HORIZON:-3}}"
+OPTIMIZERS="${3:-${OPTIMIZERS:-Adam,LBFGS}}"
+REPEATS="${4:-${REPEATS:-1}}"
+PYTHON_BIN="${5:-${PYTHON_BIN:-python}}"
+OUTPUT_DIR="${6:-${OUTPUT_DIR:-experiments/agent_ablation/heads_ablation/reaction/outputs/counterfactual}}"
+CACHE_DIR="${7:-${CACHE_DIR:-experiments/agent_ablation/heads_ablation/reaction/cache}}"
 MODULE="experiments.agent_ablation.heads_ablation.reaction.run_counterfactual_sweep"
 
 IFS=',' read -r -a GPUS <<< "${GPU_IDS}"
 NUM_SHARDS="${#GPUS[@]}"
+
+echo "Effective counterfactual configuration:"
+echo "  GPU_IDS=${GPU_IDS} (num_shards=${NUM_SHARDS})"
+echo "  SUFFIX_HORIZON=${SUFFIX_HORIZON}"
+echo "  OPTIMIZERS=${OPTIMIZERS}"
+echo "  REPEATS=${REPEATS}"
+echo "  PYTHON_BIN=${PYTHON_BIN}"
+echo "  OUTPUT_DIR=${OUTPUT_DIR}"
 
 "${PYTHON_BIN}" -u -m "${MODULE}" select \
   --suffix-horizon "${SUFFIX_HORIZON}" \
