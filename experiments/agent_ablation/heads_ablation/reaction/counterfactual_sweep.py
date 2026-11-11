@@ -320,6 +320,8 @@ def _historical_suffix_rollout(
             hidden_layers=hidden_layers, nu=nu, rho=rho
         )
         model.net.load_state_dict(copy.deepcopy(state_dict), strict=True)
+        # Initialize DeepXDE loss functions before evaluating the checkpoint.
+        model.compile("adam", lr=1e-3, loss_weights=loss_weights)
         loss_evaluator = PINNLossData(model, cache_points=True, use_train=True)
         reconstructed_immediate_loss = _evaluate_loss(loss_evaluator)
         losses[0] = reconstructed_immediate_loss
