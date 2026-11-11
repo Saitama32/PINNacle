@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 import math
+import re
 
 import numpy as np
 import torch
@@ -13,6 +14,14 @@ from .diagnostics import _correlation
 
 
 RETURN_TARGETS = ("one_step", "mc", "best_future")
+TRANSFER_METRICS = (
+    "pearson_q_target",
+    "spearman_q_target",
+    "top_q_quartile_standardized_lift",
+    "observed_argmax_fraction",
+    "mean_observed_rank",
+    "mean_max_gap",
+)
 
 
 def return_target(record: DiagnosticRecord, name: str) -> float:
@@ -251,4 +260,152 @@ def transfer_gap_rows(rows: list[dict]) -> list[dict]:
                         ),
                     }
                 )
+    return output
+
+
+def experiment_family(label: str) -> str:
+    """Collapse replicated labels while keeping G and B as anchor families."""
+    if label in {"G", "B", "FARM", "UNKNOWN"}:
+        return label
+    return re.sub(r"_\d+$", "", label)
+
+
+def _finite_float(value) -> float:
+    try:
+        result = float(value)
+    except (TypeError, ValueError):
+        return float("nan")
+    return result if math.isfinite(result) else float("nan")
+
+
+def _weighted_metric(rows: list[dict], metric: str) -> float:
+    values = []
+    weights = []
+    for row in rows:
+        value = _finite_float(row.get(metric))
+        weight = _finite_float(row.get("count"))
+        if math.isfinite(value) and math.isfinite(weight) and weight > 0:
+            values.append(value)
+            weights.append(weight)
+    if not values:
+        return float("nan")
+    return float(np.average(values, weights=weights))
+
+
+def family_transfer_pair_rows(
+    rows: list[dict], experiment_labels_by_key: dict[str, str]
+) -> list[dict]:
+    """Aggregate parameter cells into checkpoint/source-experiment pairs.
+
+    This intentionally preserves every source experiment.  Consequently a
+    later family summary can distinguish an exact own archive from another
+    seed trained with the same configuration.
+    """
+    experiment_rows = [
+        row for row in rows if row.get("source_scope") == "experiment"
+    ]
+    steps_by_label = defaultdict(set)
+    for row in experiment_rows:
+        steps_by_label[row["checkpoint_label"]].add(int(row["checkpoint_step"]))
+    order_by_label = {
+        label: {step: index + 1 for index, step in enumerate(sorted(steps))}
+        for label, steps in steps_by_label.items()
+    }
+
+    identity_fields = (
+        "checkpoint_label",
+        "checkpoint_key",
+        "checkpoint_step",
+        "head",
+        "return_target",
+        "source_group",
+        "source_relation",
+    )
+    grouped = defaultdict(list)
+    for row in experiment_rows:
+        grouped[tuple(row[field] for field in identity_fields)].append(row)
+
+    output = []
+    for identity, group in sorted(grouped.items()):
+        base = dict(zip(identity_fields, identity))
+        checkpoint_label = base["checkpoint_label"]
+        checkpoint_key = base["checkpoint_key"]
+        source_key = base.pop("source_group")
+        source_relation_name = base.pop("source_relation")
+        checkpoint_family = experiment_family(checkpoint_label)
+        if source_relation_name == "farm":
+            source_label = "FARM"
+        else:
+            source_label = experiment_labels_by_key.get(source_key, "UNKNOWN")
+        source_family = experiment_family(source_label)
+        if source_relation_name == "farm":
+            transfer_scope = "farm"
+        elif source_key == checkpoint_key:
+            transfer_scope = "exact_own"
+        elif source_family == checkpoint_family:
+            transfer_scope = "same_family_other"
+        else:
+            transfer_scope = "cross_family"
+        step = int(base["checkpoint_step"])
+        result = {
+            **base,
+            "checkpoint_step": step,
+            "checkpoint_order": order_by_label[checkpoint_label][step],
+            "checkpoint_family": checkpoint_family,
+            "source_key": source_key,
+            "source_label": source_label,
+            "source_family": source_family,
+            "transfer_scope": transfer_scope,
+            "cell_count": len(group),
+            "observation_weight": sum(
+                max(0.0, _finite_float(row.get("count"))) for row in group
+            ),
+        }
+        for metric in TRANSFER_METRICS:
+            result[metric] = _weighted_metric(group, metric)
+        output.append(result)
+    return output
+
+
+def family_transfer_summary_rows(pair_rows: list[dict]) -> list[dict]:
+    """Summarize directed transfer across replicated model/source families."""
+    identity_fields = (
+        "checkpoint_family",
+        "checkpoint_order",
+        "head",
+        "return_target",
+        "source_family",
+        "transfer_scope",
+    )
+    grouped = defaultdict(list)
+    for row in pair_rows:
+        grouped[tuple(row[field] for field in identity_fields)].append(row)
+
+    output = []
+    for identity, group in sorted(grouped.items()):
+        result = {
+            **dict(zip(identity_fields, identity)),
+            "checkpoint_agents": len({row["checkpoint_label"] for row in group}),
+            "checkpoint_instances": len(
+                {(row["checkpoint_label"], row["checkpoint_step"]) for row in group}
+            ),
+            "source_experiments": len({row["source_key"] for row in group}),
+            "pair_count": len(group),
+        }
+        for metric in TRANSFER_METRICS:
+            values = np.asarray(
+                [
+                    _finite_float(row.get(metric))
+                    for row in group
+                    if math.isfinite(_finite_float(row.get(metric)))
+                ],
+                dtype=float,
+            )
+            result[f"{metric}_mean"] = (
+                float(np.mean(values)) if len(values) else float("nan")
+            )
+            result[f"{metric}_std"] = (
+                float(np.std(values, ddof=1)) if len(values) > 1 else float("nan")
+            )
+        output.append(result)
     return output

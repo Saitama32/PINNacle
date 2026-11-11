@@ -131,6 +131,20 @@ Soft-Watkins agents, and four normalized legacy agents:
 python -u -m experiments.agent_ablation.heads_ablation.reaction.run_offline_analysis return-matrix --cohort credit_specialization --device cuda --max-checkpoints 5
 ```
 
+After the matrix is complete, build the directed configuration-transfer report
+without Comet access or GPU inference:
+
+```powershell
+python -u -m experiments.agent_ablation.heads_ablation.reaction.run_offline_analysis summarize-transfer --cohort credit_specialization
+```
+
+`return_transfer_family_pairs.csv` keeps every checkpoint/source-experiment
+pair. `return_transfer_family_summary.csv` aggregates them by model family,
+source family and checkpoint order. Transfer scopes distinguish `exact_own`,
+another seed of the `same_family_other`, `cross_family`, and `farm`; this
+prevents within-configuration seed shift from being hidden inside a generic
+`other` bucket.
+
 ## 5. Counterfactual parameter sweep
 
 The sweep restores the PINN weights immediately before a selected action and

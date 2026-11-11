@@ -43,7 +43,12 @@ from .diagnostics import (
     write_csv,
 )
 from .hybrid_comparison import compare_hybrid_policies
-from .return_transfer import analyze_return_transfer, transfer_gap_rows
+from .return_transfer import (
+    analyze_return_transfer,
+    family_transfer_pair_rows,
+    family_transfer_summary_rows,
+    transfer_gap_rows,
+)
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -63,6 +68,7 @@ def parse_args():
             "compare",
             "analyze",
             "return-matrix",
+            "summarize-transfer",
         ),
     )
     parser.add_argument(
@@ -101,6 +107,25 @@ def parse_args():
         help="Recompute completed per-checkpoint return-matrix parts.",
     )
     return parser.parse_args()
+
+
+def run_transfer_summary(args, selected):
+    matrix_path = args.output_dir / "return_transfer_matrix.csv"
+    if not matrix_path.exists():
+        raise FileNotFoundError(
+            f"Return matrix not found: {matrix_path}. Run return-matrix first."
+        )
+    with matrix_path.open("r", encoding="utf-8-sig", newline="") as stream:
+        rows = list(csv.DictReader(stream))
+    labels_by_key = {config["key"]: label for label, config in selected}
+    pair_rows = family_transfer_pair_rows(rows, labels_by_key)
+    summary_rows = family_transfer_summary_rows(pair_rows)
+    write_csv(args.output_dir / "return_transfer_family_pairs.csv", pair_rows)
+    write_csv(args.output_dir / "return_transfer_family_summary.csv", summary_rows)
+    print(
+        f"Saved {len(pair_rows)} directed pairs and {len(summary_rows)} "
+        f"family summaries to {args.output_dir.resolve()}"
+    )
 
 
 def _selected_configs(labels, cohort="gb"):
@@ -653,6 +678,9 @@ def main():
     selected = _selected_configs(args.labels, cohort=args.cohort)
     if args.command == "calibrate":
         run_calibration(args)
+        return
+    if args.command == "summarize-transfer":
+        run_transfer_summary(args, selected)
         return
     api = create_api(PROJECT_ROOT)
     if args.command == "inventory":

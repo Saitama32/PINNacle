@@ -36,6 +36,9 @@ from experiments.agent_ablation.heads_ablation.reaction.run_counterfactual_sweep
 )
 from experiments.agent_ablation.heads_ablation.reaction.return_transfer import (
     analyze_return_transfer,
+    experiment_family,
+    family_transfer_pair_rows,
+    family_transfer_summary_rows,
     source_relation,
     transfer_gap_rows,
 )
@@ -382,3 +385,49 @@ def test_counterfactual_progress_writes_scale_and_eta(tmp_path):
     assert snapshot["total_actions"] == 9
     assert abs(snapshot["percent"] - 100.0 / 9.0) < 1e-12
     assert snapshot["eta_seconds"] == 80.0
+
+
+def test_family_transfer_distinguishes_own_seed_and_cross_configuration():
+    assert experiment_family("GLOBAL_1STEP_U_4") == "GLOBAL_1STEP_U"
+    assert experiment_family("G") == "G"
+    rows = []
+    for source_key, relation in (
+        ("a1", "own"),
+        ("a2", "other"),
+        ("b1", "other"),
+        ("farm1", "farm"),
+    ):
+        for parameter, count, rho in (("lr", 2, 0.2), ("epochs", 6, 0.6)):
+            rows.append(
+                {
+                    "checkpoint_label": "CFG_A_1",
+                    "checkpoint_key": "a1",
+                    "checkpoint_step": 10,
+                    "head": "parameter",
+                    "optimizer": "Adam",
+                    "parameter": parameter,
+                    "source_relation": relation,
+                    "source_scope": "experiment",
+                    "source_group": source_key,
+                    "return_target": "mc",
+                    "count": count,
+                    "pearson_q_target": rho,
+                    "spearman_q_target": rho,
+                    "top_q_quartile_standardized_lift": rho,
+                    "observed_argmax_fraction": rho,
+                    "mean_observed_rank": 2.0,
+                    "mean_max_gap": 1.0,
+                }
+            )
+    labels = {"a1": "CFG_A_1", "a2": "CFG_A_2", "b1": "CFG_B_1"}
+    pairs = family_transfer_pair_rows(rows, labels)
+    assert len(pairs) == 4
+    by_source = {row["source_key"]: row for row in pairs}
+    assert by_source["a1"]["transfer_scope"] == "exact_own"
+    assert by_source["a2"]["transfer_scope"] == "same_family_other"
+    assert by_source["b1"]["transfer_scope"] == "cross_family"
+    assert by_source["farm1"]["transfer_scope"] == "farm"
+    assert abs(by_source["a1"]["spearman_q_target"] - 0.5) < 1e-12
+    summaries = family_transfer_summary_rows(pairs)
+    assert len(summaries) == 4
+    assert all(row["checkpoint_order"] == 1 for row in summaries)
