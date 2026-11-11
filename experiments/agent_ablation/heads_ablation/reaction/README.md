@@ -93,7 +93,45 @@ The factual calibration files do not identify the best unobserved action. That
 requires sufficient overlap between similar logged states or a separate
 counterfactual PINN action sweep from saved solver models.
 
-## 4. Counterfactual parameter sweep
+## 4. Return-transfer matrix without new PINN rollouts
+
+To separate distribution specialization from temporal credit assignment, run
+every saved checkpoint on three archived domains: its own online transitions,
+the fixed farm buffer, and online transitions produced by other agents.  The
+factual Q of the recorded action is compared with one-step reward, terminal MC
+return, and the best future loss progress remaining in the physical trajectory:
+
+```powershell
+python -u -m experiments.agent_ablation.heads_ablation.reaction.run_offline_analysis return-matrix --cohort gb --device cuda
+```
+
+The larger target-mode cohort contains G/B plus four independent runs of each
+legacy, global-one-step, joint-Soft-Watkins and per-parameter-Soft-Watkins
+configuration:
+
+```powershell
+python -u -m experiments.agent_ablation.heads_ablation.reaction.run_offline_analysis return-matrix --cohort target_ablation --device cuda --checkpoint-stride 2
+```
+
+Use `--labels LABEL ...` or `--max-checkpoints N` for a smaller diagnostic
+pass. `return_transfer_matrix.csv` contains optimizer- and parameter-head
+calibration, ranking and top-Q-quartile lift for every checkpoint/source/target
+cell. `return_transfer_gaps.csv` reports `own - farm` and `own - other` gaps.
+A large own-only advantage indicates distribution specialization; a large
+change between one-step and MC/best-future targets indicates credit-assignment
+mismatch. Best-future follows the diagnostic definition
+`log((L_t + eps) / (min_{k>=t} L_k + eps))`: it measures how close the current
+transition is to the best later loss in the same saved physical chain.
+
+The focused cohort named in the original diagnostic proposal contains G/B,
+four unnormalized global-one-step agents, four unnormalized per-parameter
+Soft-Watkins agents, and four normalized legacy agents:
+
+```powershell
+python -u -m experiments.agent_ablation.heads_ablation.reaction.run_offline_analysis return-matrix --cohort credit_specialization --device cuda --max-checkpoints 5
+```
+
+## 5. Counterfactual parameter sweep
 
 The sweep restores the PINN weights immediately before a selected action and
 evaluates all nine `(epochs, lr)` choices for the optimizer routed by the final

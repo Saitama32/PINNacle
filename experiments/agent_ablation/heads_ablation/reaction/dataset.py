@@ -22,7 +22,10 @@ class DiagnosticRecord:
     action: Any
     reward: float
     done: int
+    current_loss: float = float("nan")
     mc_return: float = 0.0
+    best_future_progress: float = float("nan")
+    best_future_horizon: int = 0
     asset_step: int | None = None
     asset_file: str | None = None
     local_index: int | None = None
@@ -81,6 +84,7 @@ def build_records(
                 action=transition_action(entry),
                 reward=transition_reward(entry),
                 done=done,
+                current_loss=scalar(entry.get("current_loss"), float("nan")),
                 asset_step=source.get("asset_step"),
                 asset_file=source.get("asset_file"),
                 local_index=source.get("local_index"),
@@ -99,9 +103,27 @@ def build_records(
 
 def _assign_mc_returns(chain: list[DiagnosticRecord], gamma: float) -> None:
     value = 0.0
+    best_loss = float("inf")
+    best_horizon = 0
     for record in reversed(chain):
         value = record.reward + gamma * value
         record.mc_return = value
+        if not math.isfinite(record.current_loss) or record.current_loss < 0:
+            record.best_future_progress = float("nan")
+            record.best_future_horizon = 0
+            if math.isfinite(best_loss):
+                best_horizon += 1
+            continue
+        if record.current_loss <= best_loss:
+            best_loss = record.current_loss
+            best_horizon = 0
+        else:
+            best_horizon += 1
+        eps = 1e-12
+        record.best_future_progress = math.log(
+            (record.current_loss + eps) / (best_loss + eps)
+        )
+        record.best_future_horizon = best_horizon
 
 
 def _as_int(value) -> int:

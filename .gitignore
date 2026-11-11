@@ -171,3 +171,7 @@ cython_debug/
 runs_*/
 experiments/agent_ablation/heads_ablation/reaction/cache/
 experiments/agent_ablation/heads_ablation/reaction/outputs/
+# The global user gitignore excludes every config.py.  This diagnostic config
+# contains only public experiment identities/action spaces and is required by
+# the package on a fresh clone.
+!experiments/agent_ablation/heads_ablation/reaction/config.py

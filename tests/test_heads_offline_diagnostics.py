@@ -34,6 +34,15 @@ from experiments.agent_ablation.heads_ablation.reaction.counterfactual_sweep imp
 from experiments.agent_ablation.heads_ablation.reaction.run_counterfactual_sweep import (
     SweepProgress,
 )
+from experiments.agent_ablation.heads_ablation.reaction.return_transfer import (
+    analyze_return_transfer,
+    source_relation,
+    transfer_gap_rows,
+)
+from experiments.agent_ablation.heads_ablation.reaction.config import (
+    CREDIT_SPECIALIZATION_EXPERIMENTS,
+    UNNORMALIZED_TARGET_EXPERIMENTS,
+)
 
 
 OPTIMIZERS = OrderedDict(
@@ -42,6 +51,23 @@ OPTIMIZERS = OrderedDict(
         "LBFGS": {"lr": [1.0, 0.5], "epochs": [5, 10]},
     }
 )
+
+
+def test_credit_specialization_cohort_uses_verified_keys():
+    expected_unnormalized = {
+        "93af321143f5432dbdf953788c3e7b9a",
+        "6fe1c5ad480443098bde98e40df3bcf8",
+        "c39a13908b6244e2b8e1123be6042aca",
+        "cdae3dc015c04359a96507588895b369",
+        "c6af2a222fb24744b6103a23c6a5994b",
+        "96067f30c5054231bcc05970489bffe4",
+        "444bf8c164e14313bd3ad77b819ff273",
+        "6f5cc25711524ed5abf3acaef0bf3e37",
+    }
+    assert {
+        config["key"] for config in UNNORMALIZED_TARGET_EXPERIMENTS.values()
+    } == expected_unnormalized
+    assert len(CREDIT_SPECIALIZATION_EXPERIMENTS) == 14
 
 
 def _state(value):
@@ -101,18 +127,22 @@ def test_records_mc_returns_coverage_and_checkpoint_diagnostics():
             "state": _state(2.0),
             "action": (0, 1, {"lr": 0}),
             "reward_model": 1.0,
+            "current_loss": 4.0,
             "done": 0,
         },
         {
             "state": _state(1.0),
             "action": (1, 0, {"lr": 1}),
             "reward_model": 2.0,
+            "current_loss": 1.0,
             "done": 1,
         },
     ]
     records = build_records([("online", "key", entries)], gamma=0.5)
     assert records[0].mc_return == 2.0
     assert records[1].mc_return == 2.0
+    assert abs(records[0].best_future_progress - torch.log(torch.tensor(4.0)).item()) < 1e-6
+    assert records[0].best_future_horizon == 1
     assert decode_action(records[0].action, OPTIMIZERS)["parameter_indices"] == {
         "epochs": 1,
         "lr": 0,
@@ -158,6 +188,76 @@ def test_records_mc_returns_coverage_and_checkpoint_diagnostics():
     assert {row["hybrid"] for row in hybrid_rows} == {"GG", "GB", "BG", "BB"}
     assert all(row["agreement_fraction"] == 1.0 for row in agreement_rows)
     assert len(hybrid_summary) == 4
+
+
+def test_best_future_progress_uses_best_later_loss_not_rewards():
+    entries = [
+        {
+            "state": _state(3.0 - index),
+            "action": (0, 0, {"lr": 0}),
+            "reward_model": reward,
+            "current_loss": (10.0, 2.0, 5.0)[index],
+            "done": int(index == 2),
+        }
+        for index, reward in enumerate((1.0, 4.0, -20.0))
+    ]
+    records = build_records([("online", "agent", entries)], gamma=0.5)
+    assert records[0].mc_return == -2.0
+    assert abs(records[0].best_future_progress - torch.log(torch.tensor(5.0)).item()) < 1e-6
+    assert records[0].best_future_horizon == 1
+    assert records[1].best_future_progress == 0.0
+    assert records[1].best_future_horizon == 0
+
+
+def test_return_transfer_separates_sources_targets_and_heads():
+    entries = []
+    for index, reward in enumerate((1.0, 2.0, 3.0)):
+        entries.append(
+            {
+                "state": _state(index + 1),
+                "action": (index % 2, index % 2, {"lr": index % 2}),
+                "reward_model": reward,
+                "current_loss": 10.0 - index,
+                "done": 1,
+            }
+        )
+    blocks = [
+        ("online", "agent", entries),
+        ("online", "other-agent", entries),
+        ("farm", "farm-agent", entries),
+    ]
+    records = build_records(blocks, gamma=0.9)
+    assert source_relation(records[0], "agent") == "own"
+    assert source_relation(records[3], "agent") == "other"
+    assert source_relation(records[6], "agent") == "farm"
+
+    optim = DQN_optim(len(OPTIMIZERS), normalization="groupnorm")
+    params = DQN_params(OPTIMIZERS)
+    model = build_checkpoint_heads(
+        OPTIMIZERS,
+        optim.state_dict(),
+        params.state_dict(),
+        {"network_normalization": "groupnorm"},
+    )
+    rows = analyze_return_transfer(
+        model,
+        records,
+        OPTIMIZERS,
+        checkpoint_step=10,
+        checkpoint_label="A",
+        checkpoint_key="agent",
+        batch_size=4,
+        device=torch.device("cpu"),
+    )
+    assert {row["source_relation"] for row in rows} == {"own", "farm", "other"}
+    assert {row["return_target"] for row in rows} == {
+        "one_step",
+        "mc",
+        "best_future",
+    }
+    assert {row["head"] for row in rows} == {"optimizer", "parameter"}
+    gaps = transfer_gap_rows(rows)
+    assert {row["external_relation"] for row in gaps} == {"farm", "other"}
 
 
 def test_chronological_records_cut_future_rewards_before_mc_return():

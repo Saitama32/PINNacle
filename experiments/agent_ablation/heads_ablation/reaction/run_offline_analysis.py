@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import csv
+import hashlib
 import json
 from pathlib import Path
 
@@ -30,6 +31,7 @@ from .config import (
     DEFAULT_FARM_EXPERIMENTS,
     DEFAULT_GAMMA,
     EXPERIMENTS,
+    EXPERIMENT_COHORTS,
     FARM_PROJECT,
     WORKSPACE,
 )
@@ -41,6 +43,7 @@ from .diagnostics import (
     write_csv,
 )
 from .hybrid_comparison import compare_hybrid_policies
+from .return_transfer import analyze_return_transfer, transfer_gap_rows
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -53,9 +56,26 @@ def parse_args():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "command",
-        choices=("inventory", "coverage", "calibrate", "compare", "analyze"),
+        choices=(
+            "inventory",
+            "coverage",
+            "calibrate",
+            "compare",
+            "analyze",
+            "return-matrix",
+        ),
     )
-    parser.add_argument("--labels", nargs="+", default=list(EXPERIMENTS))
+    parser.add_argument(
+        "--cohort",
+        choices=tuple(EXPERIMENT_COHORTS),
+        default="gb",
+        help="Named reproducible set of trained agents.",
+    )
+    parser.add_argument(
+        "--labels",
+        nargs="+",
+        help="Optional subset of labels from the selected cohort.",
+    )
     parser.add_argument("--workspace", default=WORKSPACE)
     parser.add_argument("--cache-dir", type=Path, default=DEFAULT_CACHE)
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT)
@@ -75,14 +95,23 @@ def parse_args():
     parser.add_argument("--max-checkpoints", type=int)
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--refresh-transitions", action="store_true")
+    parser.add_argument(
+        "--refresh-return-matrix",
+        action="store_true",
+        help="Recompute completed per-checkpoint return-matrix parts.",
+    )
     return parser.parse_args()
 
 
-def _selected_configs(labels):
-    missing = [label for label in labels if label not in EXPERIMENTS]
+def _selected_configs(labels, cohort="gb"):
+    experiments = EXPERIMENT_COHORTS[cohort]
+    labels = labels or list(experiments)
+    missing = [label for label in labels if label not in experiments]
     if missing:
-        raise ValueError(f"Unknown experiment labels: {missing}")
-    return [(label, EXPERIMENTS[label]) for label in labels]
+        raise ValueError(
+            f"Unknown experiment labels for cohort {cohort!r}: {missing}"
+        )
+    return [(label, experiments[label]) for label in labels]
 
 
 def _inventory_models(api, args, selected):
@@ -450,11 +479,178 @@ def run_hybrid_comparison(api, args, selected):
     print(f"Saved hybrid comparison for {len(records)} states")
 
 
+def run_return_matrix(api, args, selected):
+    """Evaluate return calibration across own, farm and other-agent archives."""
+    spaces = {config["action_space"] for _, config in selected}
+    if len(spaces) != 1:
+        raise ValueError("Return matrix requires a shared action space")
+    optimizer_dict = ACTION_SPACES[spaces.pop()]
+
+    # Farm is part of the experiment definition, not an optional display
+    # source: without it own-vs-farm specialization cannot be measured.
+    args.include_farm = True
+    blocks = _load_blocks(api, args, selected)
+    records = finite_records(build_records(blocks, gamma=args.gamma))
+    relation_counts = {}
+    for label, config in selected:
+        relation_counts[label] = {
+            relation: sum(
+                1
+                for record in records
+                if (
+                    "farm"
+                    if record.source_kind == "farm"
+                    else "own"
+                    if record.source_key == config["key"]
+                    else "other"
+                )
+                == relation
+            )
+            for relation in ("own", "farm", "other")
+        }
+    print(f"Return-matrix dataset: {len(records)} transitions")
+
+    device = torch.device(args.device)
+    rows = []
+    signature_payload = {
+        "keys": [config["key"] for _, config in selected],
+        "gamma": args.gamma,
+        "farm_project": args.farm_project,
+        "farm_experiments": args.farm_experiments,
+        "farm_min_hours": args.farm_min_hours,
+    }
+    dataset_signature = hashlib.sha256(
+        json.dumps(signature_payload, sort_keys=True).encode("utf-8")
+    ).hexdigest()[:12]
+    parts_dir = args.output_dir / "return_matrix_parts" / dataset_signature
+    parts_dir.mkdir(parents=True, exist_ok=True)
+    for label, config in selected:
+        experiment = get_experiment(
+            api, args.workspace, config["project"], config["key"]
+        )
+        parameters = experiment_parameters(experiment)
+        pairs = _select_pairs(
+            experiment, args.checkpoint_stride, args.max_checkpoints
+        )
+        if not pairs:
+            raise RuntimeError(f"No paired checkpoints found for {label}")
+        pair_parts = {
+            pair.step: parts_dir / f"{label}_{pair.step:08d}.json"
+            for pair in pairs
+        }
+        pending_pairs = [
+            pair
+            for pair in pairs
+            if args.refresh_return_matrix or not pair_parts[pair.step].exists()
+        ]
+        print(
+            f"{label}: checkpoints={len(pairs)}, "
+            f"pending={len(pending_pairs)}, sources={relation_counts[label]}"
+        )
+        experiment_cache = args.cache_dir / "experiments" / config["key"]
+        if pending_pairs:
+            _prefetch_checkpoint_pairs(
+                experiment,
+                pending_pairs,
+                experiment_cache,
+                args.download_workers,
+            )
+        metadata_fields = {
+            "agent_parameter_target_mode": parameters.get(
+                "parameter_target_mode", "unknown"
+            ),
+            "agent_normalize_parameter_contribution": parameters.get(
+                "normalize_parameter_contribution", "unknown"
+            ),
+            "agent_network_normalization": parameters.get(
+                "network_normalization", "unknown"
+            ),
+            "agent_parameter_representation": parameters.get(
+                "parameter_representation", "unknown"
+            ),
+            "agent_offline_pretrain_steps": parameters.get(
+                "offline_pretrain_steps", "unknown"
+            ),
+            "agent_train_all_suffixes": parameters.get(
+                "train_all_suffixes", "unknown"
+            ),
+        }
+        for pair_index, pair in enumerate(pairs, 1):
+            part_path = pair_parts[pair.step]
+            if part_path.exists() and not args.refresh_return_matrix:
+                rows.extend(json.loads(part_path.read_text(encoding="utf-8")))
+                print(
+                    f"{label}: return matrix {pair_index}/{len(pairs)} "
+                    f"step={pair.step} [cached]"
+                )
+                continue
+            optim_state, params_state = load_checkpoint_pair(
+                experiment, pair, experiment_cache
+            )
+            model = build_checkpoint_heads(
+                optimizer_dict,
+                optim_state,
+                params_state,
+                experiment_parameters=parameters,
+                device=device,
+            )
+            checkpoint_rows = analyze_return_transfer(
+                model,
+                records,
+                optimizer_dict,
+                checkpoint_step=pair.step,
+                checkpoint_label=label,
+                checkpoint_key=config["key"],
+                batch_size=args.batch_size,
+                device=device,
+                checkpoint_metadata=metadata_fields,
+            )
+            rows.extend(checkpoint_rows)
+            temporary = part_path.with_suffix(".json.part")
+            temporary.write_text(
+                json.dumps(checkpoint_rows, ensure_ascii=False, allow_nan=True),
+                encoding="utf-8",
+            )
+            temporary.replace(part_path)
+            print(
+                f"{label}: return matrix {pair_index}/{len(pairs)} "
+                f"step={pair.step}"
+            )
+            del model, optim_state, params_state
+            if device.type == "cuda":
+                torch.cuda.empty_cache()
+
+    write_csv(args.output_dir / "return_transfer_matrix.csv", rows)
+    write_csv(
+        args.output_dir / "return_transfer_gaps.csv",
+        transfer_gap_rows(rows),
+    )
+    metadata = {
+        "gamma": args.gamma,
+        "cohort": args.cohort,
+        "labels": [label for label, _ in selected],
+        "farm_project": args.farm_project,
+        "farm_experiments": args.farm_experiments,
+        "dataset_signature": dataset_signature,
+        "dataset_signature_payload": signature_payload,
+        "evaluation_scope": "fixed_full_archives",
+        "return_targets": {
+            "one_step": "r_t",
+            "mc": "sum_{k=0}^{terminal-t} gamma^k r_{t+k}",
+            "best_future": "log((L_t + eps) / (min_{k>=t} L_k + eps))",
+        },
+    }
+    (args.output_dir / "return_transfer_metadata.json").write_text(
+        json.dumps(metadata, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
+    print(f"Saved return transfer diagnostics to {args.output_dir.resolve()}")
+
+
 def main():
     args = parse_args()
     args.cache_dir.mkdir(parents=True, exist_ok=True)
     args.output_dir.mkdir(parents=True, exist_ok=True)
-    selected = _selected_configs(args.labels)
+    selected = _selected_configs(args.labels, cohort=args.cohort)
     if args.command == "calibrate":
         run_calibration(args)
         return
@@ -465,6 +661,8 @@ def main():
         run_coverage(api, args, selected)
     elif args.command == "compare":
         run_hybrid_comparison(api, args, selected)
+    elif args.command == "return-matrix":
+        run_return_matrix(api, args, selected)
     else:
         run_analysis(api, args, selected)
 
