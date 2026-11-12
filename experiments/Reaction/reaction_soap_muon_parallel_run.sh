@@ -22,8 +22,8 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-if [[ "$OPTIMIZER" != "soap" && "$OPTIMIZER" != "muon" ]]; then
-    echo "Use --optimizer soap or --optimizer muon" >&2; exit 2
+if [[ "$OPTIMIZER" != "soap" && "$OPTIMIZER" != "muon" && "$OPTIMIZER" != "both" ]]; then
+    echo "Use --optimizer soap, --optimizer muon, or --optimizer both" >&2; exit 2
 fi
 if [[ ${#COEFFICIENTS[@]} -eq 0 ]]; then
     echo "--coefficients requires at least one rho" >&2; exit 2
@@ -32,6 +32,29 @@ fi
 mapfile -t GPUS < <(nvidia-smi --query-gpu=index --format=csv,noheader 2>/dev/null)
 if [[ ${#GPUS[@]} -eq 0 ]]; then echo "No CUDA devices found." >&2; exit 1; fi
 cd "$PROJECT_ROOT" || exit 1
+
+run_all_on_gpu() {
+    local gpu="$1"
+    local optimizer="$2"
+    local rho
+    for rho in "${COEFFICIENTS[@]}"; do
+        echo "GPU $gpu: reaction rho=$rho optimizer=$optimizer"
+        CUDA_VISIBLE_DEVICES="$gpu" python "$SCRIPT" \
+            --optimizer "$optimizer" --rho "$rho" "${PYTHON_ARGS[@]}" || return 1
+    done
+}
+
+if [[ "$OPTIMIZER" == "both" ]]; then
+    if [[ ${#GPUS[@]} -lt 2 ]]; then
+        echo "--optimizer both requires at least two CUDA devices." >&2; exit 1
+    fi
+    run_all_on_gpu "${GPUS[0]}" soap & soap_pid=$!
+    run_all_on_gpu "${GPUS[1]}" muon & muon_pid=$!
+    status=0
+    wait "$soap_pid" || status=1
+    wait "$muon_pid" || status=1
+    exit "$status"
+fi
 
 pids=(); status=0
 for index in "${!COEFFICIENTS[@]}"; do
