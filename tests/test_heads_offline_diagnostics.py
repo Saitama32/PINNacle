@@ -43,6 +43,8 @@ from experiments.agent_ablation.heads_ablation.reaction.return_transfer import (
     transfer_gap_rows,
 )
 from experiments.agent_ablation.heads_ablation.reaction.config import (
+    AGENT_SOAP_EXPERIMENTS,
+    ALL_POLICY_TRANSFER_EXPERIMENTS,
     CREDIT_SPECIALIZATION_EXPERIMENTS,
     UNNORMALIZED_TARGET_EXPERIMENTS,
 )
@@ -71,6 +73,30 @@ def test_credit_specialization_cohort_uses_verified_keys():
         config["key"] for config in UNNORMALIZED_TARGET_EXPERIMENTS.values()
     } == expected_unnormalized
     assert len(CREDIT_SPECIALIZATION_EXPERIMENTS) == 14
+
+
+def test_all_policy_transfer_includes_every_verified_agent_soap_run():
+    expected_agent_soap = {
+        "766133376b114b46ad3cd5d0168176f6",
+        "1298a4d80f7b4fa4b06b0ba7a069bf55",
+        "a940859302ee451993364556a6d0c3e0",
+        "a42715bce3c14d41970149bd46490843",
+        "df40139ee7164e0c808be909e951968d",
+        "4d432fe2e7824cec90a6cb0360ff892c",
+        "86ff8b0675c7465eab51afc9fe551a4e",
+        "4385849a327b42bc835b6ac835b19bbb",
+        "7ec5c49e0fb24792bb2dfd5915a0c8a3",
+        "606c56ee9e0549e9b49fad506a1a00bf",
+        "aed567fc4f19490299046aa118ac4611",
+        "ffe0c354e8804f75a6049bb4ae96e513",
+    }
+    assert {
+        config["key"] for config in AGENT_SOAP_EXPERIMENTS.values()
+    } == expected_agent_soap
+    assert len(ALL_POLICY_TRANSFER_EXPERIMENTS) == 38
+    assert len(
+        {config["key"] for config in ALL_POLICY_TRANSFER_EXPERIMENTS.values()}
+    ) == len(ALL_POLICY_TRANSFER_EXPERIMENTS)
 
 
 def _state(value):

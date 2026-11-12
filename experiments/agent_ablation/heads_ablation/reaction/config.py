@@ -155,6 +155,58 @@ UNNORMALIZED_TARGET_EXPERIMENTS = {
     },
 }
 
+# Three parameter-target families without parameter-contribution normalization,
+# where SOAP (not Adam) optimized the two DQN networks.  This does NOT alter
+# the agent's action space: all runs still choose among
+# Adam/LBFGS/PSO/SOAP/Muon as PDE optimizers.
+AGENT_SOAP_EXPERIMENTS = {
+    **{
+        f"GLOBAL_1STEP_U_AGENT_SOAP_{index + 1}": {
+            "key": key,
+            "project": TRAINING_PROJECT,
+            "action_space": "reaction_current_5",
+        }
+        for index, key in enumerate(
+            (
+                "766133376b114b46ad3cd5d0168176f6",
+                "1298a4d80f7b4fa4b06b0ba7a069bf55",
+                "a940859302ee451993364556a6d0c3e0",
+                "a42715bce3c14d41970149bd46490843",
+            )
+        )
+    },
+    **{
+        f"JOINT_SW_U_AGENT_SOAP_{index + 1}": {
+            "key": key,
+            "project": TRAINING_PROJECT,
+            "action_space": "reaction_current_5",
+        }
+        for index, key in enumerate(
+            (
+                "df40139ee7164e0c808be909e951968d",
+                "4d432fe2e7824cec90a6cb0360ff892c",
+                "86ff8b0675c7465eab51afc9fe551a4e",
+                "4385849a327b42bc835b6ac835b19bbb",
+            )
+        )
+    },
+    **{
+        f"PPSW_U_AGENT_SOAP_{index + 1}": {
+            "key": key,
+            "project": TRAINING_PROJECT,
+            "action_space": "reaction_current_5",
+        }
+        for index, key in enumerate(
+            (
+                "7ec5c49e0fb24792bb2dfd5915a0c8a3",
+                "606c56ee9e0549e9b49fad506a1a00bf",
+                "aed567fc4f19490299046aa118ac4611",
+                "ffe0c354e8804f75a6049bb4ae96e513",
+            )
+        )
+    },
+}
+
 CREDIT_SPECIALIZATION_EXPERIMENTS = {
     **EXPERIMENTS,
     **UNNORMALIZED_TARGET_EXPERIMENTS,
@@ -165,10 +217,20 @@ CREDIT_SPECIALIZATION_EXPERIMENTS = {
     },
 }
 
+# All parameter-target/normalization/DQN-optimizer configurations from the
+# ablations above, plus the historical G/B anchors.  This is the cohort for
+# the complete directed policy-transfer analysis.
+ALL_POLICY_TRANSFER_EXPERIMENTS = {
+    **TARGET_ABLATION_EXPERIMENTS,
+    **UNNORMALIZED_TARGET_EXPERIMENTS,
+    **AGENT_SOAP_EXPERIMENTS,
+}
+
 EXPERIMENT_COHORTS = {
     "gb": EXPERIMENTS,
     "target_ablation": TARGET_ABLATION_EXPERIMENTS,
     "credit_specialization": CREDIT_SPECIALIZATION_EXPERIMENTS,
+    "all_policy_transfer": ALL_POLICY_TRANSFER_EXPERIMENTS,
 }
 
 DEFAULT_GAMMA = 0.9

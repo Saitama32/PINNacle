@@ -145,6 +145,31 @@ another seed of the `same_family_other`, `cross_family`, and `farm`; this
 prevents within-configuration seed shift from being hidden inside a generic
 `other` bucket.
 
+To repeat the complete transfer analysis for all parameter-target and
+normalization configurations, including the twelve no-normalization runs where
+SOAP optimized the DQN itself (global one-step, joint Soft Watkins and
+per-parameter Soft Watkins), use a separate cohort/output directory:
+
+```powershell
+.\venv\Scripts\python.exe -u -m experiments.agent_ablation.heads_ablation.reaction.run_offline_analysis return-matrix `
+  --cohort all_policy_transfer `
+  --device cuda `
+  --max-checkpoints 5 `
+  --batch-size 128 `
+  --download-workers 5 `
+  --cache-dir "$env:TEMP\pinnacle_heads_return_cache" `
+  --output-dir "experiments/agent_ablation/heads_ablation/reaction/outputs/all_policy_transfer"
+```
+
+Then aggregate exact-own, same-configuration/different-seed, cross-family and
+farm transfer without another GPU pass:
+
+```powershell
+.\venv\Scripts\python.exe -u -m experiments.agent_ablation.heads_ablation.reaction.run_offline_analysis summarize-transfer `
+  --cohort all_policy_transfer `
+  --output-dir "experiments/agent_ablation/heads_ablation/reaction/outputs/all_policy_transfer"
+```
+
 ## 5. Counterfactual parameter sweep
 
 The sweep restores the PINN weights immediately before a selected action and
