@@ -11,7 +11,7 @@ from comet_config import start_comet_experiment
 nu = 0.01
 rho = 20.0
 experiment = start_comet_experiment(
-    project_name=f"rlpinn-reaction-diffusion-nu{nu}-rho{rho}-optimization-expand-set",
+    project_name=f"rlpinn-reaction-diffusion-nu{nu}-rho{rho}-optimization-expand-set-v2",
 )
 
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
