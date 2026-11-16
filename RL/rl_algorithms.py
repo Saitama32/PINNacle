@@ -92,7 +92,7 @@ class DQNAgent:
 
         # TD
         self.lambda_ = 0.95     # λ
-        self.kappa  = 0.7      # tolerance κ (0=жёсткий Watkins)
+        self.kappa  = 0.9      # tolerance κ (0=жёсткий Watkins)
         self.seq_len = 12   
 
         # --- TD-нормализация для параметров ---
@@ -138,6 +138,16 @@ class DQNAgent:
         epsilon_and_warmap_params = {
             "slot_bootstrap_steps": self.slot_bootstrap_steps,
             "slot_bootstrap_eps": self.slot_bootstrap_eps,
+            "lambda": self.lambda_,
+            "kappa": self.kappa,
+            "seq_len": self.seq_len,
+            "param_td_running_std": self.param_td_running_std,
+            "param_td_mom": self.param_td_mom,
+            "param_td_eps": self.param_td_eps,
+            "tr_alpha": self.tr_alpha,
+            "tr_eps": self.tr_eps,
+            "tr_mom": self.tr_mom,
+            "td_running_std": self.td_running_std,
             "warmup_updates": warmup_updates,
             "recalc_batch_size": recalc_batch_size,
             "EPS_START": EPS_START,
