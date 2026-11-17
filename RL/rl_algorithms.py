@@ -91,7 +91,7 @@ class DQNAgent:
         self.slot_bootstrap_eps = 0.5
 
         # TD
-        self.lambda_ = 0.95     # λ
+        self.lambda_ = 0.98     # λ
         self.kappa  = 0.9      # tolerance κ (0=жёсткий Watkins)
         self.seq_len = 12   
 
@@ -588,7 +588,30 @@ class DQNAgent:
             seq, gamma, {"target": greedy_mask}
         )["target"]
 
-    def _soft_watkins_targets_from_masks(self, seq, gamma, greedy_masks):
+    def _soft_watkins_trace_weights(self, greedy_mask):
+        """Return the unnormalized lambda/Watkins weights for one trace."""
+        trace_values = torch.where(
+            greedy_mask,
+            torch.ones_like(greedy_mask, dtype=torch.float),
+            torch.full_like(greedy_mask, self.kappa, dtype=torch.float),
+        )
+        weights = []
+        trace_prefix = torch.tensor(1.0, device=greedy_mask.device)
+        for horizon in range(len(greedy_mask)):
+            if horizon > 0:
+                # The first action is being evaluated. Only subsequent
+                # behavior determines how much distant credit reaches it.
+                trace_prefix = trace_prefix * trace_values[horizon]
+            weights.append(
+                (1.0 - self.lambda_)
+                * (self.lambda_ ** horizon)
+                * trace_prefix
+            )
+        return torch.stack(weights)
+
+    def _soft_watkins_targets_from_masks(
+        self, seq, gamma, greedy_masks, return_diagnostics=False
+    ):
         """Reuse n-step returns while mixing several independent traces."""
         next_states = torch.stack([
             self._stack_state(tr.next_state) for tr in seq
@@ -632,32 +655,31 @@ class DQNAgent:
 
         targets = {}
         for name, greedy_mask in greedy_masks.items():
-            trace_values = torch.where(
-                greedy_mask,
-                torch.ones_like(rewards),
-                torch.full_like(rewards, self.kappa),
-            )
+            weights = self._soft_watkins_trace_weights(greedy_mask)
             mixed_return = torch.zeros((), device=self.device)
             weight_sum = torch.zeros((), device=self.device)
-            trace_prefix = torch.tensor(1.0, device=self.device)
-            for horizon, n_step_return in enumerate(n_step_returns):
-                if horizon > 0:
-                    # The current action is evaluated rather than used to
-                    # decide whether its own target receives future credit.
-                    trace_prefix = trace_prefix * trace_values[horizon]
-                weight = (
-                    (1.0 - self.lambda_)
-                    * (self.lambda_ ** horizon)
-                    * trace_prefix
-                )
+            weighted_return_length = torch.zeros((), device=self.device)
+            for horizon, (weight, n_step_return) in enumerate(
+                zip(weights, n_step_returns)
+            ):
+                # Keep the target accumulation order unchanged; the new
+                # diagnostic must not alter training numerics.
                 mixed_return = mixed_return + weight * n_step_return
                 weight_sum = weight_sum + weight
-
+                weighted_return_length = (
+                    weighted_return_length + weight * (horizon + 1)
+                )
             mixed_return = mixed_return / weight_sum.clamp_min(1e-3)
-            targets[name] = (
+            result = (
                 mixed_return.detach(),
                 weight_sum.detach(),
             )
+            if return_diagnostics:
+                effective_horizon = (
+                    weighted_return_length / weight_sum.clamp_min(1e-3)
+                )
+                result = result + (effective_horizon.detach(),)
+            targets[name] = result
         return targets
 
     def _joint_soft_watkins_target(self, seq, gamma):
@@ -674,11 +696,16 @@ class DQNAgent:
         )[parameter_name]
 
     def _per_parameter_soft_watkins_targets(
-        self, seq, gamma, parameter_names
+        self, seq, gamma, parameter_names, return_diagnostics=False
     ):
         """Calculate independent parameter traces for one sampled sequence."""
         masks = self._parameter_greedy_masks(seq, parameter_names)
-        return self._soft_watkins_targets_from_masks(seq, gamma, masks)
+        return self._soft_watkins_targets_from_masks(
+            seq,
+            gamma,
+            masks,
+            return_diagnostics=return_diagnostics,
+        )
 
     @staticmethod
     def _gradient_affinity(loss_a, loss_b, parameters, eps=1e-12):
@@ -827,6 +854,7 @@ class DQNAgent:
         encoder_grad_cosines = []
         encoder_grad_norms_optim = []
         encoder_grad_norms_param = []
+        ppsw_effective_horizons = []
 
         for _ in range(iters):
             if len(self.replay_buffer) < self.batch_size:
@@ -954,19 +982,30 @@ class DQNAgent:
             per_parameter_targets = None
             if self.parameter_target_mode == "per_parameter_soft_watkins":
                 with torch.no_grad():
-                    per_parameter_targets = [
-                        {
-                            parameter_name: target
-                            for parameter_name, (target, _) in (
-                                self._per_parameter_soft_watkins_targets(
-                                    seq,
-                                    self.gamma,
-                                    self.optimizer_dict[opt_names[index]],
-                                ).items()
+                    per_parameter_targets = []
+                    sample_effective_horizons = []
+                    for index, seq in enumerate(seqs):
+                        target_results = (
+                            self._per_parameter_soft_watkins_targets(
+                                seq,
+                                self.gamma,
+                                self.optimizer_dict[opt_names[index]],
+                                return_diagnostics=True,
                             )
-                        }
-                        for index, seq in enumerate(seqs)
-                    ]
+                        )
+                        per_parameter_targets.append({
+                            parameter_name: result[0]
+                            for parameter_name, result in target_results.items()
+                        })
+                        sample_effective_horizons.append(torch.stack([
+                            result[2] for result in target_results.values()
+                        ]).mean())
+                    ppsw_effective_horizons.append(float(
+                        self._weighted_mean(
+                            torch.stack(sample_effective_horizons),
+                            multiplicity_weights,
+                        ).item()
+                    ))
 
             loss_param_items, td_param_items = [], []
             for i in range(B):
@@ -1221,6 +1260,10 @@ class DQNAgent:
         }
         if prio_p95 is not None:
             metrics_to_log["prio_p95"] = prio_p95
+        if ppsw_effective_horizons:
+            metrics_to_log["ppsw_effective_horizon_mean"] = statistics.mean(
+                ppsw_effective_horizons
+            )
 
         metrics_to_log.update({
             metric_name: statistics.mean(values) if values else 0.0

@@ -123,6 +123,36 @@ class AgentAblationTests(unittest.TestCase):
         )
         self.assertTrue(torch.allclose(target, torch.tensor([20.0, 5.0])))
 
+    def test_ppsw_effective_horizon_tracks_distant_trace_mass(self):
+        agent = self.make_agent(
+            parameter_target_mode="per_parameter_soft_watkins"
+        )
+        agent.lambda_ = 0.95
+        agent.kappa = 0.9
+
+        greedy_weights = agent._soft_watkins_trace_weights(
+            torch.ones(4, dtype=torch.bool)
+        )
+        nongreedy_weights = agent._soft_watkins_trace_weights(
+            torch.zeros(4, dtype=torch.bool)
+        )
+        return_lengths = torch.arange(1, 5, dtype=torch.float)
+        greedy_horizon = (
+            greedy_weights * return_lengths
+        ).sum() / greedy_weights.sum()
+        nongreedy_horizon = (
+            nongreedy_weights * return_lengths
+        ).sum() / nongreedy_weights.sum()
+
+        self.assertGreater(float(greedy_horizon), float(nongreedy_horizon))
+        singleton_weights = agent._soft_watkins_trace_weights(
+            torch.ones(1, dtype=torch.bool)
+        )
+        singleton_horizon = (
+            singleton_weights * torch.ones(1)
+        ).sum() / singleton_weights.sum()
+        self.assertAlmostEqual(float(singleton_horizon), 1.0)
+
     def test_disabled_trust_region_keeps_every_sample(self):
         agent = self.make_agent(use_trust_region_masking=False)
         agent.target_model_optim = FailingTarget()
