@@ -91,7 +91,7 @@ class DQNAgent:
         self.slot_bootstrap_eps = 0.5
 
         # TD
-        self.lambda_ = 0.98     # λ
+        self.lambda_ = 0.95     # λ
         self.kappa  = 0.9      # tolerance κ (0=жёсткий Watkins)
         self.seq_len = 12   
 
