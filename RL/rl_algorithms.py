@@ -759,7 +759,9 @@ class DQNAgent:
         denominator = max(int(parameter_count), 1)
         return loss_sum / denominator, td_sum / denominator
 
-    def _soft_watkins_targets(self, seq, gamma):
+    def _soft_watkins_targets(
+        self, seq, gamma, return_diagnostics=False
+    ):
         states      = torch.stack([self._stack_state(tr.state)      for tr in seq])
         next_states = torch.stack([self._stack_state(tr.next_state) for tr in seq])
         actions     = torch.tensor([tr.action[0] for tr in seq], dtype=torch.long, device=self.device)
@@ -771,6 +773,7 @@ class DQNAgent:
         ret = torch.zeros((), device=self.device)
         pow_ = torch.tensor(1.0, device=self.device)            # = γ^0 на старте
         sum_w = torch.zeros((), device=self.device)
+        weighted_return_length = torch.zeros((), device=self.device)
         for n in range(len(seq)):                               # n=0..N-1  => (n+1)-step
             ret = ret + pow_ * rewards[n]                       # += γ^n * r_{t+1+n}
             if not dones[n]:
@@ -792,14 +795,23 @@ class DQNAgent:
         g_prefix = torch.tensor(1.0, device=self.device)
         for n in range(len(seq)):  # n=0..N-1  => (n+1)-step
             if n > 0:
-                # включаем g для шага t+(n-1) — т.е. для промежуточных шагов после текущего
-                g_prefix = g_prefix * g_vals[n-1]
+                # The (n+1)-step return is gated by the later action at t+n.
+                g_prefix = g_prefix * g_vals[n]
             w_n = (1.0 - self.lambda_) * (self.lambda_ ** n) * g_prefix
             G_lambda = G_lambda + w_n * Gn[n]
             sum_w = sum_w + w_n
+            weighted_return_length = (
+                weighted_return_length + w_n * (n + 1)
+            )
 
         G_lambda = G_lambda / sum_w.clamp_min(1e-3)
-        return G_lambda.detach(), sum_w.detach()
+        result = (G_lambda.detach(), sum_w.detach())
+        if return_diagnostics:
+            effective_horizon = (
+                weighted_return_length / sum_w.clamp_min(1e-3)
+            )
+            result = result + (effective_horizon.detach(),)
+        return result
 
     def _one_step_optimizer_targets(self, next_state, reward, done):
         """Historical one-step Double-DQN target used before soft Watkins."""
@@ -854,6 +866,11 @@ class DQNAgent:
         encoder_grad_cosines = []
         encoder_grad_norms_optim = []
         encoder_grad_norms_param = []
+        param_to_optim_loss_ratios = []
+        encoder_grad_norm_ratios = []
+        priority_opt_means = []
+        priority_param_means = []
+        optimizer_effective_horizons = []
         ppsw_effective_horizons = []
 
         for _ in range(iters):
@@ -919,11 +936,24 @@ class DQNAgent:
             if self.use_soft_watkins:
                 with torch.no_grad():
                     soft_watkins_targets = [
-                        self._soft_watkins_targets(seq, self.gamma) for seq in seqs
+                        self._soft_watkins_targets(
+                            seq, self.gamma, return_diagnostics=True
+                        )
+                        for seq in seqs
                     ]
-                    y_opt_list, lambda_weight_list = zip(*soft_watkins_targets)
+                    (
+                        y_opt_list,
+                        lambda_weight_list,
+                        optimizer_horizon_list,
+                    ) = zip(*soft_watkins_targets)
                 y_opt = torch.stack(y_opt_list, dim=0)
                 lambda_weight = torch.stack(lambda_weight_list, dim=0)
+                optimizer_effective_horizons.append(float(
+                    self._weighted_mean(
+                        torch.stack(optimizer_horizon_list),
+                        multiplicity_weights,
+                    ).item()
+                ))
             else:
                 y_opt = self._one_step_optimizer_targets(next_state, reward, done)
                 lambda_weight = torch.ones(B, dtype=torch.float, device=self.device)
@@ -1069,6 +1099,14 @@ class DQNAgent:
             encoder_grad_cosines.append(encoder_grad_cosine)
             encoder_grad_norms_optim.append(encoder_grad_norm_optim)
             encoder_grad_norms_param.append(encoder_grad_norm_param)
+            param_to_optim_loss_ratios.append(
+                float(loss_param.detach().item())
+                / max(float(loss_opt.detach().item()), self.tr_eps)
+            )
+            encoder_grad_norm_ratios.append(
+                encoder_grad_norm_param
+                / max(encoder_grad_norm_optim, self.tr_eps)
+            )
             (loss_opt + loss_param).backward()
             torch.nn.utils.clip_grad_norm_(self.model_optim.parameters(), 10.0)
             torch.nn.utils.clip_grad_norm_(self.model_params.parameters(), 10.0)
@@ -1082,6 +1120,16 @@ class DQNAgent:
                         td_param_items, dtype=torch.float, device=self.device
                     )
                     td_param_abs = td_param_abs * tr_keep + self.tr_eps
+                    priority_opt_means.append(float(
+                        self._weighted_mean(
+                            td_opt_abs, multiplicity_weights
+                        ).item()
+                    ))
+                    priority_param_means.append(float(
+                        self._weighted_mean(
+                            td_param_abs, multiplicity_weights
+                        ).item()
+                    ))
                     new_priors = td_opt_abs + td_param_abs
                 if self.train_all_suffixes:
                     unique_idxs, unique_priors = self._aggregate_priorities_by_index(
@@ -1254,6 +1302,12 @@ class DQNAgent:
             "encoder_grad_norm_param": statistics.mean(
                 encoder_grad_norms_param
             ),
+            "param_to_optim_loss_ratio": statistics.mean(
+                param_to_optim_loss_ratios
+            ),
+            "encoder_grad_norm_param_to_optim_ratio": statistics.mean(
+                encoder_grad_norm_ratios
+            ),
             "encoder_grad_conflict_fraction": statistics.mean([
                 float(value < 0.0) for value in encoder_grad_cosines
             ]),
@@ -1263,6 +1317,18 @@ class DQNAgent:
         if ppsw_effective_horizons:
             metrics_to_log["ppsw_effective_horizon_mean"] = statistics.mean(
                 ppsw_effective_horizons
+            )
+        if optimizer_effective_horizons:
+            metrics_to_log[
+                "optimizer_effective_horizon_mean"
+            ] = statistics.mean(optimizer_effective_horizons)
+        if priority_opt_means:
+            metrics_to_log["priority_opt_mean"] = statistics.mean(
+                priority_opt_means
+            )
+        if priority_param_means:
+            metrics_to_log["priority_param_mean"] = statistics.mean(
+                priority_param_means
             )
 
         metrics_to_log.update({

@@ -57,6 +57,24 @@ class FailingTarget(nn.Module):
         raise AssertionError("target model must not be evaluated when masking is disabled")
 
 
+class CaptureExperiment:
+    def __init__(self):
+        self.metrics = None
+
+    def log_parameters(self, parameters):
+        del parameters
+
+    def log_metrics(self, metrics, step=None):
+        del step
+        self.metrics = dict(metrics)
+
+    def log_metric(self, name, value, step=None):
+        del step
+        if self.metrics is None:
+            self.metrics = {}
+        self.metrics[name] = value
+
+
 class AgentAblationTests(unittest.TestCase):
     def make_agent(self, **flags):
         agent_params = {
@@ -152,6 +170,74 @@ class AgentAblationTests(unittest.TestCase):
             singleton_weights * torch.ones(1)
         ).sum() / singleton_weights.sum()
         self.assertAlmostEqual(float(singleton_horizon), 1.0)
+
+    def test_optimizer_soft_watkins_gates_two_step_return_by_next_action(self):
+        agent = self.make_agent()
+        agent.lambda_ = 0.95
+        agent.kappa = 0.9
+        agent.model_optim = FixedOptimizerQ([0.0, 0.0])
+        agent.target_model_optim = FixedOptimizerQ([0.0, 0.0])
+        agent._greedy_mask = lambda states, actions: torch.tensor(
+            [False, True], dtype=torch.bool, device=agent.device
+        )
+        sequence = [
+            Transition(
+                make_state(0.0),
+                make_state(0.1),
+                (1, {"lr": 0, "epochs": 0}),
+                1.0,
+                0,
+                0.0,
+                1,
+            ),
+            Transition(
+                make_state(0.1),
+                make_state(0.2),
+                (0, {"lr": 0, "epochs": 0}),
+                2.0,
+                1,
+                0.0,
+                0,
+            ),
+        ]
+
+        target, weight_sum, effective_horizon = agent._soft_watkins_targets(
+            sequence, gamma=0.9, return_diagnostics=True
+        )
+
+        weights = torch.tensor([0.05, 0.05 * 0.95])
+        returns = torch.tensor([1.0, 1.0 + 0.9 * 2.0])
+        expected_target = (weights * returns).sum() / weights.sum()
+        expected_horizon = (
+            weights * torch.tensor([1.0, 2.0])
+        ).sum() / weights.sum()
+        self.assertTrue(torch.allclose(target, expected_target))
+        self.assertTrue(torch.allclose(weight_sum, weights.sum()))
+        self.assertTrue(torch.allclose(effective_horizon, expected_horizon))
+
+    def test_head_balance_metrics_are_logged_without_changing_update(self):
+        experiment = CaptureExperiment()
+        agent = self.make_agent(
+            exp=experiment,
+            parameter_target_mode="per_parameter_soft_watkins",
+        )
+        fill_buffer(agent)
+
+        agent.optim_(iters=1)
+
+        expected_metrics = {
+            "param_to_optim_loss_ratio",
+            "encoder_grad_norm_param_to_optim_ratio",
+            "priority_opt_mean",
+            "priority_param_mean",
+            "optimizer_effective_horizon_mean",
+        }
+        self.assertIsNotNone(experiment.metrics)
+        self.assertTrue(expected_metrics.issubset(experiment.metrics))
+        for metric_name in expected_metrics:
+            self.assertTrue(torch.isfinite(torch.tensor(
+                experiment.metrics[metric_name]
+            )))
 
     def test_disabled_trust_region_keeps_every_sample(self):
         agent = self.make_agent(use_trust_region_masking=False)
